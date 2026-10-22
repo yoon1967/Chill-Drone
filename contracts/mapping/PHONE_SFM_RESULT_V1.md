@@ -65,5 +65,4 @@ z는 x×y다. y는 실측 중력 방향이 아니며 표시 격자는 바닥 추
 - `processing_seconds`는 입력 대조 이후 SfM·색상 추출까지이며 설치/입력 검사/웹 표시 시간은 포함하지 않는다.
 - `kind=sparse_sfm`, dense_reconstruction=not_performed, absolute_pose_accuracy=unknown_no_ground_truth.
 
-수신자는 `validate_result.py`로 해시, PLY/JSON, 원본 프레임·PTS, CSV, 중심·방향의 변환을 독립 확인한다.
 계약 생산자·소비자를 함께 변경할 때는 이 버전의 필드와 단위를 보존하거나 새 버전을 만든다.

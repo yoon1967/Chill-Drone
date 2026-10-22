@@ -33,17 +33,34 @@ pnpm --dir apps/console install --frozen-lockfile
 미터 단위 격자의 한 칸은 0.5m다. 격자 평면은 표시용이며 실측 바닥·중력 방향이 아니다.
 표면 메시·독립 치수 정확도·실시간 SLAM을 제공하는 화면으로 표시하지 않는다.
 
-## 접근 범위와 검증
+## 접근 범위
 
 서버는 127.0.0.1에만 바인딩하고 정해진 정적 자원, 완료된 결과, 등록된 원본 프레임 이름만 제공한다.
 저장소·실제 자료 디렉터리 열람, `.env`, 원본 DB, 로컬 절대 경로 JSON은 제공하지 않는다.
 실제 촬영과 복원 결과는 Git·Sites·EC2에 업로드하지 않는다.
 
-```powershell
-python -B -m unittest discover -s apps/console/tests -v
-node --check apps/console/app.js
-```
-
-입출력은 [복원 결과 계약](../../contracts/mapping/PHONE_SFM_RESULT_V1.md), 실제 수치는
-[실행 기록](../../docs/phone_mapping/reconstruction_report_20261022.md)을 참고한다.
+입출력은 [복원 결과 계약](../../contracts/mapping/PHONE_SFM_RESULT_V1.md)을 참고한다.
 팀 작업 절차는 저장소 루트의 `docs/team/START_HERE.md`를 따른다.
+
+## 공간 표현과 온라인 갱신
+
+[온라인 처리 안내](../../modules/mapping/localization/ONLINE.md)에서 Open3D 의존성·표면 생성·영상 수신을 준비한다.
+웹 자체는 Python 표준 라이브러리와 설치된 Three.js를 계속 사용한다.
+
+`--result <완료 결과> --surface <새 표면.json>`으로 저장된 지도에 표면을 붙이거나,
+`--session <온라인 실행 폴더>`로 수신 중인 지도를 연결한다. 두 입력 모드는 함께 지정하지 않는다.
+웹은 2초마다 상태를 확인하고 새 revision만 가져온다. 지도와 표면은 같은 응답으로 읽는다.
+갱신 중 사용자의 시점·표현 모드는 유지하며 좌표 segment가 바뀌면 시점을 다시 맞춘다.
+
+- **홀로그램**: voxel 대표점·연결선·삼각형 와이어프레임. 사진을 3D 평면에 붙이지 않는다.
+- **현실·표면**: 실제 관측점 색상을 보간한 triangle mesh. 사진 텍스처·없는 면 완성은 수행하지 않는다.
+- **공간 셀**: 관측이 있는 셀의 위치와 추정 표면. 빈 셀은 unknown이다.
+- **원본 점군**: SfM 점과 오차 필터를 직접 확인한다.
+
+`공간 안으로 이동`은 선택한 촬영 카메라 위치에서 탐색을 시작한다. WASD 전후좌우, Q/E 상하,
+드래그로 시선을 바꾸고 Esc로 종료한다. 화면의 이동 버튼은 모바일에서도 사용할 수 있다.
+이것은 시각 탐색 기능이며 벽 충돌·통과 가능·비행 경로의 안전성을 판정하지 않는다.
+
+완료/수신/초기화/갱신 실패를 구분해 표시한다. 실패 시 마지막 유효 지도를 유지한다.
+온라인 지도의 단위는 실측 스케일이 없는 **임의 단위**다. 화면에 이를 표시하며 cm로 잘못 표기하지 않는다.
+상세 필드와 한계는 [온라인 공간 계약](../../contracts/mapping/ONLINE_SPATIAL_V1.md)을 따른다.

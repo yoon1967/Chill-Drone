@@ -42,17 +42,15 @@ python -m venv .venv
 충족하지 않으면 오류 이유를 보존하고 `arbitrary` 단위로 내보낸다. 미확인 바닥 C는 사용하지 않는다.
 44cm에 맞췄다는 사실은 독립 치수 정확도를 검증했다는 뜻이 아니다.
 
-## 검증과 화면
+## 웹 화면
 
-```powershell
-.\.venv\Scripts\python.exe -B -m unittest discover -s modules/mapping/localization/tests -v
-.\.venv\Scripts\python.exe -B modules/mapping/localization/validate_result.py `
-  --result output/phone_mapping/2f1_sfm_review
-```
-
-수신 검사는 표준 라이브러리만 사용하며 출력 해시·PLY/JSON·시각/CSV·카메라 중심/방향의 변환 일치와
-미확인 높이 제외를 독립 대조한다. 웹 실행은 [console 안내](../../../apps/console/README.md)를 따른다.
-[실제 실행 기록](../../../docs/phone_mapping/reconstruction_report_20261022.md)에 전후 수치와 남은 작업을 남겼다.
+웹 실행은 [console 안내](../../../apps/console/README.md)를 따른다.
 
 원본·실제 점군·로그는 ignore된 `data/real_data/`, `output/`에 둔다.
 팀 작업 절차는 저장소 루트의 `docs/team/START_HERE.md`를 따른다.
+
+## 연속 영상·공간 구조화
+
+[온라인 처리 안내](ONLINE.md)는 파일/RTSP/UDP/카메라 수신, 제한된 키프레임 SfM 갱신,
+voxel 대표점·연결선·삼각형 표면과 웹 탐색을 다룬다. 기존 오프라인 수신/보정 경로는 유지한다.
+실시간 위치 추적·루프 폐쇄가 필요한 드론 SLAM의 완료를 의미하지 않는다.

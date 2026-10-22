@@ -14,22 +14,26 @@
   </header>
   <main>
     <section class="heading"><div><p class="eyebrow">VIDEO → SPATIAL RECONSTRUCTION</p><h1>영상 속 공간을, 입체로.</h1><p id="run-name">복원 결과를 불러오는 중입니다.</p></div>
-      <a class="download" href="/api/points.ply" download>점군 내려받기 <span>↗</span></a></section>
+      <a id="download" class="download" href="/api/points.ply" download>지도 내려받기 <span>↗</span></a></section>
     <div id="error" role="alert" hidden></div>
     <div class="workspace">
       <section class="viewer" aria-label="3D 복원 공간">
-        <div class="viewer-top"><span class="live-dot"></span><span>실제 촬영 기반</span><span id="kind">희소 3D 점군</span></div>
+        <div class="viewer-top"><span class="live-dot"></span><span>실제 촬영 기반</span><span id="kind">공간 구조 준비 중</span></div>
         <div id="viewport" tabindex="0" aria-label="드래그로 회전, 스크롤로 확대하는 3D 점군"><div class="loading">복원된 공간을 준비하고 있습니다…</div></div>
         <div class="view-buttons" role="group" aria-label="시점 선택"><button data-view="perspective" class="active">입체</button><button data-view="front">정면</button><button data-view="top">위에서</button><button id="reset" title="전체 점군과 경로에 맞추기">↺ 전체 보기</button></div>
+        <div class="mode-tabs" role="tablist" aria-label="지도 표현 모드"><button role="tab" data-mode="hologram" aria-selected="true">홀로그램</button><button role="tab" data-mode="reality" aria-selected="false">현실 · 표면</button><button role="tab" data-mode="spatial" aria-selected="false">공간 셀</button><button role="tab" data-mode="points" aria-selected="false">원본 점군</button></div>
+        <button id="explore" aria-pressed="false">공간 안으로 이동 ↗</button>
+        <div id="move-controls" hidden><span id="explorer-position"></span><div role="group" aria-label="공간 이동"><button data-move="forward">앞으로</button><button data-move="back">뒤로</button><button data-move="left">왼쪽</button><button data-move="right">오른쪽</button><button data-move="up">위로</button><button data-move="down">아래로</button></div></div>
         <div class="legend"><span><i class="point-dot"></i> 복원 점</span><span><i class="path-line"></i> 촬영 경로</span><span id="scale-badge">스케일 확인 중</span></div>
-        <div class="viewer-hint">드래그 회전 <b>·</b> 휠 확대 <b>·</b> 오른쪽 드래그 이동</div>
+        <div class="viewer-hint" id="viewer-hint">드래그 회전 · 휠 확대 · 오른쪽 드래그 이동</div>
         <div class="axis-key"><span>X</span><span>Y</span><span>Z</span></div>
       </section>
       <aside>
         <div class="section-title"><h2>복원 기록</h2><span id="run-date"></span></div>
         <div class="metrics"><div><span>등록 프레임</span><strong id="frames">—</strong><small id="registration">—</small></div><div><span>3D 점</span><strong id="points">—</strong><small>실제 대응점 삼각측량</small></div><div><span>평균 재투영 오차</span><strong id="reprojection">—</strong><small>화면 좌표의 일치 정도</small></div><div><span>복원 소요 시간</span><strong id="elapsed">—</strong><small>입력 검증 이후 SfM·색상</small></div></div>
+        <div class="structure-summary"><strong id="surface-summary">점군 구조를 준비합니다</strong><p id="surface-detail"></p><p id="stream-state" role="status"></p><p id="mode-detail">3D 점으로 계산한 구조입니다.</p></div>
         <div class="capture"><div class="section-title"><h2>촬영 시점</h2><button id="play" aria-label="촬영 경로 재생">▶ 재생</button></div>
-          <div class="frame-wrap"><img id="frame" alt="선택한 카메라 위치에서 촬영한 원본 프레임"><span id="timestamp">—</span></div>
+          <div class="frame-wrap"><img id="frame" alt="선택한 카메라 시점의 촬영 키프레임"><span id="timestamp">—</span></div>
           <input id="timeline" type="range" min="0" max="0" value="0" aria-label="촬영 프레임 선택">
           <div class="frame-caption"><span id="frame-name">—</span><button id="camera-view">이 위치에서 보기 ↗</button></div>
         </div>
@@ -41,7 +45,7 @@
         </div></details>
       </aside>
     </div>
-    <section class="notes"><div><p class="eyebrow">READING THIS SPACE</p><h2>복원된 부분과 아직 모르는 부분</h2></div><div><p id="scale-note"></p><p>점이 없는 면은 관측되지 않았거나 복원에 충분한 무늬가 없는 영역입니다. 이 화면은 표면을 채운 완성 메시가 아닌, 영상에서 계산한 희소 3D 구조입니다.</p><p class="muted">세로 136cm 검증 · 바닥 기준점 대응 확인 대기 / 절대 위치 정확도 · 정답 위치 없음</p></div></section>
+    <section class="notes"><div><p class="eyebrow">READING THIS SPACE</p><h2>관측점에서 선과 면으로</h2></div><div><p id="scale-note"></p><p>같은 공간 셀의 관측점을 평균하고, 가까운 대표점의 방향과 밀도를 검사해 선과 면을 계산합니다. 비어 있는 셀은 아직 모르는 공간입니다. 현실 모드는 관측점 색상을 사용하는 추정 표면이며 사진을 붙인 평면이 아닙니다.</p><p class="muted">공간 탐색은 시각 확인용입니다. 비행 경로·통과 가능 공간의 검증 결과가 아닙니다. 실기체 SLAM·독립 치수 정확도는 추가 검증이 필요합니다.</p></div></section>
     <footer><span>COLMAP · OFFLINE RECONSTRUCTION</span><div><a href="/api/poses.json" download>카메라 자세 JSON ↗</a><a href="/api/trajectory.csv" download>경로 CSV ↗</a></div></footer>
   </main>
   <script type="module" src="/app.js"></script>
