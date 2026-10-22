@@ -1,0 +1,49 @@
+<!doctype html>
+<html lang="ko">
+<head>
+  <meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1">
+  <meta name="description" content="실제 촬영 영상에서 복원한 3D 공간과 카메라 경로를 확인합니다.">
+  <title>공간 복원실 · Phone Mapping</title>
+  <link rel="icon" href="data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 40 40'%3E%3Crect width='40' height='40' rx='9' fill='%23244d3b'/%3E%3Cpath d='M20 7L33 20 20 33 7 20Z' fill='none' stroke='%23c7e3b8' stroke-width='2'/%3E%3C/svg%3E">
+  <link rel="stylesheet" href="/style.css">
+  <script type="importmap">{"imports":{"three":"/vendor/three.module.js"}}</script>
+</head>
+<body>
+  <header><a class="brand" href="/" aria-label="공간 복원실 홈"><span class="brand-icon">◈</span> 공간 복원실<span class="brand-sub">PHONE MAPPING</span></a>
+    <span class="local"><i></i> 로컬 자료 · 비공개</span>
+  </header>
+  <main>
+    <section class="heading"><div><p class="eyebrow">VIDEO → SPATIAL RECONSTRUCTION</p><h1>영상 속 공간을, 입체로.</h1><p id="run-name">복원 결과를 불러오는 중입니다.</p></div>
+      <a class="download" href="/api/points.ply" download>점군 내려받기 <span>↗</span></a></section>
+    <div id="error" role="alert" hidden></div>
+    <div class="workspace">
+      <section class="viewer" aria-label="3D 복원 공간">
+        <div class="viewer-top"><span class="live-dot"></span><span>실제 촬영 기반</span><span id="kind">희소 3D 점군</span></div>
+        <div id="viewport" tabindex="0" aria-label="드래그로 회전, 스크롤로 확대하는 3D 점군"><div class="loading">복원된 공간을 준비하고 있습니다…</div></div>
+        <div class="view-buttons" role="group" aria-label="시점 선택"><button data-view="perspective" class="active">입체</button><button data-view="front">정면</button><button data-view="top">위에서</button><button id="reset" title="전체 점군과 경로에 맞추기">↺ 전체 보기</button></div>
+        <div class="legend"><span><i class="point-dot"></i> 복원 점</span><span><i class="path-line"></i> 촬영 경로</span><span id="scale-badge">스케일 확인 중</span></div>
+        <div class="viewer-hint">드래그 회전 <b>·</b> 휠 확대 <b>·</b> 오른쪽 드래그 이동</div>
+        <div class="axis-key"><span>X</span><span>Y</span><span>Z</span></div>
+      </section>
+      <aside>
+        <div class="section-title"><h2>복원 기록</h2><span id="run-date"></span></div>
+        <div class="metrics"><div><span>등록 프레임</span><strong id="frames">—</strong><small id="registration">—</small></div><div><span>3D 점</span><strong id="points">—</strong><small>실제 대응점 삼각측량</small></div><div><span>평균 재투영 오차</span><strong id="reprojection">—</strong><small>화면 좌표의 일치 정도</small></div><div><span>복원 소요 시간</span><strong id="elapsed">—</strong><small>입력 검증 이후 SfM·색상</small></div></div>
+        <div class="capture"><div class="section-title"><h2>촬영 시점</h2><button id="play" aria-label="촬영 경로 재생">▶ 재생</button></div>
+          <div class="frame-wrap"><img id="frame" alt="선택한 카메라 위치에서 촬영한 원본 프레임"><span id="timestamp">—</span></div>
+          <input id="timeline" type="range" min="0" max="0" value="0" aria-label="촬영 프레임 선택">
+          <div class="frame-caption"><span id="frame-name">—</span><button id="camera-view">이 위치에서 보기 ↗</button></div>
+        </div>
+        <details open><summary>화면 조정</summary><div class="controls">
+          <label>점 크기 <input id="point-size" type="range" min="1" max="7" step="0.5" value="2.5"></label>
+          <label>색상 <select id="color-mode"><option value="rgb">원본 색상</option><option value="error">재투영 오차</option><option value="height">높이 분포</option></select></label>
+          <label>오차 필터 <select id="error-limit"><option value="999">전체 점</option><option value="2">2px 이하</option><option value="1">1px 이하</option><option value="0.5">0.5px 이하</option></select></label>
+          <label><input id="show-path" type="checkbox" checked> 촬영 경로</label><label><input id="show-cameras" type="checkbox" checked> 카메라 방향</label><label><input id="show-grid" type="checkbox" checked> 좌표 격자</label>
+        </div></details>
+      </aside>
+    </div>
+    <section class="notes"><div><p class="eyebrow">READING THIS SPACE</p><h2>복원된 부분과 아직 모르는 부분</h2></div><div><p id="scale-note"></p><p>점이 없는 면은 관측되지 않았거나 복원에 충분한 무늬가 없는 영역입니다. 이 화면은 표면을 채운 완성 메시가 아닌, 영상에서 계산한 희소 3D 구조입니다.</p><p class="muted">세로 136cm 검증 · 바닥 기준점 대응 확인 대기 / 절대 위치 정확도 · 정답 위치 없음</p></div></section>
+    <footer><span>COLMAP · OFFLINE RECONSTRUCTION</span><div><a href="/api/poses.json" download>카메라 자세 JSON ↗</a><a href="/api/trajectory.csv" download>경로 CSV ↗</a></div></footer>
+  </main>
+  <script type="module" src="/app.js"></script>
+</body>
+</html>

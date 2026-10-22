@@ -19,6 +19,7 @@ node_modules/
 Thumbs.db
 # Local datasets and generated artifacts; tracked history is unaffected.
 /data/raw/
+/data/real_data/
 /data/processed/
 /data/outputs/
 /output/
