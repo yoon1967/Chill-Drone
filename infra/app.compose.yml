@@ -1,0 +1,31 @@
+services:
+  status:
+    image: ${APP_IMAGE:?APP_IMAGE is required}
+    restart: unless-stopped
+    init: true
+    ports:
+      - "127.0.0.1:18065:18066"
+    volumes:
+      - type: bind
+        source: /run/s15p31b205-status
+        target: /run/status
+        read_only: true
+        bind:
+          create_host_path: false
+    read_only: true
+    cap_drop: [ALL]
+    security_opt: [no-new-privileges:true]
+    mem_limit: 128m
+    cpus: 0.50
+    pids_limit: 64
+    healthcheck:
+      test: [CMD, python, -c, "import urllib.request; urllib.request.urlopen('http://127.0.0.1:18066/healthz', timeout=2)"]
+      interval: 3s
+      timeout: 3s
+      retries: 5
+      start_period: 3s
+    logging:
+      driver: json-file
+      options:
+        max-size: 10m
+        max-file: "3"

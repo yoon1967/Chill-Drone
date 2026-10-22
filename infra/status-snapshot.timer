@@ -1,0 +1,11 @@
+[Unit]
+Description=Refresh B205 Docker inventory every 3 seconds
+
+[Timer]
+OnBootSec=10s
+OnUnitActiveSec=3s
+AccuracySec=250ms
+Unit=s15p31b205-status-snapshot.service
+
+[Install]
+WantedBy=timers.target
