@@ -1,0 +1,17 @@
+name: Feature request
+description: 개선하고 싶은 사용 사례를 알려 주세요
+title: "feat: "
+body:
+  - type: textarea
+    id: problem
+    attributes:
+      label: 해결할 문제
+    validations:
+      required: true
+  - type: textarea
+    id: proposal
+    attributes:
+      label: 제안과 확인 방법
+      description: 기대하는 동작·대안·완료를 확인할 방법
+    validations:
+      required: true

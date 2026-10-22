@@ -1,0 +1,15 @@
+# GitLab usernames verified on 2026-10-22. Advisory; required approvals are not enabled.
+# Replace with verified GitHub users/teams before public mirroring; identities are not portable.
+/modules/mapping/localization/ @suho6347
+/modules/mapping/data/ @wu2078
+/modules/perception/inference/ @dorem96 @tnwls134319
+/modules/perception/training/ @tnwls134319 @dorem96
+/modules/autonomy/ @byoungwooheo
+/simulation/ @byoungwooheo
+/services/api/ @wu2078
+/contracts/mapping/ @suho6347 @wu2078
+/contracts/perception/ @dorem96 @tnwls134319
+/contracts/api/ @wu2078
+/infra/ @suho6347
+/data/samples/ @wu2078 @ybh3044
+/docs/team/ @suho6347

@@ -1,0 +1,20 @@
+name: Bug report
+description: 재현 가능한 문제를 알려 주세요
+title: "bug: "
+body:
+  - type: markdown
+    attributes:
+      value: 비밀번호·토큰·PEM·원본 촬영·개인정보를 첨부하지 마세요. 보안 문제는 SECURITY.md를 참고해 주세요.
+  - type: textarea
+    id: reproduce
+    attributes:
+      label: 재현 방법
+      description: 사용한 버전·환경과 재현 순서
+    validations:
+      required: true
+  - type: textarea
+    id: result
+    attributes:
+      label: 기대 결과와 실제 결과
+    validations:
+      required: true
