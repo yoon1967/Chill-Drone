@@ -28,6 +28,9 @@ docs/team/              # 시작·분담·협업·공개 전환 가이드
 
 ## 소유와 공용 경계
 
+- 공통 자료 저장 위치·Drive 분류/등록 규칙은 [DRIVE_STRUCTURE.md](DRIVE_STRUCTURE.md), 휴대폰 실험의 실행/인계는
+  [팀원 안내서](../phone_mapping/team_guide.md)에 둔다. 개별 실험 설명은 분야별 docs에 관리하고 모듈 실행 방법/계약과 연결한다.
+
 - `modules/` 안의 파트는 자체 의존성·실행·테스트를 해당 README와 lockfile로 관리한다.
   최상위에 여러 Python/Node/ROS 환경을 한꺼번에 섞지 않는다. `.venv`, build/install/log는 worktree별로 분리한다.
 - `simulation/`은 가상 센서·월드·실행 구성을 소유한다. 위치 추정 알고리즘과 비행 제어 구현은 각 module에 둔다.
