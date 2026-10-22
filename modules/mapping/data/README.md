@@ -2,5 +2,13 @@
 
 촬영/프레임·2D 특징점/매칭·실측 입력, 점군 처리·회차별 저장·재생·미리보기·업로드 코드를 둔다. 문의: 박수경. 원본 영상·생성물은 data의 비공개 경로에 둔다.
 
-최초 구현 시 지원 버전·설치·실행·테스트·설정 이름과 입출력 계약 링크를 이 문서에 추가한다.
+## 휴대폰 영상의 2D 좌표 인계 시험
+
+- 코드: `scripts/phone_mapping/` (팀 폴더 개편 전에 작성한 기존 실행 경로 유지).
+- 설치·실행·로컬 데이터 준비: [실행 안내](../../../docs/phone_mapping/README.md).
+- 입출력·좌표 규칙·품질 한계: [좌표 인계 계획](../../../docs/phone_mapping/coordinate_handoff_plan.md).
+- 생성 환경: Windows, Python 3.12.14, PyCOLMAP 4.2.1. 세부 패키지는 `scripts/phone_mapping/requirements-features.txt`로 고정한다.
+- 자동 SIFT 특징점·여러 프레임의 대응·수동 실측 기준점을 전달한다. 실제 3D 복원과 수신자 환경 확인은 후속 단계다.
+- 실제 프레임·DB·CSV·ZIP은 Git에서 제외한 `output/phone_mapping/`에 로컬 보관하고 별도 비공개 경로로 전달한다.
+
 팀 작업 절차는 저장소 루트의 docs/team/START_HERE.md를 따른다.
