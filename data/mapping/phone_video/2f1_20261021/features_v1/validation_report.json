@@ -1,0 +1,24 @@
+{
+  "status": "passed",
+  "producer_reader": "4.2.1",
+  "frames_checked": 31,
+  "keypoints_checked": 178584,
+  "matches_checked": 59175,
+  "geometric_inliers_checked": 52159,
+  "candidate_tracks_checked": 15196,
+  "checks": [
+    "source SHA256 / manifest / PTS",
+    "SQLite integrity and native PyCOLMAP read",
+    "standalone DB WAL checkpoint",
+    "descriptor dimensions/type",
+    "every CSV coordinate / feature ID against DB",
+    "every CSV match / inlier against DB",
+    "114 attempted pairs and adjacent previews",
+    "track uniqueness / coordinates / connectivity"
+  ],
+  "not_validated": [
+    "visual correctness of every correspondence",
+    "3D reconstruction",
+    "recipient environment"
+  ]
+}

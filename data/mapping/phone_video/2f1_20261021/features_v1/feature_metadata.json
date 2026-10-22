@@ -1,0 +1,142 @@
+{
+  "feature_run_id": "2f1_20261021_features_v1_full",
+  "input_run_id": "2f1_20261021",
+  "producer": "pycolmap",
+  "pycolmap_version": "4.2.1",
+  "numpy_version": "2.3.5",
+  "pillow_preview_version": "12.3.0",
+  "python_version": "3.12.14 (main, Aug 25 2026, 14:01:42) [MSC v.1944 64 bit (AMD64)]",
+  "script_sha256": "6767c506defb19723f52b3d3047f5f571486ea9df74fe6f99b03ef70b64593b1",
+  "input_manifest_sha256": "f745f900f1e9e3f074b51c687b2978041f0afe9ccd2ad2cfc5eea94b5ad643b3",
+  "capture_information": {
+    "camera": {
+      "device": "iPhone 13 (user-reported)",
+      "captureMode": "standard video (user-reported)",
+      "zoom": "default 1x, no zoom during recording (user-reported)",
+      "lens": "default 1x; physical lens unverified",
+      "intrinsics": "unknown",
+      "absoluteCaptureStart": "unknown"
+    },
+    "video": {
+      "durationSeconds": 27.8,
+      "width": 1920,
+      "height": 1080,
+      "capturePreset": "HD (user-reported)",
+      "nominalFrameRateFps": 30,
+      "nominalFrameRateSource": "user-reported"
+    }
+  },
+  "generated_utc": "2026-10-22T01:10:29.472617+00:00",
+  "settings": {
+    "extraction": {
+      "type": "FeatureExtractorType.SIFT",
+      "max_image_size": 1920,
+      "num_threads": 4,
+      "use_gpu": false,
+      "gpu_index": "-1",
+      "sift": {
+        "max_num_features": 4000,
+        "first_octave": -1,
+        "num_octaves": 4,
+        "octave_resolution": 3,
+        "peak_threshold": 0.006666666666666667,
+        "edge_threshold": 10.0,
+        "estimate_affine_shape": false,
+        "max_num_orientations": 2,
+        "upright": false,
+        "darkness_adaptivity": false,
+        "domain_size_pooling": false,
+        "dsp_min_scale": 0.16666666666666666,
+        "dsp_max_scale": 3.0,
+        "dsp_num_scales": 10,
+        "normalization": "Normalization.L1_ROOT"
+      }
+    },
+    "matching": {
+      "type": "FeatureMatcherType.SIFT_BRUTEFORCE",
+      "num_threads": 4,
+      "use_gpu": false,
+      "gpu_index": "-1",
+      "max_num_matches": 32768,
+      "guided_matching": false,
+      "skip_geometric_verification": false,
+      "rig_verification": false,
+      "skip_image_pairs_in_same_frame": false,
+      "sift": {
+        "max_ratio": 0.75,
+        "max_distance": 0.7,
+        "cross_check": true,
+        "cpu_brute_force_matcher": true
+      }
+    },
+    "verification": {
+      "min_num_inliers": 15,
+      "min_inlier_ratio": 0.0,
+      "min_E_F_inlier_ratio": 0.95,
+      "max_H_inlier_ratio": 0.8,
+      "watermark_min_inlier_ratio": 0.7,
+      "watermark_border_size": 0.1,
+      "detect_watermark": true,
+      "multiple_ignore_watermark": true,
+      "watermark_detection_max_error": 4.0,
+      "filter_stationary_matches": false,
+      "stationary_matches_max_error": 4.0,
+      "force_H_use": false,
+      "use_degensac": false,
+      "use_sampson_refinement": true,
+      "compute_relative_pose": false,
+      "multiple_models": false,
+      "ransac": {
+        "max_error": 1.5,
+        "min_inlier_ratio": 0.25,
+        "confidence": 0.999,
+        "dyn_num_trials_multiplier": 3.0,
+        "min_num_trials": 100,
+        "max_num_trials": 10000,
+        "random_seed": 42,
+        "num_threads": 1
+      }
+    },
+    "reader": {
+      "camera_model": "SIMPLE_RADIAL",
+      "mask_path": ".",
+      "existing_camera_id": -1,
+      "camera_params": "",
+      "default_focal_length_factor": 1.2,
+      "camera_mask_path": "."
+    },
+    "camera_mode": "SINGLE",
+    "device": "cpu",
+    "pair_window_selected_frames": 4
+  },
+  "coordinate_convention": "COLMAP native; original 1920x1080 pixels; x right, y down; first pixel center (0.5,0.5); no manual offset",
+  "keypoint_id": "zero-based row index into DB keypoints/descriptors for that image",
+  "image_root_relative_to_full": "../../2f1_20261021/frames_first_test",
+  "camera_initialization": "One shared SIMPLE_RADIAL; uncalibrated heuristic f=1.2*max(width,height), centered principal point, k=0. Not measured iPhone calibration; refine during reconstruction.",
+  "camera_records": [
+    {
+      "camera_id": 1,
+      "model": "SIMPLE_RADIAL",
+      "width": 1920,
+      "height": 1080,
+      "params": [
+        2304.0,
+        960.0,
+        540.0,
+        0.0
+      ],
+      "has_prior_focal_length": false
+    }
+  ],
+  "recipient_tool_version": "not_decided_user_confirmed",
+  "recipient_read_test": "pending_stage_5",
+  "pilot_relationship": "New native COLMAP extraction; feature IDs differ from OpenCV pilot. Do not mix pilot coordinates/matches with this database.",
+  "candidate_tracks": "Transitive 2D inlier components with at most one feature per image. Conflicting components omitted from this convenience CSV only; DB/matches remain intact. Candidate IDs are not 3D point IDs.",
+  "not_performed": [
+    "3D reconstruction",
+    "camera pose estimation",
+    "metric scaling",
+    "measured endpoint annotation",
+    "recipient environment test"
+  ]
+}

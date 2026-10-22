@@ -8,12 +8,14 @@ documented for COLMAP: the center of the first pixel is (0.5, 0.5).
 from __future__ import annotations
 
 import csv
+import argparse
 import hashlib
 import json
 from pathlib import Path
 
 import cv2
 import numpy as np
+from path_options import writable_output
 
 
 ROOT = Path(__file__).resolve().parents[2]
@@ -39,6 +41,12 @@ def ratio_matches(matcher: cv2.BFMatcher, left: np.ndarray, right: np.ndarray) -
 
 
 def main() -> None:
+    global INPUT, OUTPUT
+    parser = argparse.ArgumentParser(description="Historical OpenCV 3-frame pilot; IDs differ from native COLMAP")
+    parser.add_argument("--input-dir", type=Path, default=INPUT)
+    parser.add_argument("--output-dir", type=Path, default=OUTPUT)
+    args = parser.parse_args()
+    INPUT, OUTPUT = args.input_dir.resolve(), writable_output(args.output_dir)
     manifest = json.loads((INPUT / "manifest.json").read_text(encoding="utf-8"))
     recorded = {item["frameId"]: item for item in manifest["frames"]}
     OUTPUT.mkdir(parents=True, exist_ok=True)

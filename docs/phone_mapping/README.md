@@ -5,10 +5,11 @@
 
 ## 데이터 보관
 
-실제 영상·프레임·특징점 DB·좌표 CSV·주석·생성 ZIP은 Git에 포함하지 않는다.
-기존 로컬 자료는 `output/phone_mapping/`에 유지하고 비공개 전달 경로로 공유한다.
-저장소를 새로 clone한 것만으로 이 촬영의 결과를 재생성할 수는 없다.
-원본 자료와 수동 입력을 먼저 같은 상대 경로에 준비해야 한다.
+확정 좌표 CSV·실측 JSON·설정·검증 기록은 `data/mapping/phone_video/2f1_20261021/`에서 Git으로 공유한다.
+실제 영상·프레임·특징점 DB·주석 그림·ZIP·전체 로그는 기존 로컬/Drive에 유지한다.
+clone만으로 수치 입력 검사와 소비 코드 개발은 가능하다. 실제 영상 기반 재처리/복원에는 외부 프레임과 DB가 필요하다.
+`scripts/phone_mapping/shared_inputs.py`의 `--run-dir`와 `--package-root`로 위치가 다른 두 자료를 연결한다.
+기존 로컬 경로는 아래와 같지만 새 실행 위치를 강제하지 않는다.
 
 | 로컬 경로 (`output/phone_mapping/` 아래) | 용도 |
 | --- | --- |
@@ -30,7 +31,14 @@ python -m venv .venv
 
 ## 실행 순서
 
-다음 명령은 해당 로컬 입력이 준비되어 있을 때 사용한다. 기존 결과를 보존한 뒤 재생성한다.
+Git 전용 입력 검사는 `python -B scripts/phone_mapping/shared_inputs.py`이며 추가 패키지가 필요 없다.
+외부 패키지 연결과 새 작업 사본 생성은 `--package-root <ZIP 해제 루트> --workspace <새 작업 폴더>`를 사용한다.
+자세한 형식과 경로 해석은 `contracts/mapping/PHONE_INPUT_SNAPSHOT_V1.md`를 따른다.
+
+아래는 기존 기본 경로를 사용하는 재처리 순서다. 임의 위치에서는 `full_features.py`에 `--input-dir/--output-dir`,
+`validate_features.py`에 `--input-dir/--features-dir/--report`, `annotate_measurements.py`에
+`--input-dir/--features-dir/--output-dir/--picks-file`을 지정한다. Git 입력 폴더를 출력 위치로 쓰지 않는다.
+재처리와 기존 검증기는 작업 사본에서 실행한다. 기본 전체 추출은 첫 회차 31장에 맞춰져 있다.
 
 1. 입력 폴더의 `manifest.json`, `frames_first_test/`, `measurement_reference.png`와 수동 `manual_picks.json`을 준비한다. manifest의 프레임 목록과 SHA-256이 실제 파일과 일치해야 한다.
 2. 자동 특징점·매칭을 생성한다. 기존 DB가 있으면 덮어쓰지 않고 중단한다. 기존 DB에서 CSV만 다시 만들 때는 `--export-only`를 사용한다.
@@ -48,10 +56,12 @@ python -m venv .venv
    .\.venv\Scripts\python.exe -B scripts/phone_mapping/annotate_measurements.py
    ```
 
-4. 전달 ZIP을 재생성한다. ZIP 해시·압축 해제·네이티브 DB 읽기와 미확인 높이 사용 방지 검사를 수행한다.
+4. 필요할 때 전달 ZIP을 새 출력 폴더에 재생성한다. 기존 ZIP이 있으면 덮어쓰지 않고 중단한다.
+   `--input-dir`, `--features-dir`(full/과 measurements/를 포함하는 상위 폴더), `--output-dir`를 지정할 수 있다.
+   ZIP 해시·압축 해제·네이티브 DB 읽기와 미확인 높이 사용 방지 검사를 수행한다.
 
    ```powershell
-   .\.venv\Scripts\python.exe -B scripts/phone_mapping/package_handoff.py
+   .\.venv\Scripts\python.exe -B scripts/phone_mapping/package_handoff.py --output-dir output/phone_mapping/handoff_rebuild
    ```
 
 5. 수신자는 ZIP을 풀고 ZIP 안의 README대로 `scripts/check_handoff.py --native`를 실행한다. 수신자 검사기는 표준 라이브러리 검사만 할 수도 있지만 네이티브 검사는 PyCOLMAP 4.2.1 환경이 필요하다. 실제 수신 결과는 별도 회신으로 확인한다.

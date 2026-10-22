@@ -8,6 +8,7 @@ This script does not insert manual anchors into the automatic feature database.
 from __future__ import annotations
 
 from collections import Counter
+import argparse
 from contextlib import closing
 import csv
 import hashlib
@@ -17,6 +18,7 @@ import sqlite3
 
 import numpy as np
 from PIL import Image, ImageDraw, ImageFont
+from path_options import relative_reference, writable_output
 
 
 ROOT = Path(__file__).resolve().parents[2]
@@ -97,7 +99,16 @@ def make_endpoint_crops(frame: dict) -> None:
 
 
 def main() -> None:
-    picks_path = OUTPUT / "manual_picks.json"
+    global INPUT, FEATURES, OUTPUT
+    parser = argparse.ArgumentParser()
+    parser.add_argument("--input-dir", type=Path, default=INPUT)
+    parser.add_argument("--features-dir", type=Path, default=FEATURES)
+    parser.add_argument("--output-dir", type=Path, default=OUTPUT)
+    parser.add_argument("--picks-file", type=Path)
+    args = parser.parse_args()
+    INPUT, FEATURES, OUTPUT = args.input_dir.resolve(), args.features_dir.resolve(), writable_output(args.output_dir)
+    OUTPUT.mkdir(parents=True, exist_ok=True)
+    picks_path = args.picks_file.resolve() if args.picks_file else OUTPUT / "manual_picks.json"
     picks = json.loads(picks_path.read_text(encoding="utf-8"))
     source = json.loads((INPUT / "manifest.json").read_text(encoding="utf-8"))
     feature_metadata = json.loads((FEATURES / "feature_metadata.json").read_text(encoding="utf-8"))
@@ -193,10 +204,10 @@ def main() -> None:
     exported = {key: picks[key] for key in ("schema_version", "annotation_run_id", "input_run_id", "feature_run_id", "anchors", "segments", "annotation_method", "annotation_author", "review_status", "uncertainty_definition", "limitations", "inspection_candidates_not_used")}
     exported.update({key: picks[key] for key in ("supersedes", "correction") if key in picks})
     exported.update({"coordinate_convention": "COLMAP native original 1920x1080 pixels; x right, y down; first pixel center (0.5,0.5); manual integer pixel-center indices shifted +0.5",
-                     "measurement_reference": {"file": "../../2f1_20261021/measurement_reference.png", "sha256": sha256(ref_path),
+                     "measurement_reference": {"file": relative_reference(ref_path, OUTPUT), "sha256": sha256(ref_path),
                                                "source_frame_id": picks["reference_frame_id"], "source_pts_s": frame_records[picks["reference_frame_id"]]["sourcePtsSeconds"]},
-                     "image_root_relative_to_measurements": "../../2f1_20261021/frames_first_test",
-                     "feature_database": {"path": "../full/database.db", "sha256": before_hash, "modified": False},
+                     "image_root_relative_to_measurements": relative_reference(INPUT / "frames_first_test", OUTPUT),
+                     "feature_database": {"path": relative_reference(db_path, OUTPUT), "sha256": before_hash, "modified": False},
                      "manual_picks_sha256": sha256(picks_path), "input_manifest_sha256": sha256(INPUT / "manifest.json"),
                      "frames": frames, "observations": observations,
                      "reconstruction_status": "not_performed; C floor cross-view identity pending; height validation not ready",
