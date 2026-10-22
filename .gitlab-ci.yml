@@ -1,0 +1,58 @@
+workflow:
+  rules:
+    - if: '$CI_PIPELINE_SOURCE == "merge_request_event"'
+    - if: '$CI_COMMIT_BRANCH && $CI_OPEN_MERGE_REQUESTS && $CI_PIPELINE_SOURCE == "push"'
+      when: never
+    - if: '$CI_COMMIT_BRANCH'
+
+stages: [verify, build, deploy]
+
+verify:
+  stage: verify
+  tags: [ec2-verify]
+  image: python:3.13-alpine@sha256:2d9aefe2fef018a7eb2c13064c89c71929800fd2e5dccdbf52ea5da5bb8d929a
+  interruptible: true
+  script:
+    - python -B -m unittest discover -s tests -v
+    - apk add --no-cache bash git
+    - bash -n infra/deploy.sh infra/rollback.sh infra/server-setup.sh infra/docker-firewall.sh infra/install-status-snapshot.sh
+    - git diff --check
+
+build-status:
+  stage: build
+  tags: [ec2-deploy]
+  rules:
+    - if: '$CI_COMMIT_REF_PROTECTED == "true" && $CI_COMMIT_BRANCH == "develop"'
+    - if: '$CI_COMMIT_REF_PROTECTED == "true" && $CI_COMMIT_BRANCH =~ /^infra\// && $CI_PIPELINE_SOURCE == "web"'
+  script:
+    - docker build --pull --build-arg REVISION="$CI_COMMIT_SHA" -t "s15p31b205/status:$CI_COMMIT_SHA" infra/status
+
+deploy-staging:
+  stage: deploy
+  tags: [ec2-deploy]
+  resource_group: ec2-staging
+  interruptible: false
+  rules:
+    - if: '$CI_COMMIT_REF_PROTECTED == "true" && $CI_COMMIT_BRANCH == "develop"'
+    - if: '$CI_COMMIT_REF_PROTECTED == "true" && $CI_COMMIT_BRANCH =~ /^infra\// && $CI_PIPELINE_SOURCE == "web"'
+      when: manual
+      allow_failure: false
+  environment:
+    name: staging
+    url: https://k15b205.p.ssafy.io
+  script:
+    - bash infra/deploy.sh "s15p31b205/status:$CI_COMMIT_SHA" "$CI_COMMIT_SHA"
+
+rollback-staging:
+  stage: deploy
+  tags: [ec2-deploy]
+  resource_group: ec2-staging
+  rules:
+    - if: '$CI_COMMIT_REF_PROTECTED == "true" && $CI_COMMIT_BRANCH == "develop"'
+      when: manual
+      allow_failure: true
+  environment:
+    name: staging
+    url: https://k15b205.p.ssafy.io
+  script:
+    - bash infra/rollback.sh
