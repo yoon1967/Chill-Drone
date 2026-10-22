@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import hashlib
+import argparse
 import json
 from pathlib import Path, PurePosixPath
 import shutil
@@ -10,6 +11,7 @@ import subprocess
 import sys
 import tempfile
 from zipfile import ZipFile, ZIP_DEFLATED
+from path_options import writable_output
 
 
 ROOT = Path(__file__).resolve().parents[2]
@@ -99,7 +101,16 @@ def write_json(path: Path, data: object) -> None:
 
 
 def main() -> None:
-    OUTPUT.mkdir(exist_ok=True)
+    global INPUT, FEATURES, OUTPUT
+    parser = argparse.ArgumentParser(description=__doc__)
+    parser.add_argument("--input-dir", type=Path, default=INPUT)
+    parser.add_argument("--features-dir", type=Path, default=FEATURES, help="Directory containing full/ and measurements/")
+    parser.add_argument("--output-dir", type=Path, default=OUTPUT)
+    args = parser.parse_args()
+    INPUT, FEATURES, OUTPUT = args.input_dir.resolve(), args.features_dir.resolve(), writable_output(args.output_dir)
+    if (OUTPUT / (PACKAGE_ID + ".zip")).exists():
+        raise FileExistsError("Preserve the delivered ZIP. Choose a new --output-dir")
+    OUTPUT.mkdir(parents=True, exist_ok=True)
     payload: dict[str, Path | bytes] = {}
     source = json.loads((INPUT / "manifest.json").read_text(encoding="utf-8"))
     meta = json.loads((FEATURES / "full/feature_metadata.json").read_text(encoding="utf-8"))
@@ -114,8 +125,8 @@ def main() -> None:
                 continue
             if path.name.endswith(("-wal", "-shm")) or "__pycache__" in path.parts:
                 raise RuntimeError(f"Unexpected temporary file in source: {path}")
-            payload[path.relative_to(ROOT).as_posix()] = path
-    for name in ("full_features.py", "annotate_measurements.py", "validate_features.py", "requirements-features.txt", "package_handoff.py"):
+            payload["output/phone_mapping/2f1_20261021_features_v1/" + path.relative_to(FEATURES).as_posix()] = path
+    for name in ("full_features.py", "annotate_measurements.py", "validate_features.py", "requirements-features.txt", "package_handoff.py", "path_options.py"):
         payload["provenance/" + name] = ROOT / "scripts/phone_mapping" / name
     payload["scripts/check_handoff.py"] = ROOT / "scripts/phone_mapping/check_handoff.py"
     payload["requirements.txt"] = ROOT / "scripts/phone_mapping/requirements-features.txt"
@@ -213,7 +224,7 @@ def main() -> None:
               "negative_check": {"case": "height correspondence_ready promoted to true, with inventory hashes updated", "result": "correctly_rejected", "error": failure["error"]},
               "actual_recipient_environment_test": "pending", "actual_transfer": "not_sent_by_assistant", "reconstruction_executed": False}
     write_json(OUTPUT / "local_acceptance_report.json", report)
-    print(json.dumps({"status": report["status"], "archive": str(archive.relative_to(ROOT)), "zip_bytes": report["zip_bytes"],
+    print(json.dumps({"status": report["status"], "archive": str(archive.resolve()), "zip_bytes": report["zip_bytes"],
                       "files": len(inventory), "native": accepted["native_sfm_input_read"], "negative_check": report["negative_check"]["result"],
                       "actual_recipient_environment_test": "pending"}, ensure_ascii=False, indent=2))
 

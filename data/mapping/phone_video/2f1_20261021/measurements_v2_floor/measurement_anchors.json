@@ -1,0 +1,376 @@
+{
+  "schema_version": "1.1",
+  "annotation_run_id": "2f1_20261021_measurement_anchors_v2_floor",
+  "input_run_id": "2f1_20261021",
+  "feature_run_id": "2f1_20261021_features_v1_full",
+  "anchors": [
+    {
+      "anchor_id": "A",
+      "name_ko": "측정한 문 한 칸의 왼쪽 위 경계 교점",
+      "physical_definition": "Top-left of the right-hand glass door in the first two-door cabinet adjoining the small lockers; shared endpoint of user's red and blue lines. Use center of visible left seam at the door top boundary.",
+      "source": "Shared upper endpoint circles on user's measurement_reference.png"
+    },
+    {
+      "anchor_id": "B",
+      "name_ko": "같은 문의 오른쪽 위 경계 교점",
+      "physical_definition": "Top-right boundary of that same door; vertical seam between G and Y labels meeting the upper door boundary. User's red right endpoint.",
+      "source": "Right endpoint circle of user's red 44cm line"
+    },
+    {
+      "anchor_id": "C",
+      "name_ko": "사물함 받침대 전면 하단의 바닥 접점",
+      "physical_definition": "Lowest NEW blue mark on the corrected reference, at the cabinet front-base / carpet boundary beneath the left seam of the measured door. Includes the plinth height. There is no unique textured marker at this point. The old intermediate circle at the door bottom is not C.",
+      "source": "User correction and revised measurement_reference.png (2026-10-22)",
+      "multiview_identity_status": "pending; only the reference-view location is user-defined",
+      "use_for_metric_validation": false
+    }
+  ],
+  "segments": [
+    {
+      "segment_id": "width_44cm",
+      "anchor_ids": [
+        "A",
+        "B"
+      ],
+      "length_m": 0.44,
+      "user_value": 44,
+      "user_unit": "cm",
+      "role": "scale_reference",
+      "measurement_uncertainty_m": null,
+      "correspondence_ready": true
+    },
+    {
+      "segment_id": "height_136cm",
+      "anchor_ids": [
+        "A",
+        "C"
+      ],
+      "length_m": 1.36,
+      "user_value": 136,
+      "user_unit": "cm",
+      "role": "held_out_length_check",
+      "measurement_uncertainty_m": null,
+      "correspondence_ready": false,
+      "pending_reason": "C has only one user-defined reference observation; other floor C observations have unconfirmed cross-view identity."
+    }
+  ],
+  "annotation_method": "A/B are unchanged visually reviewed manual picks. C in frame_0035 is the user-marked floor contact. Other C positions are PROVISIONAL constructions using the downward seam alignment and visible base-floor edge; physical cross-view point identity is not confirmed. They must not be used as verified metric control points.",
+  "annotation_author": "Codex assistant; physical segment identity and measured lengths supplied by user",
+  "review_status": "A/B reviewed; C reference position recorded; C multi-view identity confirmation pending",
+  "uncertainty_definition": "Image annotation radius only, not a statistical interval. For provisional C it does not bound physical cross-view identity error, plinth recess or real-world length error.",
+  "limitations": [
+    "Physical measurement instrument and uncertainty remain unknown.",
+    "C is on a smooth floor-contact edge with no unique visible marker. Only frame_0035 identifies the user-defined point directly; four other C coordinates are provisional and NOT valid verified multi-view correspondences.",
+    "Do not assume the door plane and base/plinth front are coplanar, or that image-line extension produces the same 3D floor point.",
+    "44cm A-B remains available as scale reference after reconstruction. Do not report a 136cm accuracy check until C identity and triangulation are confirmed.",
+    "A/B/C IDs are separate from SIFT indices; no automatic DB entries were modified.",
+    "Camera poses, distortion-aware triangulation and metric length errors remain uncomputed."
+  ],
+  "inspection_candidates_not_used": [
+    {
+      "frame_id": "frame_0032.jpg",
+      "reason": "Softer upper boundary in inspected crop; no manual observations exported. Remains in the 31-frame automatic feature set."
+    },
+    {
+      "frame_id": "frame_0040.jpg",
+      "reason": "Upper boundary is near the image edge and softer; no manual observations exported. Remains in the 31-frame automatic feature set."
+    },
+    {
+      "frame_id": "frame_0042.jpg",
+      "reason": "Full upper measured boundary not clearly available in inspected view; no inferred coordinates exported. Remains in the automatic feature set."
+    }
+  ],
+  "supersedes": "2f1_20261021_measurement_anchors_v1",
+  "correction": "User corrected the 136cm lower endpoint from the door-panel bottom to the floor-contact edge. The old intermediate blue circle in the revised reference is obsolete.",
+  "coordinate_convention": "COLMAP native original 1920x1080 pixels; x right, y down; first pixel center (0.5,0.5); manual integer pixel-center indices shifted +0.5",
+  "measurement_reference": {
+    "file": "../../2f1_20261021/measurement_reference.png",
+    "sha256": "92cc84c7c7d95b567b4fcb1a46a4e0b473a6def9286ae33c4c73feacf2b6297f",
+    "source_frame_id": "frame_0035.jpg",
+    "source_pts_s": 17.5
+  },
+  "image_root_relative_to_measurements": "../../2f1_20261021/frames_first_test",
+  "feature_database": {
+    "path": "../full/database.db",
+    "sha256": "8f65ff32dcebd5b5052771ac683fd2ef83dd53b67ea8e769722c16976a6f6626",
+    "modified": false
+  },
+  "manual_picks_sha256": "ed7a8d752e8952934943784f0f1400527822492453dd4e81d32abb120719e193",
+  "input_manifest_sha256": "8edaefb305e8975a95574058afa5d0d8c91477738b8fe00b95ba4b2a6c050a3b",
+  "frames": [
+    {
+      "frame_id": "frame_0030.jpg",
+      "image_id": 7,
+      "camera_id": 1,
+      "source_pts_s": 15,
+      "sha256": "fe5740b067ba335ba6bc2146b8e53b463a3279e26e868eb6c5726e2b0506e297",
+      "width": 1920,
+      "height": 1080
+    },
+    {
+      "frame_id": "frame_0034.jpg",
+      "image_id": 11,
+      "camera_id": 1,
+      "source_pts_s": 17,
+      "sha256": "ab95a6c51a1bdd4ef28561d43f341140494905c36579cfa13e6ab2bc7411d365",
+      "width": 1920,
+      "height": 1080
+    },
+    {
+      "frame_id": "frame_0035.jpg",
+      "image_id": 12,
+      "camera_id": 1,
+      "source_pts_s": 17.5,
+      "sha256": "dd39b76902c388141f950bf461185a83303d77313d86d195976320060359f4d5",
+      "width": 1920,
+      "height": 1080
+    },
+    {
+      "frame_id": "frame_0036.jpg",
+      "image_id": 13,
+      "camera_id": 1,
+      "source_pts_s": 18,
+      "sha256": "c22b81c8051f064f41b4d71ae79265d59a488d98729fa468a3002634748557b1",
+      "width": 1920,
+      "height": 1080
+    },
+    {
+      "frame_id": "frame_0038.jpg",
+      "image_id": 15,
+      "camera_id": 1,
+      "source_pts_s": 19,
+      "sha256": "9b0f8e6e62104a1ee325cd82ffcda4131b893ed4b4dabedc5d4d53888d9af924",
+      "width": 1920,
+      "height": 1080
+    }
+  ],
+  "observations": [
+    {
+      "anchor_id": "A",
+      "frame_id": "frame_0030.jpg",
+      "image_id": 7,
+      "source_pts_s": 15,
+      "x_px": 114.5,
+      "y_px": 234.5,
+      "visibility": "visible",
+      "estimated_annotation_radius_px": 4,
+      "status": "visually_reviewed",
+      "method": "manual_visual_pick_on_original",
+      "metric_validation_eligible": true,
+      "automatic_keypoint_id": null,
+      "annotation_note": "A/B unchanged. C is an unconfirmed floor-edge estimate using the door seam alignment; no unique floor marker is visible."
+    },
+    {
+      "anchor_id": "B",
+      "frame_id": "frame_0030.jpg",
+      "image_id": 7,
+      "source_pts_s": 15,
+      "x_px": 352.5,
+      "y_px": 225.5,
+      "visibility": "visible",
+      "estimated_annotation_radius_px": 4,
+      "status": "visually_reviewed",
+      "method": "manual_visual_pick_on_original",
+      "metric_validation_eligible": true,
+      "automatic_keypoint_id": null,
+      "annotation_note": "A/B unchanged. C is an unconfirmed floor-edge estimate using the door seam alignment; no unique floor marker is visible."
+    },
+    {
+      "anchor_id": "C",
+      "frame_id": "frame_0030.jpg",
+      "image_id": 7,
+      "source_pts_s": 15,
+      "x_px": 223.5,
+      "y_px": 1039.5,
+      "visibility": "floor_edge_visible_identity_unconfirmed",
+      "estimated_annotation_radius_px": 8,
+      "status": "provisional_structure_alignment",
+      "method": "seam_alignment_floor_edge_estimate",
+      "metric_validation_eligible": false,
+      "automatic_keypoint_id": null,
+      "annotation_note": "A/B unchanged. C is an unconfirmed floor-edge estimate using the door seam alignment; no unique floor marker is visible."
+    },
+    {
+      "anchor_id": "A",
+      "frame_id": "frame_0034.jpg",
+      "image_id": 11,
+      "source_pts_s": 17,
+      "x_px": 653.5,
+      "y_px": 260.5,
+      "visibility": "visible",
+      "estimated_annotation_radius_px": 3,
+      "status": "visually_reviewed",
+      "method": "manual_visual_pick_on_original",
+      "metric_validation_eligible": true,
+      "automatic_keypoint_id": null,
+      "annotation_note": "A/B unchanged. C is an unconfirmed floor-edge estimate using the door seam alignment; no unique floor marker is visible."
+    },
+    {
+      "anchor_id": "B",
+      "frame_id": "frame_0034.jpg",
+      "image_id": 11,
+      "source_pts_s": 17,
+      "x_px": 854.5,
+      "y_px": 258.5,
+      "visibility": "visible",
+      "estimated_annotation_radius_px": 3,
+      "status": "visually_reviewed",
+      "method": "manual_visual_pick_on_original",
+      "metric_validation_eligible": true,
+      "automatic_keypoint_id": null,
+      "annotation_note": "A/B unchanged. C is an unconfirmed floor-edge estimate using the door seam alignment; no unique floor marker is visible."
+    },
+    {
+      "anchor_id": "C",
+      "frame_id": "frame_0034.jpg",
+      "image_id": 11,
+      "source_pts_s": 17,
+      "x_px": 694.5,
+      "y_px": 941.5,
+      "visibility": "floor_edge_visible_identity_unconfirmed",
+      "estimated_annotation_radius_px": 8,
+      "status": "provisional_structure_alignment",
+      "method": "seam_alignment_floor_edge_estimate",
+      "metric_validation_eligible": false,
+      "automatic_keypoint_id": null,
+      "annotation_note": "A/B unchanged. C is an unconfirmed floor-edge estimate using the door seam alignment; no unique floor marker is visible."
+    },
+    {
+      "anchor_id": "A",
+      "frame_id": "frame_0035.jpg",
+      "image_id": 12,
+      "source_pts_s": 17.5,
+      "x_px": 720.5,
+      "y_px": 266.5,
+      "visibility": "visible",
+      "estimated_annotation_radius_px": 3,
+      "status": "visually_reviewed",
+      "method": "manual_visual_pick_on_original",
+      "metric_validation_eligible": true,
+      "automatic_keypoint_id": null,
+      "annotation_note": "A/B unchanged. C is the revised user-marked floor contact."
+    },
+    {
+      "anchor_id": "B",
+      "frame_id": "frame_0035.jpg",
+      "image_id": 12,
+      "source_pts_s": 17.5,
+      "x_px": 925.5,
+      "y_px": 263.5,
+      "visibility": "visible",
+      "estimated_annotation_radius_px": 3,
+      "status": "visually_reviewed",
+      "method": "manual_visual_pick_on_original",
+      "metric_validation_eligible": true,
+      "automatic_keypoint_id": null,
+      "annotation_note": "A/B unchanged. C is the revised user-marked floor contact."
+    },
+    {
+      "anchor_id": "C",
+      "frame_id": "frame_0035.jpg",
+      "image_id": 12,
+      "source_pts_s": 17.5,
+      "x_px": 754.5,
+      "y_px": 953.5,
+      "visibility": "visible",
+      "estimated_annotation_radius_px": 5,
+      "status": "user_marked_reference",
+      "method": "manual_pick_on_user_reference",
+      "metric_validation_eligible": false,
+      "automatic_keypoint_id": null,
+      "annotation_note": "A/B unchanged. C is the revised user-marked floor contact."
+    },
+    {
+      "anchor_id": "A",
+      "frame_id": "frame_0036.jpg",
+      "image_id": 13,
+      "source_pts_s": 18,
+      "x_px": 696.5,
+      "y_px": 252.5,
+      "visibility": "visible",
+      "estimated_annotation_radius_px": 3,
+      "status": "visually_reviewed",
+      "method": "manual_visual_pick_on_original",
+      "metric_validation_eligible": true,
+      "automatic_keypoint_id": null,
+      "annotation_note": "A/B unchanged. C is an unconfirmed floor-edge estimate using the door seam alignment; no unique floor marker is visible."
+    },
+    {
+      "anchor_id": "B",
+      "frame_id": "frame_0036.jpg",
+      "image_id": 13,
+      "source_pts_s": 18,
+      "x_px": 908.5,
+      "y_px": 249.5,
+      "visibility": "visible",
+      "estimated_annotation_radius_px": 3,
+      "status": "visually_reviewed",
+      "method": "manual_visual_pick_on_original",
+      "metric_validation_eligible": true,
+      "automatic_keypoint_id": null,
+      "annotation_note": "A/B unchanged. C is an unconfirmed floor-edge estimate using the door seam alignment; no unique floor marker is visible."
+    },
+    {
+      "anchor_id": "C",
+      "frame_id": "frame_0036.jpg",
+      "image_id": 13,
+      "source_pts_s": 18,
+      "x_px": 732.5,
+      "y_px": 960.5,
+      "visibility": "floor_edge_visible_identity_unconfirmed",
+      "estimated_annotation_radius_px": 8,
+      "status": "provisional_structure_alignment",
+      "method": "seam_alignment_floor_edge_estimate",
+      "metric_validation_eligible": false,
+      "automatic_keypoint_id": null,
+      "annotation_note": "A/B unchanged. C is an unconfirmed floor-edge estimate using the door seam alignment; no unique floor marker is visible."
+    },
+    {
+      "anchor_id": "A",
+      "frame_id": "frame_0038.jpg",
+      "image_id": 15,
+      "source_pts_s": 19,
+      "x_px": 535.5,
+      "y_px": 155.5,
+      "visibility": "visible",
+      "estimated_annotation_radius_px": 4,
+      "status": "visually_reviewed",
+      "method": "manual_visual_pick_on_original",
+      "metric_validation_eligible": true,
+      "automatic_keypoint_id": null,
+      "annotation_note": "A/B unchanged. C is an unconfirmed floor-edge estimate using the door seam alignment; no unique floor marker is visible."
+    },
+    {
+      "anchor_id": "B",
+      "frame_id": "frame_0038.jpg",
+      "image_id": 15,
+      "source_pts_s": 19,
+      "x_px": 785.5,
+      "y_px": 151.5,
+      "visibility": "visible",
+      "estimated_annotation_radius_px": 4,
+      "status": "visually_reviewed",
+      "method": "manual_visual_pick_on_original",
+      "metric_validation_eligible": true,
+      "automatic_keypoint_id": null,
+      "annotation_note": "A/B unchanged. C is an unconfirmed floor-edge estimate using the door seam alignment; no unique floor marker is visible."
+    },
+    {
+      "anchor_id": "C",
+      "frame_id": "frame_0038.jpg",
+      "image_id": 15,
+      "source_pts_s": 19,
+      "x_px": 592.5,
+      "y_px": 980.5,
+      "visibility": "floor_edge_visible_identity_unconfirmed",
+      "estimated_annotation_radius_px": 8,
+      "status": "provisional_structure_alignment",
+      "method": "seam_alignment_floor_edge_estimate",
+      "metric_validation_eligible": false,
+      "automatic_keypoint_id": null,
+      "annotation_note": "A/B unchanged. C is an unconfirmed floor-edge estimate using the door seam alignment; no unique floor marker is visible."
+    }
+  ],
+  "reconstruction_status": "not_performed; C floor cross-view identity pending; height validation not ready",
+  "integration_note": "Read manual anchors separately from SIFT. Filter metric_validation_eligible: C is disabled until cross-view physical identity is confirmed. Provisional floor estimates and small epipolar residuals do not prove the same 3D point. After camera recovery, triangulate confirmed observations with the recovered distortion model."
+}

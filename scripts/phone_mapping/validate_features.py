@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 from collections import Counter, defaultdict
+import argparse
 from contextlib import closing
 import csv
 import hashlib
@@ -12,6 +13,7 @@ import sqlite3
 
 import numpy as np
 import pycolmap
+from path_options import writable_output
 
 
 ROOT = Path(__file__).resolve().parents[2]
@@ -25,7 +27,19 @@ def check(condition: bool, message: str) -> None:
 
 
 def main() -> None:
+    global INPUT, OUTPUT
+    parser = argparse.ArgumentParser()
+    parser.add_argument("--input-dir", type=Path, default=INPUT)
+    parser.add_argument("--features-dir", type=Path, default=OUTPUT)
+    parser.add_argument("--report", type=Path, help="Save report separately; use a writable DB copy for validation")
+    args = parser.parse_args()
+    INPUT, OUTPUT = args.input_dir.resolve(), args.features_dir.resolve()
     validation_path = OUTPUT / "validation_report.json"
+    if args.report:
+        validation_path = writable_output(args.report)
+    else:
+        writable_output(OUTPUT)
+    validation_path.parent.mkdir(parents=True, exist_ok=True)
     validation_path.unlink(missing_ok=True)
     report = json.loads((OUTPUT / "quality_report.json").read_text(encoding="utf-8"))
     manifest = json.loads((INPUT / "manifest.json").read_text(encoding="utf-8"))

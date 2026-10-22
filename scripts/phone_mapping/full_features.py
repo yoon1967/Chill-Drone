@@ -20,6 +20,7 @@ import numpy as np
 import pycolmap
 import PIL
 from PIL import Image, ImageDraw, ImageFont
+from path_options import relative_reference, writable_output
 
 
 ROOT = Path(__file__).resolve().parents[2]
@@ -116,9 +117,13 @@ def preview(images_dir: Path, name_a: str, name_b: str, xy_a: np.ndarray,
 
 
 def main() -> None:
+    global INPUT, OUTPUT
     parser = argparse.ArgumentParser()
     parser.add_argument("--export-only", action="store_true", help="Read an existing DB; do not rerun extraction/matching")
+    parser.add_argument("--input-dir", type=Path, default=INPUT)
+    parser.add_argument("--output-dir", type=Path, default=OUTPUT)
     args = parser.parse_args()
+    INPUT, OUTPUT = args.input_dir.resolve(), writable_output(args.output_dir)
     if pycolmap.__version__ != "4.2.1":
         raise RuntimeError("This run is pinned to pycolmap 4.2.1")
     manifest = json.loads((INPUT / "manifest.json").read_text(encoding="utf-8"))
@@ -272,7 +277,7 @@ def main() -> None:
                 "generated_utc": datetime.now(timezone.utc).isoformat(), "settings": settings,
                 "coordinate_convention": "COLMAP native; original 1920x1080 pixels; x right, y down; first pixel center (0.5,0.5); no manual offset",
                 "keypoint_id": "zero-based row index into DB keypoints/descriptors for that image",
-                "image_root_relative_to_full": "../../2f1_20261021/frames_first_test",
+                "image_root_relative_to_full": relative_reference(INPUT / "frames_first_test", OUTPUT),
                 "camera_initialization": "One shared SIMPLE_RADIAL; uncalibrated heuristic f=1.2*max(width,height), centered principal point, k=0. Not measured iPhone calibration; refine during reconstruction.",
                 "camera_records": camera_records,
                 "recipient_tool_version": "not_decided_user_confirmed", "recipient_read_test": "pending_stage_5",

@@ -1,0 +1,78 @@
+{
+  "schema_version": "phone-mapping-snapshot/1.0",
+  "input_run_id": "2f1_20261021",
+  "feature_run_id": "2f1_20261021_features_v1_full",
+  "annotation_run_id": "2f1_20261021_measurement_anchors_v2_floor",
+  "source_data_baseline_commit": "4b0bbf6",
+  "files": {
+    "keypoints": {
+      "path": "features_v1/keypoints.csv",
+      "package_path": "output/phone_mapping/2f1_20261021_features_v1/full/keypoints.csv",
+      "bytes": 11978131,
+      "sha256": "e5f2c4a2121ed521d643e062f40f32ec18a84a44d1be864ccfcb8ff4fac81944"
+    },
+    "matches": {
+      "path": "features_v1/matches.csv",
+      "package_path": "output/phone_mapping/2f1_20261021_features_v1/full/matches.csv",
+      "bytes": 2532781,
+      "sha256": "39cdc27dd1c442a2fa3d598c3166d0614049f35832467605475235eba7be4316"
+    },
+    "frames": {
+      "path": "features_v1/frames_manifest.json",
+      "package_path": "output/phone_mapping/2f1_20261021_features_v1/full/frames_manifest.json",
+      "bytes": 8981,
+      "sha256": "795ab8f27fd134283a036173bf808eab8e4e900a0f0db29cf262a3349cd41a88"
+    },
+    "feature_metadata": {
+      "path": "features_v1/feature_metadata.json",
+      "package_path": "output/phone_mapping/2f1_20261021_features_v1/full/feature_metadata.json",
+      "bytes": 5064,
+      "sha256": "1cf9a6bfb162b0b4d7164e09787cc4546c339b17f757df5ffe8fee062520ed27"
+    },
+    "feature_quality": {
+      "path": "features_v1/quality_report.json",
+      "package_path": "output/phone_mapping/2f1_20261021_features_v1/full/quality_report.json",
+      "bytes": 50007,
+      "sha256": "2703e04619c8841f0584c650fdde3713660136f0758a1fb4cdedd68570698188"
+    },
+    "feature_validation": {
+      "path": "features_v1/validation_report.json",
+      "package_path": "output/phone_mapping/2f1_20261021_features_v1/full/validation_report.json",
+      "bytes": 738,
+      "sha256": "7a4da655fbfc9a84afd48842c5802f2c14d81e403be7a9347e8b1f639a38dd43"
+    },
+    "manual_picks": {
+      "path": "measurements_v2_floor/manual_picks.json",
+      "package_path": "output/phone_mapping/2f1_20261021_features_v1/measurements/manual_picks.json",
+      "bytes": 8979,
+      "sha256": "ed7a8d752e8952934943784f0f1400527822492453dd4e81d32abb120719e193"
+    },
+    "measurement_anchors": {
+      "path": "measurements_v2_floor/measurement_anchors.json",
+      "package_path": "output/phone_mapping/2f1_20261021_features_v1/measurements/measurement_anchors.json",
+      "bytes": 16019,
+      "sha256": "18f326dd0ca32d1963e0c1a8dd72d4252eb3bc6bb7c04fff25fe23429ee25f56"
+    },
+    "measurement_observations": {
+      "path": "measurements_v2_floor/measurement_observations.csv",
+      "package_path": "output/phone_mapping/2f1_20261021_features_v1/measurements/measurement_observations.csv",
+      "bytes": 1884,
+      "sha256": "03437e12496748ab28051a03be635a88961cd5bc2546990b153a4080f4814721"
+    },
+    "annotation_quality": {
+      "path": "measurements_v2_floor/annotation_quality_report.json",
+      "package_path": "output/phone_mapping/2f1_20261021_features_v1/measurements/annotation_quality_report.json",
+      "bytes": 7356,
+      "sha256": "200fc3ba7cb42b2d3ee943c0f2d41bf74ae66b84bbfa8f5133e0ba8c980d1fbd"
+    },
+    "external_artifacts": {
+      "path": "external_artifacts.json",
+      "bytes": 3084,
+      "sha256": "e658a6d587e47223ae75514204880515aa45316b82976108b98d66b895cd3065"
+    }
+  },
+  "producer_paths": "Historical provenance inside copied JSON. Resolve current paths with shared_inputs.load_run and external_artifacts.json; do not join legacy JSON paths to this snapshot directory.",
+  "compatibility": "Legacy phone run IDs/CSV fields, not the PoC 0.1.0 interchange schema. No implicit UUID/frame/PTS/pixel conversion.",
+  "reconstruction_status": "not_executed",
+  "height_correspondence_ready": false
+}

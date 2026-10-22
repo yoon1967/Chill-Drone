@@ -2,3 +2,5 @@
 *.yml text eol=lf
 Dockerfile text eol=lf
 data/samples/poc-v0.1/* text eol=lf
+# Immutable producer snapshots: preserve CSV CRLF/JSON bytes for SHA-256 on all OSes.
+data/mapping/** -text whitespace=cr-at-eol
