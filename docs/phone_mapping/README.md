@@ -1,14 +1,24 @@
 # 휴대폰 영상의 2D 좌표 추출·인계 도구
 
-자세한 처리 순서와 결과의 한계는 [좌표 인계 계획](coordinate_handoff_plan.md)을 참고한다.
-현재 스크립트는 첫 촬영 run의 경로와 설정을 고정한 시험 도구다. 다른 촬영에 그대로 적용하는 범용 CLI는 아니다.
+## 먼저 읽을 문서
+
+| 문서 | 용도 |
+| --- | --- |
+| [팀원 실행·다음 작업 안내](team_guide.md) | Git 입력 확인 → 실제 Drive 자료 받기 → 프레임/DB 검사 → 3D 복원 담당의 다음 단계 |
+| [팀 공통 Drive 구조](../team/DRIVE_STRUCTURE.md) | 실제 공유 위치, 촬영/처리 회차, 이름 충돌 방지, Git·Drive 역할 |
+| [좌표 인계 계획과 실행 이력](coordinate_handoff_plan.md) | 기존 단계별 처리 결과와 미확인 사항 |
+| [확정 수치 입력](../../data/mapping/phone_video/2f1_20261021/README.md) | 회차·버전·원본 좌표 파일 |
+| [현재 입력 형식](../../contracts/mapping/PHONE_INPUT_SNAPSHOT_V1.md) | 좌표·점 ID·PTS·경로 해석 규칙 |
+
+팀원이 새로 시작할 때는 `team_guide.md`를 따른다. 아래는 기존 도구와 재처리 경로의 참고다.
+현재 특징 추출 도구는 첫 촬영 run에 맞춘 시험 도구이며 다른 촬영에 그대로 적용하는 범용 CLI는 아니다.
 
 ## 데이터 보관
 
 확정 좌표 CSV·실측 JSON·설정·검증 기록은 `data/mapping/phone_video/2f1_20261021/`에서 Git으로 공유한다.
 실제 영상·프레임·특징점 DB·주석 그림·ZIP·전체 로그는 기존 로컬/Drive에 유지한다.
 clone만으로 수치 입력 검사와 소비 코드 개발은 가능하다. 실제 영상 기반 재처리/복원에는 외부 프레임과 DB가 필요하다.
-`scripts/phone_mapping/shared_inputs.py`의 `--run-dir`와 `--package-root`로 위치가 다른 두 자료를 연결한다.
+Git 수치 입력 위치는 `shared_inputs.py --run-dir`로 지정한다. Drive의 원본 프레임/DB 폴더는 [팀원 안내서](team_guide.md)의 직접 검사 예제로 연결한다.
 기존 로컬 경로는 아래와 같지만 새 실행 위치를 강제하지 않는다.
 
 | 로컬 경로 (`output/phone_mapping/` 아래) | 용도 |
@@ -29,10 +39,11 @@ python -m venv .venv
 .\.venv\Scripts\python.exe -m pip install -r scripts/phone_mapping/requirements-features.txt
 ```
 
-## 실행 순서
+## 기존 로컬 입력 폴더에서 재처리
 
 Git 전용 입력 검사는 `python -B scripts/phone_mapping/shared_inputs.py`이며 추가 패키지가 필요 없다.
-외부 패키지 연결과 새 작업 사본 생성은 `--package-root <ZIP 해제 루트> --workspace <새 작업 폴더>`를 사용한다.
+기존 전달 폴더를 보관한 경우에는 `--package-root <ZIP 해제 루트> --workspace <새 작업 폴더>`를 사용할 수 있다.
+이 옵션은 예전 manifest와 폴더 구성을 요구한다. Drive에서 받은 프레임과 DB만 사용할 때는 `team_guide.md`의 직접 검사 예제를 따른다.
 자세한 형식과 경로 해석은 `contracts/mapping/PHONE_INPUT_SNAPSHOT_V1.md`를 따른다.
 
 아래는 기존 기본 경로를 사용하는 재처리 순서다. 임의 위치에서는 `full_features.py`에 `--input-dir/--output-dir`,

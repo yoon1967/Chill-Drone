@@ -6,6 +6,8 @@
 
 - 코드: `scripts/phone_mapping/` (팀 폴더 개편 전에 작성한 기존 실행 경로 유지).
 - 설치·실행·로컬 데이터 준비: [실행 안내](../../../docs/phone_mapping/README.md).
+- 팀원이 Git과 실제 Drive 자료로 다음 작업을 시작하는 순서: [팀원 안내서](../../../docs/phone_mapping/team_guide.md).
+- 공통 자료 분류와 등록 방법: [Drive 구조](../../../docs/team/DRIVE_STRUCTURE.md).
 - 입출력·좌표 규칙·품질 한계: [좌표 인계 계획](../../../docs/phone_mapping/coordinate_handoff_plan.md).
 - 생성 환경: Windows, Python 3.12.14, PyCOLMAP 4.2.1. 세부 패키지는 `scripts/phone_mapping/requirements-features.txt`로 고정한다.
 - 자동 SIFT 특징점·여러 프레임의 대응·수동 실측 기준점을 전달한다. 실제 3D 복원과 수신자 환경 확인은 후속 단계다.

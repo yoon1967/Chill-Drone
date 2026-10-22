@@ -3,6 +3,15 @@
 2026-10-22 기준. 작성 규칙의 원본은 [공통 협업 규칙](../../.gitlab/WORKFLOW_SETUP.md)이며,
 현재 작업 배분은 [Jira 작업 지도](JIRA_WORK_MAP.md)와 실제 Jira 이슈를 확인한다.
 
+## 자료와 실행 안내 찾기
+
+- [저장소 폴더 구조와 작업 경계](REPOSITORY_STRUCTURE.md)
+- [팀 공통 Drive 구조·실제 공유 위치·등록 규칙](DRIVE_STRUCTURE.md)
+- [휴대폰 2D 입력·3D 복원 팀원 안내](../phone_mapping/team_guide.md)
+
+공통 구조/운영 규칙은 `docs/team/`, 개별 실험의 실행/인계 설명은 해당 `docs/<분야>/`,
+현재 구현의 설치/실행 방법은 모듈 README에 관리한다. 입력/출력 계약은 `contracts/`를 따른다.
+
 ## 1. 처음 한 번
 
 1. 각자 GitLab·Jira 계정으로 로그인하고 프로젝트 접근을 확인한다. 팀원 계정은 이미 GitLab 멤버에 등록돼 있다.
