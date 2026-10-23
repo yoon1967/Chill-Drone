@@ -16,6 +16,23 @@
     <section class="heading"><div><p class="eyebrow">VIDEO → SPATIAL RECONSTRUCTION</p><h1>영상 속 공간을, 입체로.</h1><p id="run-name">복원 결과를 불러오는 중입니다.</p></div>
       <a id="download" class="download" href="/api/points.ply" download>지도 내려받기 <span>↗</span></a></section>
     <div id="error" role="alert" hidden></div>
+    <section id="live-panel" class="live-panel" hidden aria-label="실시간 영상 연결">
+      <div><strong>카메라에서 공간으로</strong><p>영상을 받으며 같은 특징점을 추적하고 3D 점을 갱신합니다.</p></div>
+      <div class="live-actions">
+        <label>영상 입력 <select id="input-source"><option value="camera">연결된 카메라</option><option value="demo" hidden>현재 녹화 영상 · 스트리밍 시연</option></select></label>
+        <button id="camera-start">카메라 연결 · 시작</button><button id="camera-stop" disabled>수신 종료</button>
+      </div>
+      <details><summary>카메라 보정</summary><label>보정 JSON <input id="camera-calibration" type="file" accept=".json,application/json"></label><label>수평 화각 <input id="camera-fov" type="number" min="25" max="120" value="60"> °</label><p>보정 파일이 없으면 화각 추정값을 사용합니다. 단안 좌표는 실제 미터가 아닙니다. 영상은 이 PC에서만 처리·저장됩니다.</p></details>
+      <p id="camera-status" role="status">Docker 실행 후 카메라를 연결하세요. 권한은 시작할 때 요청합니다.</p>
+      <video id="input-preview" muted playsinline hidden aria-label="전송 중인 입력 영상"></video>
+    </section>
+    <section id="map-playback" class="map-playback" hidden aria-label="지도 생성 과정 재생">
+      <button id="play" aria-label="지도 생성 과정 재생">▶ 재생</button><button id="replay-reset" aria-label="지도 재생 처음으로">↺ 처음</button>
+      <input id="timeline" type="range" min="0" max="0" step="0.01" value="0" aria-label="지도 생성 시간">
+      <span id="replay-clock">0.0 / 0.0초</span>
+      <label>속도 <select id="replay-speed"><option value="0.5">0.5×</option><option value="1" selected>1×</option><option value="2">2×</option></select></label>
+      <button id="live-follow">최신 지도</button><p id="replay-state" role="status">기록된 지도 갱신을 준비합니다.</p>
+    </section>
     <div class="workspace">
       <section class="viewer" aria-label="3D 복원 공간">
         <div class="viewer-top"><span class="live-dot"></span><span>실제 촬영 기반</span><span id="kind">공간 구조 준비 중</span></div>
@@ -30,6 +47,12 @@
         <div class="axis-key"><span>X</span><span>Y</span><span>Z</span></div>
       </section>
       <aside>
+        <section id="slam-panel" hidden aria-label="프레임 특징점 추적">
+          <div class="section-title"><h2>연속 프레임 추적</h2><strong id="slam-tracking-state">초기화 중</strong></div>
+          <img id="slam-preview" alt="현재 영상에서 같은 지도 점을 이어서 추적한 결과">
+          <p class="muted" id="slam-preview-note">노란 점은 직전 처리 프레임과 같은 지도 점, 초록 점은 이번 프레임에서 새로 연결된 지도 점입니다. 숫자는 지도 점 ID입니다.</p>
+          <p id="slam-timing" role="status"></p>
+        </section>
         <section class="object-panel" aria-label="발견된 평면 객체">
           <div class="section-title"><h2>발견된 평면 객체</h2><button id="object-overview">전체 면 ↗</button><strong id="object-count">—</strong></div>
           <p id="object-status" role="status">관측한 표면을 찾는 중입니다.</p>
@@ -46,11 +69,11 @@
         </section>
         <div class="section-title"><h2>복원 기록</h2><span id="run-date"></span></div>
         <div class="metrics"><div><span>등록 프레임</span><strong id="frames">—</strong><small id="registration">—</small></div><div><span>3D 점</span><strong id="points">—</strong><small>실제 대응점 삼각측량</small></div><div><span>평균 재투영 오차</span><strong id="reprojection">—</strong><small>화면 좌표의 일치 정도</small></div><div><span>복원 소요 시간</span><strong id="elapsed">—</strong><small>입력 검증 이후 SfM·색상</small></div></div>
-        <div class="structure-summary"><p id="stream-state" role="status"></p><p id="incremental-state" hidden></p><p id="mode-detail">원본 점군과 영상 경계 기반 객체를 준비합니다.</p></div>
-        <div class="capture"><div class="section-title"><h2>촬영 시점</h2><button id="play" aria-label="촬영 경로 재생">▶ 재생</button></div>
+        <div class="structure-summary"><p id="stream-state" role="status"></p><p id="incremental-state" hidden></p><p id="render-state"></p><p id="mode-detail">원본 점군과 영상 경계 기반 객체를 준비합니다.</p></div>
+        <div class="capture"><div class="section-title"><h2>촬영 시점</h2></div>
           <div class="frame-wrap"><img id="frame" alt="선택한 카메라 시점의 촬영 키프레임"><svg id="object-overlay" aria-label="선택한 객체의 재투영 경계와 특징점"></svg><span id="timestamp">—</span></div>
           <p id="frame-proof"></p>
-          <input id="timeline" type="range" min="0" max="0" value="0" aria-label="촬영 프레임 선택">
+          <input id="frame-timeline" type="range" min="0" max="0" value="0" aria-label="촬영 프레임 선택">
           <div class="frame-caption"><span id="frame-name">—</span><button id="camera-view">이 위치에서 보기 ↗</button></div>
         </div>
         <details open><summary>화면 조정</summary><div class="controls">

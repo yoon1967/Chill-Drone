@@ -1,5 +1,8 @@
 # 좌표·위치 추정·3D 복원
 
+Docker에서 공식 ORB-SLAM3로 연속 프레임을 추적하는 경로는 [ORB_SLAM3.md](ORB_SLAM3.md)를 따른다.
+기존 COLMAP 복원과 독립적으로 ORB 지도 점 ID·키프레임·추적 상태를 웹에 연결한다.
+
 휴대폰 프레임의 SfM/COLMAP 복원, 카메라 pose, 좌표·스케일·SLAM 코드를 둔다. 문의: 김수호. 실제 입력 계약은 contracts/mapping에서 관리한다.
 
 ## 실행 환경
