@@ -15,10 +15,10 @@ APP = Path(__file__).resolve().parent
 
 
 class ViewerHandler(BaseHTTPRequestHandler):
-    def __init__(self, *args, result=None, session=None, surface=None, **kwargs):
+    def __init__(self, *args, result=None, session=None, objects=None, **kwargs):
         self.result = Path(result).resolve() if result else None
         self.session = Path(session).resolve() if session else None
-        self.surface = Path(surface).resolve() if surface else None
+        self.objects = Path(objects).resolve() if objects else None
         super().__init__(*args, **kwargs)
 
     def json_response(self, value, status=200):
@@ -36,6 +36,7 @@ class ViewerHandler(BaseHTTPRequestHandler):
         if not (self.session / "state.json").is_file():
             return None, {"status": "starting", "revision": 0, "map_available": False, "frame_drops": 0}
         state = json.loads((self.session / "state.json").read_text(encoding="utf-8"))
+        state.pop("surface", None)  # Retired point-connectivity mesh statistics in older sessions.
         name = f"revisions/{revision}" if revision else state.get("revision_path", "")
         if not re.fullmatch(r"revisions/\d{6}", name):
             return None, state
@@ -43,6 +44,22 @@ class ViewerHandler(BaseHTTPRequestHandler):
         if result.parent != (self.session / "revisions").resolve():
             return None, state
         return result, state
+
+    def object_collection(self, result, scene):
+        collection = json.loads((self.objects / "objects.json").read_text(encoding="utf-8")) if self.objects else scene.get("planar_objects")
+        if collection is not None:
+            if not isinstance(collection, dict):
+                raise ValueError("invalid_objects_collection")
+            binding = hashlib.sha256(json.dumps({key: scene[key] for key in ("points", "cameras", "scale")},
+                sort_keys=True, separators=(",", ":"), allow_nan=False).encode()).hexdigest()
+            if collection.get("schema_version") != "planar-objects/1.0" or collection.get("scene_binding_sha256") != binding:
+                raise ValueError("objects_do_not_match_scene")
+            if not isinstance(collection.get("objects"), list) or len(collection["objects"]) > 64:
+                raise ValueError("too_many_objects")
+            if any(not isinstance(o, dict) or not re.fullmatch(r"object-\d{4,8}\.jpg", str(o.get("texture_file", "")))
+                   for o in collection["objects"]):
+                raise ValueError("invalid_object_texture")
+        return collection
 
     def do_GET(self):
         host = self.headers.get("Host", "").split(":", 1)[0]
@@ -65,18 +82,19 @@ class ViewerHandler(BaseHTTPRequestHandler):
                 self.json_response(state or {"status": "incomplete"}, 503)
                 return
             value = json.loads((result / "scene.json").read_text(encoding="utf-8"))
-            if self.surface:
-                value["surface"] = json.loads(self.surface.read_text(encoding="utf-8"))
-                binding = hashlib.sha256(json.dumps({key: value[key] for key in ("points", "cameras", "scale")},
-                    sort_keys=True, separators=(",", ":"), allow_nan=False).encode()).hexdigest()
-                if value["surface"].get("scene_binding_sha256") != binding:
-                    self.json_response({"status": "surface_does_not_match_scene"}, 503)
-                    return
+            value.pop("surface", None)  # Read old results without exposing the retired mesh.
             if state:
                 value["stream"] = state
+            try:
+                collection = self.object_collection(result, value)
+            except (OSError, ValueError):
+                self.json_response({"status": "objects_unavailable_or_mismatched"}, 503)
+                return
+            if collection:
+                value["planar_objects"] = collection
             self.json_response(value)
             return
-        static = {"/": APP / "index.html", "/app.js": APP / "app.js", "/style.css": APP / "style.css",
+        static = {"/": APP / "index.html", "/app.js": APP / "app.js", "/objects.js": APP / "objects.js", "/style.css": APP / "style.css",
                   "/vendor/three.module.js": APP / "node_modules/three/build/three.module.js",
                   "/vendor/three.core.js": APP / "node_modules/three/build/three.core.js",
                   "/vendor/OrbitControls.js": APP / "node_modules/three/examples/jsm/controls/OrbitControls.js"}
@@ -89,6 +107,34 @@ class ViewerHandler(BaseHTTPRequestHandler):
                 self.send_error(503, "Result is incomplete")
                 return
             target = result / exports[path]
+        elif path.startswith("/api/object-texture/"):
+            name = path.removeprefix("/api/object-texture/")
+            requested_revision = parse_qs(url.query).get("revision", [None])[0]
+            if not re.fullmatch(r"object-\d{4,8}\.jpg", name):
+                self.send_error(404)
+                return
+            if self.session and requested_revision:
+                if not re.fullmatch(r"\d{6}", requested_revision):
+                    self.send_error(404)
+                    return
+                result, _ = self.snapshot(requested_revision)
+            if result is None:
+                self.send_error(404)
+                return
+            try:
+                value = json.loads((result / "scene.json").read_text(encoding="utf-8"))
+                collection = self.object_collection(result, value)
+                allowed = {o["texture_file"] for o in (collection or {}).get("objects", [])}
+            except (OSError, ValueError, KeyError):
+                allowed = set()
+            if name not in allowed:
+                self.send_error(404)
+                return
+            texture_root = (self.objects / "textures" if self.objects else result / "object_textures").resolve()
+            target = (texture_root / name).resolve()
+            if target.parent != texture_root:
+                self.send_error(404)
+                return
         elif path.startswith("/api/frame/"):
             name = path.removeprefix("/api/frame/")
             requested_revision = parse_qs(url.query).get("revision", [None])[0]
@@ -134,17 +180,19 @@ def main():
     source = parser.add_mutually_exclusive_group(required=True)
     source.add_argument("--result", type=Path)
     source.add_argument("--session", type=Path)
-    parser.add_argument("--surface", type=Path, help="Optional observed-surface JSON for an offline result")
+    parser.add_argument("--objects", type=Path, help="Optional planar object bundle for an offline result")
     parser.add_argument("--port", type=int, default=8790)
     args = parser.parse_args()
     result = args.result.resolve() if args.result else None
+    if args.session and args.objects:
+        parser.error("Online sessions use revision-bound objects")
     if result and (not (result / "status.json").is_file() or json.loads(
             (result / "status.json").read_text(encoding="utf-8")).get("status") not in {"complete", "partial"}):
         parser.error("Select a complete or partial reconstruction result")
     if not (APP / "node_modules/three/build/three.module.js").is_file():
         parser.error("Install apps/console dependencies first: pnpm install --frozen-lockfile")
     server = ThreadingHTTPServer(("127.0.0.1", args.port), partial(ViewerHandler, result=result,
-        session=args.session, surface=args.surface))
+        session=args.session, objects=args.objects))
     print(f"Phone mapping viewer: http://127.0.0.1:{args.port}/", flush=True)
     try:
         server.serve_forever()

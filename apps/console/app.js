@@ -1,11 +1,12 @@
 import * as THREE from 'three';
 import { OrbitControls } from '/vendor/OrbitControls.js';
+import { PlanarObjects } from '/objects.js';
 const $ = (id) => document.getElementById(id);
 const number = (n) => Number(n).toLocaleString('ko-KR');
 const timeOf = (c) => c.source_pts_s ?? c.timestamp_s;
-let run, root, cloud, surfaceMesh, wire, graph, voxels, nodes, route, frustums, grid, selected;
+let run, root, cloud, route, frustums, grid, selected;
 let center, radius = 1, fullCenter, fullRadius = 1, direction;
-let currentIndex = 0, playing = false, lastStep = 0, previousTime = 0, mode = 'hologram';
+let currentIndex = 0, playing = false, lastStep = 0, previousTime = 0, mode = 'objects';
 let navigating = false, dragging = false, busy = false, revision = null;
 const keys = new Set();
 const renderer = new THREE.WebGLRenderer({antialias: true});
@@ -20,6 +21,12 @@ scene.add(new THREE.HemisphereLight(0xe8f5ff, 0x68756c, 2.2));
 const light = new THREE.DirectionalLight(0xffffff, 2);
 light.position.set(3, 5, 6);
 scene.add(light);
+const objectLayer = new PlanarObjects(renderer, camera, controls, (frame, showCamera) => {
+  if (!run) return;
+  const index = run.cameras.findIndex((c) => c.frame_id === frame);
+  if (index >= 0) selectFrame(index);
+  if (showCamera) { stopExplore(); cameraView(); }
+}, stopExplore);
 
 function line(points, color, opacity = 1) {
   return new THREE.Line(new THREE.BufferGeometry().setFromPoints(points),
@@ -46,8 +53,8 @@ function dispose() {
   if (!root) return;
   root.traverse((object) => {
     object.geometry?.dispose();
-    if (Array.isArray(object.material)) object.material.forEach((m) => m.dispose());
-    else object.material?.dispose();
+    const materials = Array.isArray(object.material) ? object.material : [object.material];
+    materials.filter(Boolean).forEach((m) => { m.map?.dispose(); m.dispose(); });
   });
   scene.remove(root);
 }
@@ -69,16 +76,16 @@ function showCloud() {
 function setMode(next) {
   mode = next;
   if (!run) return;
-  cloud.visible = next === 'points' || !surfaceMesh;
-  if (surfaceMesh) surfaceMesh.visible = next === 'reality' || next === 'spatial';
-  if (wire) wire.visible = next === 'hologram';
-  if (graph) graph.visible = next === 'hologram' || next === 'spatial';
-  if (nodes) nodes.visible = next === 'hologram';
-  if (voxels) voxels.visible = next === 'spatial';
+  cloud.material.transparent = next !== 'points';
+  cloud.material.opacity = next !== 'points' && objectLayer.objects.length ? (next === 'hologram' ? .10 : .22) : 1;
+  cloud.material.vertexColors = next !== 'hologram';
+  cloud.material.color.set(next === 'hologram' ? 0x92f8fa : 0xffffff);
+  cloud.material.needsUpdate = true;
+  objectLayer.style(next);
   document.querySelectorAll('[data-mode]').forEach((b) => b.setAttribute('aria-selected', String(b.dataset.mode === next)));
-  $('mode-detail').textContent = {hologram: '대표점·인접선·면의 홀로그램 표현', reality: '관측점 색상의 추정 표면 · 사진 텍스처 미적용',
-    spatial: '관측된 공간 셀 · 빈 셀은 unknown', points: '원본 SfM 점군 · 필터는 이 모드에만 적용'}[next];
-  $('kind').textContent = surfaceMesh ? {hologram: 'HOLOGRAM · 3D STRUCTURE', reality: '관측 색상 표면', spatial: '관측 셀 공간', points: '원본 3D 점군'}[next] : '점군 · 표면 대기';
+  $('mode-detail').textContent = {objects: '특징점이 지지하는 평면 객체 · 실제 영상 표면',
+    hologram: '검출된 평면의 발광 면·격자·경계와 원본 점군', points: '원본 SfM 점군 · 점 표시 필터 적용'}[next];
+  $('kind').textContent = {objects: 'PLANAR OBJECTS', hologram: 'HOLOGRAM · PLANAR OBJECTS', points: '원본 3D 점군'}[next];
 }
 function selectFrame(index) {
   currentIndex = Math.max(0, Math.min(index, run.cameras.length - 1));
@@ -88,6 +95,7 @@ function selectFrame(index) {
   $('frame-name').textContent = c.frame_id;
   $('timestamp').textContent = `${timeOf(c).toFixed(1)}s${c.source_pts_s == null ? ' · 수신 기준' : ''}`;
   selected.position.fromArray(c.position);
+  objectLayer.drawEvidence(currentIndex);
 }
 function stopExplore() {
   if (navigating) controls.target.copy(camera.position).add(camera.getWorldDirection(new THREE.Vector3()).multiplyScalar(radius));
@@ -122,7 +130,7 @@ function cameraView() {
   controls.update();
 }
 function applyRun(value) {
-  if (!['phone-sfm-result/1.0', 'phone-sfm-result/1.1'].includes(value.schema_version) || !value.points?.length || !value.cameras?.length)
+  if (!['phone-sfm-result/1.0', 'phone-sfm-result/1.1', 'phone-sfm-result/1.2'].includes(value.schema_version) || !value.points?.length || !value.cameras?.length)
     throw new Error('지원하는 지도와 카메라 경로가 없습니다.');
   const preserve = run && run.segment_id === value.segment_id;
   const frame = run?.cameras[currentIndex]?.frame_id;
@@ -164,32 +172,12 @@ function applyRun(value) {
   grid = new THREE.GridHelper(gridSize, run.scale.unit === 'm' ? Math.min(gridSize * 2, 200) : 20, 0x34504e, 0x243b3f);
   grid.position.set(center.x, bounds.min.y - radius * .025, center.z);
   root.add(grid);
-  surfaceMesh = wire = graph = voxels = nodes = null;
-  const s = run.surface;
-  if (s?.triangles?.length) {
-    const g = geometry(s.positions, s.colors);
-    g.setIndex(s.triangles.flat());
-    g.computeVertexNormals();
-    surfaceMesh = new THREE.Mesh(g, new THREE.MeshStandardMaterial({vertexColors: true, roughness: .82, metalness: .02, side: THREE.DoubleSide}));
-    wire = new THREE.LineSegments(new THREE.WireframeGeometry(g), new THREE.LineBasicMaterial({color: 0x63e6f4,
-      transparent: true, opacity: .5, blending: THREE.AdditiveBlending, depthWrite: false}));
-    graph = new THREE.LineSegments(geometry(s.edges.flatMap(([a, b]) => [s.positions[a], s.positions[b]])),
-      new THREE.LineBasicMaterial({color: 0x51c7de, transparent: true, opacity: .18, depthWrite: false}));
-    nodes = new THREE.Points(geometry(s.positions), new THREE.PointsMaterial({color: 0x92f8fa, size: 2, sizeAttenuation: false}));
-    voxels = new THREE.InstancedMesh(new THREE.BoxGeometry(s.voxel_size, s.voxel_size, s.voxel_size),
-      new THREE.MeshBasicMaterial({color: 0x86d9bf, wireframe: true, transparent: true, opacity: .15}), s.cells.length);
-    const transform = new THREE.Matrix4();
-    s.cells.forEach((cell, i) => { transform.makeTranslation(...cell.map((n) => (n + .5) * s.voxel_size)); voxels.setMatrixAt(i, transform); });
-    root.add(surfaceMesh, wire, graph, nodes, voxels);
-    $('surface-summary').textContent = `${number(s.statistics.nodes)} 대표점 → ${number(s.statistics.triangles)}개 면`;
-    const cell = s.unit === 'm' ? `${(s.voxel_size * 100).toFixed(1)}cm` : `${s.voxel_size.toPrecision(2)} 임의 단위`;
-    $('surface-detail').textContent = `셀 ${cell} · 연결선 ${number(s.statistics.edges)}개 · 구조화 ${(s.statistics.processing_seconds * 1000).toFixed(0)}ms`;
-  } else {
-    $('surface-summary').textContent = '표면 생성에 충분한 관측점 대기';
-    $('surface-detail').textContent = '빈 공간을 임의의 면으로 채우지 않습니다.';
-  }
-  document.querySelectorAll('[data-mode]').forEach((b) => { b.disabled = b.dataset.mode !== 'points' && !surfaceMesh; });
-  setMode(surfaceMesh ? mode : 'points');
+  root.add(objectLayer.apply(run.planar_objects, run));
+  document.querySelectorAll('[data-mode]').forEach((b) => {
+    b.disabled = b.dataset.mode === 'objects' && !run.planar_objects;
+  });
+  if (mode === 'objects' && !run.planar_objects) mode = 'points';
+  setMode(mode);
   const quality = run.quality;
   $('run-name').textContent = `${run.input_run_id} · ${timeOf(run.cameras[0]).toFixed(1)}–${timeOf(run.cameras.at(-1)).toFixed(1)}초 · ${run.stream ? '온라인 지도' : '저장된 지도'}`;
   $('run-date').textContent = new Date(run.created_utc).toLocaleDateString('ko-KR');
@@ -198,19 +186,28 @@ function applyRun(value) {
   $('reprojection').textContent = `${quality.mean_reprojection_error_px.toFixed(2)} px`;
   $('elapsed').textContent = `${quality.processing_seconds.toFixed(1)} s`;
   $('scale-badge').textContent = run.scale.unit === 'm' ? '44cm 기준 · m' : '임의 단위 · 크기 미보정';
-  $('scale-note').textContent = run.scale.unit === 'm' ? '44cm 기준 스케일을 모든 점·표면·경로에 동일 적용했습니다. 독립 치수 정확도와 중력 방향은 미검증입니다.' :
-    '단안 영상의 임의 단위입니다. 셀 크기를 cm·m로 해석할 수 없습니다. 실제 거리 센서나 실측 기준으로 스케일을 검증해야 합니다.';
+  $('scale-note').textContent = run.scale.unit === 'm' ? '44cm 기준 스케일을 모든 점·객체·경로에 동일 적용했습니다. 독립 치수 정확도와 중력 방향은 미검증입니다.' :
+    '단안 영상의 임의 단위입니다. 좌표와 객체 크기를 cm·m로 해석할 수 없습니다. 실제 거리 센서나 실측 기준으로 스케일을 검증해야 합니다.';
   $('timeline').max = run.cameras.length - 1;
   const previousIndex = run.cameras.findIndex((c) => c.frame_id === frame);
-  selectFrame(previousIndex >= 0 ? previousIndex : Math.floor(run.cameras.length / 2));
+  const objectIndex = run.cameras.findIndex((c) => c.frame_id === objectLayer.current()?.source_frame_id);
+  selectFrame(previousIndex >= 0 ? previousIndex : objectIndex >= 0 ? objectIndex : Math.floor(run.cameras.length / 2));
   route.visible = selected.visible = $('show-path').checked;
   frustums.visible = $('show-cameras').checked;
   grid.visible = $('show-grid').checked;
-  if (!preserve) setView('perspective');
+  if (!preserve) {
+    if (mode !== 'points' && objectLayer.objects.length) objectLayer.focusAll();
+    else setView('perspective');
+  }
   $('download').href = run.stream ? '/api/run' : '/api/points.ply';
   document.querySelectorAll('footer a').forEach((a) => { a.hidden = Boolean(run.stream); });
 }
 function showState(state) {
+  const incremental = state.objects?.update_mode === 'incremental_keyframe';
+  $('incremental-state').hidden = !incremental && !state.frame_tracking;
+  $('incremental-state').textContent = incremental ?
+    `증분 공간 지도 · 새 면 ${state.objects.new_objects || 0}개 · 유지 ${state.objects.retained_objects || 0}개 · 기존 면 관측 ${state.objects.reused_boundaries || 0}회 재사용 · 깊이 확인 대기 ${state.objects.pending_frames || 0}시점` :
+    state.frame_tracking ? `프레임별 특징점 추적 중 · ${state.frame_tracking.tracked_features}점 이어받음 · 충분한 시차와 카메라 위치를 기다립니다.` : '';
   const mapAge = state.last_map_timestamp_s == null ? '' : ` · 지도 시각 ${state.last_map_timestamp_s.toFixed(1)}s`;
   const names = {starting: '연결 준비', receiving: '영상 수신', mapping: '지도 갱신', complete: '영상 종료 · 최종 지도', failed: '초기화/입력 실패', stopped_or_disconnected: '수신 중단'};
   $('stream-state').textContent = state.status === 'offline' ? '저장된 지도 · 실시간 수신 아님' :
@@ -303,8 +300,8 @@ function animate(time) {
     if (keys.has('q')) move.y -= 1;
     camera.position.addScaledVector(move.normalize(), (run.scale.unit === 'm' ? 1 : radius * .4) * dt);
   } else controls.update();
-  if (wire?.visible) wire.material.opacity = .42 + Math.sin(time * .0015) * .08;
   if (navigating) $('explorer-position').textContent = `탐색 위치 ${camera.position.toArray().map((n) => n.toFixed(2)).join(' / ')} ${run.scale.unit === 'm' ? 'm' : '(임의 단위)'}`;
+  objectLayer.render(time);
   renderer.render(scene, camera);
 }
 requestAnimationFrame(animate);
