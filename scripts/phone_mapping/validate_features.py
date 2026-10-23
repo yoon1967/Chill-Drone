@@ -6,7 +6,6 @@ from collections import Counter, defaultdict
 import argparse
 from contextlib import closing
 import csv
-import hashlib
 import json
 from pathlib import Path
 import sqlite3
@@ -14,6 +13,7 @@ import sqlite3
 import numpy as np
 import pycolmap
 from path_options import writable_output
+from feature_input import digest, load_feature_input, native_database_copy
 
 
 ROOT = Path(__file__).resolve().parents[2]
@@ -26,47 +26,55 @@ def check(condition: bool, message: str) -> None:
         raise ValueError(message)
 
 
-def main() -> None:
-    global INPUT, OUTPUT
-    parser = argparse.ArgumentParser()
-    parser.add_argument("--input-dir", type=Path, default=INPUT)
-    parser.add_argument("--features-dir", type=Path, default=OUTPUT)
-    parser.add_argument("--report", type=Path, help="Save report separately; use a writable DB copy for validation")
-    args = parser.parse_args()
-    INPUT, OUTPUT = args.input_dir.resolve(), args.features_dir.resolve()
+def validate_features(input_dir=INPUT, features_dir=OUTPUT, report_path=None):
+    source = load_feature_input(input_dir)
+    OUTPUT = Path(features_dir).resolve()
     validation_path = OUTPUT / "validation_report.json"
-    if args.report:
-        validation_path = writable_output(args.report)
+    if report_path:
+        validation_path = writable_output(Path(report_path))
     else:
         writable_output(OUTPUT)
     validation_path.parent.mkdir(parents=True, exist_ok=True)
     validation_path.unlink(missing_ok=True)
     report = json.loads((OUTPUT / "quality_report.json").read_text(encoding="utf-8"))
-    manifest = json.loads((INPUT / "manifest.json").read_text(encoding="utf-8"))
-    selected = {f["frameId"]: f for f in manifest["frames"] if f["selectedForFirstTest"]}
+    selected = {f["frameId"]: f for f in source["selected"]}
     metadata = json.loads((OUTPUT / "feature_metadata.json").read_text(encoding="utf-8"))
     frames_export = json.loads((OUTPUT / "frames_manifest.json").read_text(encoding="utf-8"))
     check(metadata["pycolmap_version"] == pycolmap.__version__ == "4.2.1", "Producer / reader version differs")
+    check(metadata["input_run_id"] == frames_export["input_run_id"] == source["run_id"], "Input run IDs differ")
+    if source["schema"] == "phone-video-input/1.0":
+        check(metadata["input_manifest_sha256"] == source["manifest_sha256"], "Input manifest hash differs")
     check(frames_export["frames"] == report["frames"], "Frame exports disagree")
     check(set(selected) == {f["frame_id"] for f in report["frames"]}, "Selected/report frame mismatch")
     times = [f["source_pts_s"] for f in report["frames"]]
     check(all(a < b for a, b in zip(times, times[1:])), "PTS not strictly ordered")
     for name, frame in selected.items():
-        actual = hashlib.sha256((INPUT / "frames_first_test" / name).read_bytes()).hexdigest()
+        actual = digest(source["image_dir"] / name)
         check(actual == frame["sha256"], f"Source changed: {name}")
 
     db_path = OUTPUT / "database.db"
-    with closing(sqlite3.connect(db_path.as_uri() + "?mode=ro", uri=True)) as connection:
+    database_hash = digest(db_path)
+    if "database_sha256" in metadata:
+        check(database_hash == metadata["database_sha256"], "Producer database checksum differs")
+    check(not Path(str(db_path) + "-wal").exists(), "Database still depends on WAL")
+    with closing(sqlite3.connect(db_path.as_uri() + "?mode=ro&immutable=1", uri=True)) as connection:
         check(connection.execute("PRAGMA integrity_check").fetchone()[0] == "ok", "SQLite integrity failure")
         check(not connection.execute("PRAGMA foreign_key_check").fetchall(), "Foreign key failure")
     raw_counts, verified_counts = Counter(), Counter()
     inlier_edges = set()
     row_count = 0
-    with pycolmap.Database.open(db_path) as db:
+    with native_database_copy(db_path, validation_path.parent) as copy, pycolmap.Database.open(copy) as db:
         images = {image.name: image for image in db.read_all_images()}
         check(set(images) == set(selected), "DB/source frame names differ")
         points = {name: db.read_keypoints(image.image_id) for name, image in images.items()}
+        cameras = {camera.camera_id: camera for camera in db.read_all_cameras()}
+        frame_reports = {f["frame_id"]: f for f in report["frames"]}
         for name, image in images.items():
+            frame = selected[name]
+            camera = cameras[image.camera_id]
+            check((camera.width, camera.height) == (frame["width"], frame["height"]), "Camera/processed image dimensions differ")
+            check(frame_reports[name]["keypoints"] == len(points[name]), "Per-image feature count differs")
+            check((frame_reports[name]["width"], frame_reports[name]["height"]) == (frame["width"], frame["height"]), "Reported frame dimensions differ")
             descriptions = db.read_descriptors(image.image_id).data
             check(descriptions.shape == (len(points[name]), 128), f"Descriptor count/dimension mismatch: {name}")
             check(descriptions.dtype == np.uint8, "SIFT descriptor storage type mismatch")
@@ -78,11 +86,11 @@ def main() -> None:
                 keys.add((name, index))
                 check(0 <= index < len(points[name]), "CSV feature index outside DB")
                 x, y = float(row["x_px"]), float(row["y_px"])
-                check(np.isfinite([x, y]).all() and 0 <= x < 1920 and 0 <= y < 1080, "Invalid CSV coordinates")
+                check(np.isfinite([x, y]).all() and 0 <= x < selected[name]["width"] and 0 <= y < selected[name]["height"], "Invalid CSV coordinates")
                 check(np.allclose([x, y], points[name][index, :2], atol=1e-6, rtol=0), "CSV/DB coordinates differ")
                 check(int(row["image_id"]) == images[name].image_id, "CSV/DB image IDs differ")
                 check(float(row["source_pts_s"]) == selected[name]["sourcePtsSeconds"], "CSV/source PTS differs")
-                check(row["run_id"] == manifest["runId"], "Input run_id differs")
+                check(row["run_id"] == source["run_id"], "Input run_id differs")
         check(len(keys) == sum(map(len, points.values())) == report["summary"]["keypoints"], "Keypoint totals differ")
         raw_csv, verified_csv = defaultdict(set), defaultdict(set)
         with (OUTPUT / "matches.csv").open(newline="", encoding="utf-8") as file:
@@ -114,7 +122,13 @@ def main() -> None:
     check(sum(verified_counts.values()) == report["summary"]["geometric_inlier_correspondences"], "Inlier total differs")
     expected_pairs = {tuple(line.split()) for line in (OUTPUT / "pairs.txt").read_text().splitlines()}
     actual_pairs = {(p["frame_id_a"], p["frame_id_b"]) for p in report["pairs"]}
-    check(expected_pairs == actual_pairs and len(actual_pairs) == 114, "Attempted pairs not all reported")
+    names = source["names"]
+    window = metadata["settings"]["pair_window_selected_frames"]
+    check(type(window) is int and window > 0, "Invalid pairing window")
+    planned_pairs = {(names[i], names[j]) for i in range(len(names))
+                     for j in range(i + 1, min(i + window + 1, len(names)))}
+    check(expected_pairs == actual_pairs == planned_pairs and len(report["pairs"]) == len(planned_pairs), "Attempted pairs not all reported")
+    check(set(raw_csv).issubset(planned_pairs), "CSV has an unplanned match pair")
 
     track_rows = defaultdict(list)
     used_observations = set()
@@ -144,21 +158,28 @@ def main() -> None:
         check(seen == nodes, "Candidate track not connected through verified pairs")
     check(len(track_rows) == report["summary"]["candidate_tracks"], "Track totals differ")
     check(len(used_observations) == report["summary"]["candidate_track_observations"], "Track observation totals differ")
-    # Package a standalone DB: do not depend on a separate SQLite WAL file.
-    with closing(sqlite3.connect(db_path)) as connection:
-        checkpoint = connection.execute("PRAGMA wal_checkpoint(TRUNCATE)").fetchone()
-        check(checkpoint[0] == 0, "Database WAL checkpoint was busy")
-        check(connection.execute("PRAGMA journal_mode=DELETE").fetchone()[0] == "delete", "Could not finalize standalone DB")
+    check(digest(db_path) == database_hash, "Producer database changed during validation")
     check(not Path(str(db_path) + "-wal").exists(), "Database still depends on WAL")
     validation = {"status": "passed", "producer_reader": pycolmap.__version__, "frames_checked": len(selected),
                   "keypoints_checked": len(keys), "matches_checked": row_count,
                   "geometric_inliers_checked": sum(verified_counts.values()), "candidate_tracks_checked": len(track_rows),
-                  "checks": ["source SHA256 / manifest / PTS", "SQLite integrity and native PyCOLMAP read", "standalone DB WAL checkpoint", "descriptor dimensions/type",
+                  "attempted_pairs_checked": len(planned_pairs), "database_sha256": database_hash,
+                  "checks": ["source SHA256 / manifest / PTS", "SQLite integrity and native PyCOLMAP read on a temporary copy", "standalone producer DB hash preserved", "descriptor dimensions/type",
                              "every CSV coordinate / feature ID against DB", "every CSV match / inlier against DB",
-                             "114 attempted pairs and adjacent previews", "track uniqueness / coordinates / connectivity"],
+                             "dynamic attempted pairs and adjacent previews", "track uniqueness / coordinates / connectivity"],
                   "not_validated": ["visual correctness of every correspondence", "3D reconstruction", "recipient environment"]}
     validation_path.write_text(json.dumps(validation, ensure_ascii=False, indent=2) + "\n", encoding="utf-8")
     print(json.dumps(validation, ensure_ascii=False, indent=2))
+    return validation
+
+
+def main():
+    parser = argparse.ArgumentParser(description=__doc__)
+    parser.add_argument("--input-dir", type=Path, default=INPUT)
+    parser.add_argument("--features-dir", type=Path, default=OUTPUT)
+    parser.add_argument("--report", type=Path, help="Write validation separately; producer DB is read through a copy")
+    args = parser.parse_args()
+    validate_features(args.input_dir, args.features_dir, args.report)
 
 
 if __name__ == "__main__":

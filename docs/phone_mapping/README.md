@@ -4,14 +4,17 @@
 
 | 문서 | 용도 |
 | --- | --- |
-| [팀원 실행·다음 작업 안내](team_guide.md) | Git 입력 확인 → 실제 Drive 자료 받기 → 프레임/DB 검사 → 3D 복원 담당의 다음 단계 |
+| [새 영상 단일 명령 실행](video_pipeline.md) | 영상 하나 → 프레임·특징점·희소 3D 복원, 상태·전체 시간·로그 확인 |
+| [팀원 실행·다음 작업 안내](team_guide.md) | 새 영상 실행과 결과 활용, 기존 31장 snapshot 재현 |
+| [검증 결과와 한계](validation_summary.md) | 실제 부분 복원·재실행/이동 검사·시간 이상치와 미검증 범위 |
 | [팀 공통 Drive 구조](../team/DRIVE_STRUCTURE.md) | 실제 공유 위치, 촬영/처리 회차, 이름 충돌 방지, Git·Drive 역할 |
 | [좌표 인계 계획과 실행 이력](coordinate_handoff_plan.md) | 기존 단계별 처리 결과와 미확인 사항 |
 | [확정 수치 입력](../../data/mapping/phone_video/2f1_20261021/README.md) | 회차·버전·원본 좌표 파일 |
 | [현재 입력 형식](../../contracts/mapping/PHONE_INPUT_SNAPSHOT_V1.md) | 좌표·점 ID·PTS·경로 해석 규칙 |
 
 팀원이 새로 시작할 때는 `team_guide.md`를 따른다. 아래는 기존 도구와 재처리 경로의 참고다.
-현재 특징 추출 도구는 첫 촬영 run에 맞춘 시험 도구이며 다른 촬영에 그대로 적용하는 범용 CLI는 아니다.
+새 영상 입력·범용 특징 추출 명령은 [지도 데이터 모듈 안내](../../modules/mapping/data/README.md)를 따른다.
+아래는 기존 첫 실험의 입력·수동 측정·인계 패키지를 재처리하는 절차다.
 
 ## 데이터 보관
 
@@ -49,7 +52,8 @@ Git 전용 입력 검사는 `python -B scripts/phone_mapping/shared_inputs.py`�
 아래는 기존 기본 경로를 사용하는 재처리 순서다. 임의 위치에서는 `full_features.py`에 `--input-dir/--output-dir`,
 `validate_features.py`에 `--input-dir/--features-dir/--report`, `annotate_measurements.py`에
 `--input-dir/--features-dir/--output-dir/--picks-file`을 지정한다. Git 입력 폴더를 출력 위치로 쓰지 않는다.
-재처리와 기존 검증기는 작업 사본에서 실행한다. 기본 전체 추출은 첫 회차 31장에 맞춰져 있다.
+재처리와 기존 검증기는 작업 사본에서 실행한다. 기본 경로는 첫 회차를 가리키며,
+다른 입력은 명시적 경로로 지정한다. 특징점 추출과 DB/CSV 검사는 가변 프레임 수/해상도를 지원한다.
 
 1. 입력 폴더의 `manifest.json`, `frames_first_test/`, `measurement_reference.png`와 수동 `manual_picks.json`을 준비한다. manifest의 프레임 목록과 SHA-256이 실제 파일과 일치해야 한다.
 2. 자동 특징점·매칭을 생성한다. 기존 DB가 있으면 덮어쓰지 않고 중단한다. 기존 DB에서 CSV만 다시 만들 때는 `--export-only`를 사용한다.
@@ -83,6 +87,6 @@ Git 전용 입력 검사는 `python -B scripts/phone_mapping/shared_inputs.py`�
 여러 프레임의 대응과 카메라 설정을 이용해 후속 SfM에서 카메라 자세와 3D 점을 추정한다.
 가로 0.44m는 복원 결과의 크기를 맞추는 기준이다.
 세로 1.36m의 바닥 C는 여러 시점에서 같은 실제 점인지 미확인이라 치수 검증에 사용할 수 없다.
-카메라의 실측 보정값과 실제 3D 복원 결과도 아직 없다.
+카메라의 실측 보정값은 없다. 이후 실제 희소 3D 복원 실행 기록은 [검증 요약](validation_summary.md)에 따로 남긴다.
 
 로컬 전달물의 체크섬/읽기 검사는 통과했지만 수신자 환경의 복원 성공을 뜻하지 않는다.

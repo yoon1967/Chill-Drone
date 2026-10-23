@@ -126,7 +126,7 @@ def main() -> None:
             if path.name.endswith(("-wal", "-shm")) or "__pycache__" in path.parts:
                 raise RuntimeError(f"Unexpected temporary file in source: {path}")
             payload["output/phone_mapping/2f1_20261021_features_v1/" + path.relative_to(FEATURES).as_posix()] = path
-    for name in ("full_features.py", "annotate_measurements.py", "validate_features.py", "requirements-features.txt", "package_handoff.py", "path_options.py"):
+    for name in ("full_features.py", "annotate_measurements.py", "validate_features.py", "requirements-features.txt", "package_handoff.py", "path_options.py", "feature_input.py"):
         payload["provenance/" + name] = ROOT / "scripts/phone_mapping" / name
     payload["scripts/check_handoff.py"] = ROOT / "scripts/phone_mapping/check_handoff.py"
     payload["requirements.txt"] = ROOT / "scripts/phone_mapping/requirements-features.txt"
