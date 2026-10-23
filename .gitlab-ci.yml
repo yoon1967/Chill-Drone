@@ -5,10 +5,17 @@ workflow:
       when: never
     - if: '$CI_COMMIT_BRANCH'
 
-stages: [verify, build, deploy]
+stages: [verify, mirror, build, deploy]
+
+include:
+  - local: .gitlab/ci/github-mirror.yml
 
 verify:
   stage: verify
+  rules:
+    - if: '$GITHUB_MIRROR_ONLY == "true" && $CI_COMMIT_REF_PROTECTED == "true" && $CI_COMMIT_BRANCH == "develop" && $CI_PIPELINE_SOURCE =~ /^(web|schedule)$/'
+      when: never
+    - when: on_success
   tags: [ec2-verify]
   image: python:3.13-alpine@sha256:2d9aefe2fef018a7eb2c13064c89c71929800fd2e5dccdbf52ea5da5bb8d929a
   interruptible: true
@@ -22,6 +29,8 @@ build-status:
   stage: build
   tags: [ec2-deploy]
   rules:
+    - if: '$GITHUB_MIRROR_ONLY == "true" && $CI_COMMIT_REF_PROTECTED == "true" && $CI_COMMIT_BRANCH == "develop" && $CI_PIPELINE_SOURCE =~ /^(web|schedule)$/'
+      when: never
     - if: '$CI_COMMIT_REF_PROTECTED == "true" && $CI_COMMIT_BRANCH == "develop"'
     - if: '$CI_COMMIT_REF_PROTECTED == "true" && $CI_COMMIT_BRANCH =~ /^infra\// && $CI_PIPELINE_SOURCE == "web"'
   script:
@@ -33,6 +42,8 @@ deploy-staging:
   resource_group: ec2-staging
   interruptible: false
   rules:
+    - if: '$GITHUB_MIRROR_ONLY == "true" && $CI_COMMIT_REF_PROTECTED == "true" && $CI_COMMIT_BRANCH == "develop" && $CI_PIPELINE_SOURCE =~ /^(web|schedule)$/'
+      when: never
     - if: '$CI_COMMIT_REF_PROTECTED == "true" && $CI_COMMIT_BRANCH == "develop"'
     - if: '$CI_COMMIT_REF_PROTECTED == "true" && $CI_COMMIT_BRANCH =~ /^infra\// && $CI_PIPELINE_SOURCE == "web"'
       when: manual
@@ -48,6 +59,8 @@ rollback-staging:
   tags: [ec2-deploy]
   resource_group: ec2-staging
   rules:
+    - if: '$GITHUB_MIRROR_ONLY == "true" && $CI_COMMIT_REF_PROTECTED == "true" && $CI_COMMIT_BRANCH == "develop" && $CI_PIPELINE_SOURCE =~ /^(web|schedule)$/'
+      when: never
     - if: '$CI_COMMIT_REF_PROTECTED == "true" && $CI_COMMIT_BRANCH == "develop"'
       when: manual
       allow_failure: true
