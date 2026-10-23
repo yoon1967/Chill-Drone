@@ -9,16 +9,51 @@ import json
 import mimetypes
 from pathlib import Path
 import re
+import sys
+import threading
 from urllib.parse import parse_qs, unquote, urlsplit
 
 APP = Path(__file__).resolve().parent
 
 
+class Timeline:
+    def __init__(self):
+        self.cache = {}
+        self.lock = threading.Lock()
+
+    def read(self, session, state):
+        if not session:
+            return {"schema_version": "orb-map-timeline/1.0", "entries": []}
+        path = session / "timeline.json"
+        if path.is_file():
+            return json.loads(path.read_text(encoding="utf-8"))
+        # Old ORB sessions already contain real map revisions, but no timeline index.
+        key = (str(session), state.get("revision"))
+        with self.lock:
+            if key not in self.cache:
+                entries = []
+                for item in sorted((session / "revisions").glob("[0-9][0-9][0-9][0-9][0-9][0-9]/scene.json")):
+                    scene = json.loads(item.read_text(encoding="utf-8"))
+                    if not scene.get("slam"):
+                        continue
+                    slam = scene["slam"]
+                    entries.append({"revision": scene["revision"], "map_id": scene["segment_id"],
+                        "timestamp_s": slam.get("timestamp_s", max(c["timestamp_s"] for c in scene["cameras"])),
+                        "timestamp_basis": slam.get("timestamp_basis", "latest_surviving_keyframe_estimate"),
+                        "points3D": len(scene["points"]), "keyframes": len(scene["cameras"]), "final": slam["final"]})
+                self.cache = {key: {"schema_version": "orb-map-timeline/1.0", "session_id": session.name, "entries": entries}}
+            return self.cache[key]
+
+
 class ViewerHandler(BaseHTTPRequestHandler):
-    def __init__(self, *args, result=None, session=None, objects=None, **kwargs):
+    def __init__(self, *args, result=None, session=None, objects=None, live=None, timeline=None, demo=None, **kwargs):
         self.result = Path(result).resolve() if result else None
         self.session = Path(session).resolve() if session else None
         self.objects = Path(objects).resolve() if objects else None
+        self.live, self.timeline, self.demo = live, timeline, demo
+        self.saved_session = self.session
+        if live and live.current:
+            self.session = live.current.path
         super().__init__(*args, **kwargs)
 
     def json_response(self, value, status=200):
@@ -45,6 +80,89 @@ class ViewerHandler(BaseHTTPRequestHandler):
             return None, state
         return result, state
 
+    def do_POST(self):
+        # A custom header plus exact Origin/Host checks prevent cross-site camera starts.
+        host = self.headers.get("Host", "")
+        origin = self.headers.get("Origin")
+        if (host not in {f"127.0.0.1:{self.server.server_port}", f"localhost:{self.server.server_port}"}
+                or origin not in {None, "http://" + host} or self.headers.get("X-Mapping-Client") != "1"):
+            self.send_error(403)
+            return
+        if not self.live:
+            self.json_response({"error": "camera_input_disabled"}, 403)
+            return
+        try:
+            length = int(self.headers.get("Content-Length", "0"))
+            if not 0 < length <= 2097152:
+                self.json_response({"error": "body_size_out_of_range"}, 413)
+                return
+            self.connection.settimeout(10)
+            data = self.rfile.read(length)
+            if len(data) != length:
+                raise ValueError("incomplete_body")
+            url = urlsplit(self.path)
+            if url.path == "/api/live/start":
+                self.json_response(self.live.start(json.loads(data)), 201)
+            elif url.path == "/api/live/frame":
+                query = parse_qs(url.query)
+                session = self.live.require(query.get("session", [""])[0])
+                self.json_response(session.offer(data, float(self.headers["X-Frame-Timestamp"]), int(self.headers["X-Frame-Sequence"])), 202)
+            elif url.path == "/api/live/stop":
+                self.live.require(json.loads(data)["session_id"]).stop()
+                self.json_response({"status": "stopping"}, 202)
+            else:
+                self.send_error(404)
+        except (ValueError, KeyError, TypeError) as error:
+            self.json_response({"error": str(error)}, 400)
+        except RuntimeError as error:
+            self.json_response({"error": str(error)}, 409)
+        except Exception as error:
+            self.json_response({"error": "camera_backend_unavailable", "detail": str(error)}, 503)
+
+    def log_message(self, format, *args):
+        # Frame/status polling is operational traffic; avoid an unbounded terminal log.
+        if args and re.search(r"/api/(?:state|run|timeline|live/frame|slam-preview|frame/)", str(args[0])):
+            return
+        super().log_message(format, *args)
+
+    def source_video(self):
+        if not self.demo or not self.demo.is_file():
+            self.send_error(404)
+            return
+        size = self.demo.stat().st_size
+        start, end = 0, size - 1
+        range_header = self.headers.get("Range")
+        if range_header:
+            match = re.fullmatch(r"bytes=(\d+)-(\d*)", range_header)
+            if not match:
+                self.send_error(416)
+                return
+            start = int(match[1])
+            end = min(int(match[2]) if match[2] else end, end)
+            if start > end:
+                self.send_error(416)
+                return
+        self.send_response(206 if range_header else 200)
+        self.send_header("Content-Type", "video/mp4")
+        self.send_header("Accept-Ranges", "bytes")
+        self.send_header("Content-Length", str(end - start + 1))
+        self.send_header("Cache-Control", "no-store")
+        if range_header:
+            self.send_header("Content-Range", f"bytes {start}-{end}/{size}")
+        self.end_headers()
+        with self.demo.open("rb") as video:
+            video.seek(start)
+            remaining = end - start + 1
+            while remaining:
+                chunk = video.read(min(remaining, 65536))
+                if not chunk:
+                    break
+                try:
+                    self.wfile.write(chunk)
+                except (BrokenPipeError, ConnectionResetError):
+                    break  # Browsers routinely cancel MP4 range requests while seeking.
+                remaining -= len(chunk)
+
     def object_collection(self, result, scene):
         collection = json.loads((self.objects / "objects.json").read_text(encoding="utf-8")) if self.objects else scene.get("planar_objects")
         if collection is not None:
@@ -68,13 +186,38 @@ class ViewerHandler(BaseHTTPRequestHandler):
             return
         url = urlsplit(self.path)
         path = unquote(url.path)
+        if path == "/api/source-video":
+            self.source_video()
+            return
+        if path == "/api/live":
+            camera = None
+            if self.demo and self.saved_session and (self.saved_session / "camera.json").is_file():
+                camera = json.loads((self.saved_session / "camera.json").read_text(encoding="utf-8"))
+            self.json_response({"enabled": self.live is not None, "demo_available": self.demo is not None,
+                "demo_camera": camera, "current": self.live.current.stats() if self.live and self.live.current else None})
+            return
         try:
-            result, state = self.snapshot()
+            requested = parse_qs(url.query).get("revision", [None])[0] if path == "/api/run" else None
+            requested_session = parse_qs(url.query).get("session", [None])[0]
+            if requested_session and (not self.session or requested_session != self.session.name):
+                self.json_response({"error": "session_changed"}, 409)
+                return
+            if requested and not re.fullmatch(r"\d{6}", requested):
+                self.send_error(404)
+                return
+            result, state = self.snapshot(requested)
         except (OSError, ValueError):
             self.json_response({"status": "unavailable"}, 503)
             return
         if path == "/api/state":
+            if state and self.session:
+                state["session_id"] = self.session.name
+            if self.live and self.live.current:
+                state.update(self.live.current.stats())
             self.json_response(state or {"status": "offline", "map_available": True, "revision": 0})
+            return
+        if path == "/api/timeline":
+            self.json_response(self.timeline.read(self.session, state or {}))
             return
         if path == "/api/run":
             if result is None or not (result / "status.json").is_file() or json.loads(
@@ -94,13 +237,15 @@ class ViewerHandler(BaseHTTPRequestHandler):
                 value["planar_objects"] = collection
             self.json_response(value)
             return
-        static = {"/": APP / "index.html", "/app.js": APP / "app.js", "/objects.js": APP / "objects.js", "/style.css": APP / "style.css",
+        static = {"/": APP / "index.html", "/app.js": APP / "app.js", "/objects.js": APP / "objects.js", "/capture.js": APP / "capture.js", "/style.css": APP / "style.css",
                   "/vendor/three.module.js": APP / "node_modules/three/build/three.module.js",
                   "/vendor/three.core.js": APP / "node_modules/three/build/three.core.js",
                   "/vendor/OrbitControls.js": APP / "node_modules/three/examples/jsm/controls/OrbitControls.js"}
         exports = {"/api/points.ply": "points.ply",
                    "/api/poses.json": "poses.json", "/api/trajectory.csv": "trajectory.csv"}
         target = static.get(path)
+        if path == "/api/slam-preview" and self.session:
+            target = self.session / "preview.jpg"
         if path in exports:
             if result is None or not (result / "status.json").is_file() or json.loads(
                     (result / "status.json").read_text(encoding="utf-8")).get("status") not in {"complete", "partial"}:
@@ -182,6 +327,9 @@ def main():
     source.add_argument("--session", type=Path)
     parser.add_argument("--objects", type=Path, help="Optional planar object bundle for an offline result")
     parser.add_argument("--port", type=int, default=8790)
+    parser.add_argument("--enable-camera", action="store_true", help="Enable local browser camera -> Docker ORB-SLAM3")
+    parser.add_argument("--live-root", type=Path, default=APP.parents[1] / "output/phone_mapping")
+    parser.add_argument("--demo-source", type=Path, help="One local MP4 explicitly exposed for streaming demonstration")
     args = parser.parse_args()
     result = args.result.resolve() if args.result else None
     if args.session and args.objects:
@@ -191,8 +339,16 @@ def main():
         parser.error("Select a complete or partial reconstruction result")
     if not (APP / "node_modules/three/build/three.module.js").is_file():
         parser.error("Install apps/console dependencies first: pnpm install --frozen-lockfile")
+    live = None
+    if args.enable_camera:
+        sys.path.insert(0, str(APP.parents[1]))
+        from modules.mapping.localization.orbslam3_live import LiveManager
+        live = LiveManager(args.live_root)
+    demo = args.demo_source.resolve() if args.demo_source else None
+    if demo and (not demo.is_file() or demo.suffix.lower() != ".mp4"):
+        parser.error("Demo source must be a local MP4")
     server = ThreadingHTTPServer(("127.0.0.1", args.port), partial(ViewerHandler, result=result,
-        session=args.session, objects=args.objects))
+        session=args.session, objects=args.objects, live=live, timeline=Timeline(), demo=demo))
     print(f"Phone mapping viewer: http://127.0.0.1:{args.port}/", flush=True)
     try:
         server.serve_forever()
@@ -200,6 +356,8 @@ def main():
         pass
     finally:
         server.server_close()
+        if live:
+            live.shutdown()
 
 
 if __name__ == "__main__":
