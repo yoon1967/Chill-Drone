@@ -54,3 +54,48 @@ python -m venv .venv
 [온라인 처리 안내](ONLINE.md)는 파일/RTSP/UDP/카메라 수신, 제한된 키프레임 SfM 갱신,
 voxel 대표점·연결선·삼각형 표면과 웹 탐색을 다룬다. 기존 오프라인 수신/보정 경로는 유지한다.
 실시간 위치 추적·루프 폐쇄가 필요한 드론 SLAM의 완료를 의미하지 않는다.
+
+## 새 영상 입력과 연결 (파일 파이프라인 4단계)
+
+2단계의 [영상 입력](../../../contracts/mapping/PHONE_VIDEO_INPUT_V1.md)과 3단계의
+[특징점 결과](../../../contracts/mapping/PHONE_FEATURE_RESULT_V1.md)를 받는 별도 실행 경로다.
+위의 기존 snapshot/44cm 보정 실행은 유지한다. 새 입력 경로에는 실측 파일이나 기존 실험의 제외 프레임을 적용하지 않는다.
+
+```powershell
+.\.venv\Scripts\python.exe -m pip install -r modules/mapping/localization/requirements.txt
+.\.venv\Scripts\python.exe -B modules/mapping/localization/reconstruct.py `
+  --input-dir output/phone_mapping/hallway_20261023_run01/input `
+  --features-dir output/phone_mapping/hallway_20261023_run01/features `
+  --output output/phone_mapping/hallway_20261023_run01/reconstruction
+```
+
+세 폴더는 서로 분리하고 출력은 존재하지 않는 새 경로를 사용한다. 새 입력 옵션 두 개는 함께 지정하며
+--run-dir/--assets-root와 혼용하지 않는다. Python에서는 reconstruct(output, input_dir=..., features_dir=...)를 호출한다.
+전체 이미지 해시·PTS·DB/CSV 참조·카메라 크기를 검사하고 입력 DB 사본으로만 CPU SfM을 실행한다.
+카메라 내부 보정은 3단계 초기값에서 추정하며, 원래 카메라의 교정 정확도를 보장하지 않는다.
+
+- scale.json: unit=arbitrary, reason=no_metric_reference. 좌표·경로에 같은 임의 좌표계를 사용한다.
+  m·cm, 실제 이동 속도, 절대 방향이나 실제 높이로 해석할 수 없다.
+- status.json: complete는 제외 후 제출한 모든 프레임이 선택 모델에 등록된 상태,
+  partial은 선택 모델이 있지만 미등록 제출 프레임이 있는 상태다. 빈 복원은 failed다.
+  complete도 정확한 지도나 치수 검증 완료를 뜻하지 않는다.
+- quality.json: 등록 수/비율, 미등록/명시적 제외 목록, 모델별 프레임·점 수와 선택 모델을 확인한다.
+  가장 많은 카메라(동률이면 가장 많은 점)의 모델을 선택한다. 다른 모델은 sparse/<model_id>/에 별도로 남기며 합치지 않는다.
+- points.ply / scene.json: 선택 모델의 희소 3D 점. poses.json / trajectory.csv: 같은 좌표계의 카메라 경로와 원본 PTS.
+- input_validation.json / provenance.json: 생산 입력 전체 대조, 입력/DB/메타데이터 해시, 회전·축소 변환 출처.
+- timing.json: 입력 검사·DB 복사/SfM·색상/내보내기 및 합계. 설치·영상 추출·특징점 생성·웹 표시와 마지막 timing 쓰기는 제외한다.
+  quality.processing_seconds는 기존 소비자 호환용으로 입력 검사 후 DB 복사부터 색상 추출까지의 값이다.
+- 뷰어는 complete/partial 결과를 열고 부분 복원·임의 단위를 표시한다. local_assets.json은 로컬 이미지 연결용이다.
+  프레임을 옮겼으면 images_root를 현재 경로로 바꿔야 하며, native 결과/좌표는 이 연결과 독립적이다.
+
+검사 (합성 3D 모델의 좌표/자세·기존 실측 경로·부분/실패·출력 보호·뷰어 HTTP):
+
+```powershell
+.\.venv\Scripts\python.exe -B -m unittest discover -s modules/mapping/localization/tests -v
+```
+
+2026-10-22 제작자 로컬 검사: 기존 2층 영상에서 다시 추출한 56장 중 선택 모델에 45장(80.4%),
+3D 점 6,508개가 등록됐다. 11장 미등록으로 partial이며 별도 작은 모델도 보존했다.
+이 수치는 4단계 당시 실측 없는 입력 연결 검사다. 이후 전체 단일 명령/PNG 종단 검증은
+[검증 요약](../../../docs/phone_mapping/validation_summary.md)을 따른다. 새 장소 영상은 아직 검사하지 않았다.
+재투영 오차는 입력 관측에 대한 일치 정도이며 실제 공간 정확도의 검증값이 아니다.

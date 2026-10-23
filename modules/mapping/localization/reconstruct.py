@@ -3,6 +3,7 @@ from __future__ import annotations
 
 import argparse
 import csv
+from contextlib import closing
 from datetime import datetime, timezone
 import json
 import platform
@@ -19,6 +20,9 @@ from scipy.optimize import least_squares
 ROOT = Path(__file__).resolve().parents[3]
 sys.path.insert(0, str(ROOT / "scripts/phone_mapping"))
 from shared_inputs import DEFAULT_RUN, check_file, load_run, read_json, require, sha256, validate
+from feature_input import load_feature_input
+from path_options import writable_output
+from validate_features import validate_features
 
 
 def write_json(path, value):
@@ -59,7 +63,7 @@ def locate_assets(run, assets_root):
 
 def check_database(database, run, frames):
     """Compare all supplied keypoint coordinates and pair indices with the native DB."""
-    with sqlite3.connect(database.as_uri() + "?mode=ro", uri=True) as db:
+    with closing(sqlite3.connect(database.as_uri() + "?mode=ro&immutable=1", uri=True)) as db:
         require(db.execute("PRAGMA integrity_check").fetchone()[0] == "ok", "Invalid SQLite input")
         images = dict(db.execute("SELECT image_id,name FROM images"))
         require(images == {f["image_id"]: f["frame_id"] for f in frames}, "DB/frame inventory differs")
@@ -137,6 +141,13 @@ def triangulate_anchor(model, observations):
 
 
 def scale_transform(model, run):
+    if run.get("input_mode") == "video_features":
+        return 1.0, np.eye(3), np.zeros(3), {
+            "status": "arbitrary", "unit": "arbitrary", "factor": 1.0,
+            "reason": "no_metric_reference", "independent_length_validation": "not_performed_no_reference",
+            "rotation": np.eye(3).tolist(), "translation": [0.0, 0.0, 0.0],
+            "formula": "display_xyz = factor * rotation @ sfm_xyz + translation",
+            "axes": "COLMAP arbitrary world axes"}
     anchors = read_json(run["paths"]["measurement_anchors"])
     with run["paths"]["measurement_observations"].open(newline="", encoding="utf-8") as stream:
         observations = list(csv.DictReader(stream))
@@ -215,15 +226,25 @@ def export_result(model, run, images_root, frames, output, elapsed, components, 
                "kind": "sparse_sfm", "dense_reconstruction": "not_performed",
                "absolute_pose_accuracy": "unknown_no_ground_truth",
                "bounds": {"min": xyz.min(axis=0).tolist(), "max": xyz.max(axis=0).tolist()}}
+    quality["submitted_registration_ratio"] = len(cameras) / quality["submitted_frames"]
+    quality["unregistered_submitted_frames"] = [name for name in quality["unregistered_frames"]
+                                                if name not in excluded_frames]
+    quality["result_status"] = "partial" if quality["unregistered_submitted_frames"] else "complete"
+    limitations = ["희소 SfM 복원: 보이지 않는 면과 무늬 없는 면은 비어 있습니다.",
+                   "카메라 보정값은 영상에서 추정했으며 실측 보정이 아닙니다."]
+    if run.get("input_mode") == "video_features":
+        limitations.append("실측 기준 없는 임의 단위입니다. 좌표와 이동 거리를 m·cm로 해석할 수 없습니다.")
+    else:
+        limitations.extend(["44cm 기준 스케일 보정은 scale.status를 확인해야 하며 독립 치수 정확도는 미검증입니다.",
+                            "바닥 C 동일점 미확인으로 136cm 높이 검증을 수행하지 않았습니다."])
+    if quality["result_status"] == "partial":
+        limitations.append("부분 복원입니다. 선택한 모델에 등록되지 않은 프레임이 있습니다. 다른 모델의 좌표는 합치지 않았습니다.")
     result = {"schema_version": "phone-sfm-result/1.0", "input_run_id": run["manifest"]["input_run_id"],
               "created_utc": datetime.now(timezone.utc).isoformat(), "pose_source": "sfm",
               "scale": scale, "quality": quality, "cameras": cameras,
               "point_fields": ["point_id", "x", "y", "z", "r", "g", "b", "error_px", "track_length"],
               "points": rows,
-              "limitations": ["희소 SfM 복원: 보이지 않는 면과 무늬 없는 면은 비어 있습니다.",
-                              "카메라 보정값은 영상에서 추정했으며 실측 보정이 아닙니다.",
-                              "44cm 기준으로 크기를 맞췄으며 독립 치수 정확도는 미검증입니다.",
-                              "바닥 C 동일점 미확인으로 136cm 높이 검증을 수행하지 않았습니다."]}
+              "limitations": limitations}
     write_json(output / "scene.json", result)
     write_json(output / "poses.json", {k: v for k, v in result.items() if k not in ("points", "point_fields")})
     write_json(output / "quality.json", quality)
@@ -240,7 +261,8 @@ def export_result(model, run, images_root, frames, output, elapsed, components, 
         writer.writerows([c["frame_id"], c["source_pts_s"], *c["position"], scale["unit"], "sfm"] for c in cameras)
     write_json(output / "local_assets.json", {"images_root": str(images_root), "frames": sorted(registered)})
     write_json(output / "provenance.json", {
-        "input_snapshot_sha256": sha256(run["root"] / "run_manifest.json"),
+        **(run["provenance"] if "provenance" in run else
+           {"input_snapshot_sha256": sha256(run["root"] / "run_manifest.json")}),
         "database_sha256": run["external"]["artifacts"]["database"]["sha256"],
         "pycolmap": pycolmap.__version__, "numpy": np.__version__, "python": platform.python_version(),
         "platform": platform.platform(), "script_sha256": sha256(Path(__file__)),
@@ -248,46 +270,88 @@ def export_result(model, run, images_root, frames, output, elapsed, components, 
         "outputs": {name: sha256(output / name) for name in
                     ["scene.json", "poses.json", "points.ply", "trajectory.csv", "quality.json", "scale.json"]}})
     print(json.dumps({"output": str(output), "quality": quality, "scale_status": scale["status"]}, ensure_ascii=False))
+    return result
 
 
-def main():
-    parser = argparse.ArgumentParser(description=__doc__)
-    parser.add_argument("--run-dir", type=Path, default=DEFAULT_RUN)
-    parser.add_argument("--assets-root", type=Path, default=ROOT / "data/real_data")
-    parser.add_argument("--output", type=Path, required=True, help="New, private result directory (never overwritten)")
-    parser.add_argument("--threads", type=int, default=4)
-    parser.add_argument("--exclude-frame", action="append", default=[],
-                        help="Explicitly omit a failed input frame; repeat as needed, original input is preserved")
-    args = parser.parse_args()
+def prepare_video_features(input_dir, features_dir, report_path):
+    """Verify the complete producer handoff without modifying its DB or reports."""
+    source = load_feature_input(input_dir)
+    require(source["schema"] == "phone-video-input/1.0", "Use a stage-2 video input with --input-dir")
+    features = Path(features_dir).resolve()
+    require(read_json(features / "status.json")["status"] == "features_ready", "Features are not ready")
+    metadata = read_json(features / "feature_metadata.json")
+    require(metadata.get("schema_version") == "phone-feature-result/1.0", "Unsupported feature result schema")
+    require(metadata.get("input_manifest_sha256") == source["manifest_sha256"], "Input manifest hash differs")
+    database = features / "database.db"
+    require(sha256(database) == metadata.get("database_sha256"), "Producer database checksum differs")
+    verification = validate_features(input_dir, features, report_path=report_path)
+    frames = read_json(features / "frames_manifest.json")["frames"]
+    run = {"input_mode": "video_features", "root": source["root"],
+           "manifest": {"input_run_id": source["run_id"]},
+           "external": {"artifacts": {"database": {"sha256": metadata["database_sha256"]}}},
+           "provenance": {"input_mode": "video_features", "input_manifest_sha256": source["manifest_sha256"],
+                          "feature_run_id": metadata["feature_run_id"],
+                          "feature_metadata_sha256": sha256(features / "feature_metadata.json"),
+                          "coordinate_space": metadata["coordinate_space"],
+                          "input_transforms": metadata["input_transforms"]}}
+    return run, database, source["image_dir"], frames, verification
+
+
+def reconstruct(output, *, input_dir=None, features_dir=None, run_dir=None, assets_root=None,
+                threads=4, exclude_frames=()):
+    """Return the selected model's scene; never overwrite outputs or source inputs."""
     require(pycolmap.__version__ == "4.2.1", "Use the pinned PyCOLMAP 4.2.1 environment")
-    require(args.threads > 0, "Thread count must be positive")
-    output = args.output.resolve()
+    require(threads > 0, "Thread count must be positive")
+    require((input_dir is None) == (features_dir is None), "Supply --input-dir and --features-dir together")
+    require(input_dir is None or (run_dir is None and assets_root is None), "Do not mix video and snapshot inputs")
+    output = writable_output(Path(output))
     require(not output.exists(), "Output exists; select a new run directory")
-    run = load_run(args.run_dir)
-    snapshot_check = validate(run)
-    database, images_root, frames = locate_assets(run, args.assets_root)
-    require(set(args.exclude_frame).issubset({f["frame_id"] for f in frames}), "Unknown excluded frame")
-    require(len(args.exclude_frame) == len(set(args.exclude_frame)), "Duplicate excluded frame")
-    require(not output.is_relative_to(args.assets_root.resolve()), "Output must be outside immutable source assets")
-    db_check = check_database(database, run, frames)
+    source_roots = [Path(p).resolve() for p in (input_dir, features_dir) if p is not None]
+    if input_dir is None:
+        run_dir = Path(run_dir or DEFAULT_RUN).resolve()
+        assets_root = Path(assets_root or ROOT / "data/real_data").resolve()
+        source_roots = [run_dir, assets_root]
+    require(all(not output.is_relative_to(root) and not root.is_relative_to(output) for root in source_roots),
+            "Output must be separate from immutable source inputs")
     output.mkdir(parents=True)
-    write_json(output / "status.json", {"status": "running"})
+    write_json(output / "status.json", {"status": "running", "stage": "input_validation"})
     started = time.perf_counter()
+    timings = {"input_validation_seconds": None, "mapping_seconds": None, "export_seconds": None}
     try:
+        if input_dir is not None:
+            run, database, images_root, frames, verification = prepare_video_features(
+                input_dir, features_dir, output / "input_validation.json")
+        else:
+            run = load_run(run_dir)
+            snapshot_check = validate(run)
+            database, images_root, frames = locate_assets(run, assets_root)
+            verification = {"snapshot": snapshot_check, "native_database": check_database(database, run, frames)}
+            run["provenance"] = {"input_mode": "snapshot",
+                                 "input_snapshot_sha256": sha256(run["root"] / "run_manifest.json")}
+        excluded = list(exclude_frames)
+        require(set(excluded).issubset({f["frame_id"] for f in frames}), "Unknown excluded frame")
+        require(len(excluded) == len(set(excluded)), "Duplicate excluded frame")
+        names = [f["frame_id"] for f in frames if f["frame_id"] not in excluded]
+        require(len(names) >= 3, "Submit at least three frames")
+        timings["input_validation_seconds"] = time.perf_counter() - started
+        write_json(output / "status.json", {"status": "running", "stage": "mapping"})
+        mapping_started = time.perf_counter()
         shutil.copy2(database, output / "database.db")
         options = pycolmap.IncrementalPipelineOptions()
-        options.num_threads = args.threads
+        options.num_threads = threads
         options.random_seed = 42
-        options.mapper.num_threads = args.threads
+        options.mapper.num_threads = threads
         options.mapper.random_seed = 42
         options.triangulation.random_seed = 42
         options.ba_use_gpu = False
-        options.image_names = [f["frame_id"] for f in frames if f["frame_id"] not in args.exclude_frame]
-        require(len(options.image_names) >= 3, "Submit at least three frames")
+        options.image_names = names
         write_json(output / "settings.json", options.todict())
         models = pycolmap.incremental_mapping(output / "database.db", images_root, output / "sparse", options)
         require(bool(models), "SfM produced no connected model; inspect the captured log and image overlap")
         selected_id, model = max(models.items(), key=lambda item: (item[1].num_reg_images(), item[1].num_points3D()))
+        timings["mapping_seconds"] = time.perf_counter() - mapping_started
+        write_json(output / "status.json", {"status": "running", "stage": "export"})
+        export_started = time.perf_counter()
         model.extract_colors_for_all_images(images_root)
         raw = output / "raw"
         raw.mkdir()
@@ -295,14 +359,46 @@ def main():
         model.write_text(raw)
         model.export_PLY(raw / "points.ply")
         components = [{"model_id": mid, "registered_images": m.num_reg_images(),
+                       "frames": sorted(im.name for im in m.images.values() if im.has_pose),
+                       "native_path": f"sparse/{mid}",
                        "points3D": m.num_points3D(), "selected": mid == selected_id} for mid, m in models.items()]
-        export_result(model, run, images_root, frames, output, time.perf_counter() - started,
-                      components, {"snapshot": snapshot_check, "native_database": db_check}, args.exclude_frame)
+        scene = export_result(model, run, images_root, frames, output,
+                              time.perf_counter() - mapping_started, components, verification, excluded)
         require(sha256(database) == run["external"]["artifacts"]["database"]["sha256"], "Source DB changed")
-        write_json(output / "status.json", {"status": "complete"})
-    except Exception as error:
-        write_json(output / "status.json", {"status": "failed", "reason": str(error)})
+        timings["export_seconds"] = time.perf_counter() - export_started
+        write_json(output / "status.json", {"status": scene["quality"]["result_status"], "stage": "finished",
+                   "registered_frames": len(scene["cameras"]), "submitted_frames": len(names)})
+        return scene
+    except BaseException as error:
+        stage = read_json(output / "status.json").get("stage")
+        write_json(output / "status.json", {"status": "failed", "stage": stage,
+                   "reason": str(error) or type(error).__name__})
         raise
+    finally:
+        timings["total_seconds"] = time.perf_counter() - started
+        timings["clock"] = "perf_counter"
+        timings["scope"] = "input validation, database copy, SfM and result export; excludes environment installation and viewer"
+        write_json(output / "timing.json", timings)
+
+
+def main():
+    parser = argparse.ArgumentParser(description=__doc__)
+    parser.add_argument("--run-dir", type=Path, help="Legacy Git snapshot (default: first experiment)")
+    parser.add_argument("--assets-root", type=Path, help="Legacy immutable assets (default: data/real_data)")
+    parser.add_argument("--input-dir", type=Path, help="Stage-2 video input directory")
+    parser.add_argument("--features-dir", type=Path, help="Stage-3 feature result directory")
+    parser.add_argument("--output", type=Path, required=True, help="New, private result directory (never overwritten)")
+    parser.add_argument("--threads", type=int, default=4)
+    parser.add_argument("--exclude-frame", action="append", default=[],
+                        help="Explicitly omit a failed input frame; repeat as needed, original input is preserved")
+    args = parser.parse_args()
+    if (args.input_dir is None) != (args.features_dir is None):
+        parser.error("Supply --input-dir and --features-dir together")
+    if args.input_dir is not None and (args.run_dir is not None or args.assets_root is not None):
+        parser.error("Do not mix video and snapshot inputs")
+    reconstruct(args.output, input_dir=args.input_dir, features_dir=args.features_dir,
+                run_dir=args.run_dir, assets_root=args.assets_root, threads=args.threads,
+                exclude_frames=args.exclude_frame)
 
 
 if __name__ == "__main__":

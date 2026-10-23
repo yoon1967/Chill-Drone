@@ -194,7 +194,7 @@ function applyRun(value) {
   $('run-name').textContent = `${run.input_run_id} · ${timeOf(run.cameras[0]).toFixed(1)}–${timeOf(run.cameras.at(-1)).toFixed(1)}초 · ${run.stream ? '온라인 지도' : '저장된 지도'}`;
   $('run-date').textContent = new Date(run.created_utc).toLocaleDateString('ko-KR');
   $('frames').textContent = `${quality.registered_frames} / ${quality.input_frames}`;
-  $('registration').textContent = `${Math.round(quality.registration_ratio * 100)}% 등록 · ${quality.excluded_frames.length}장 기하 제외`;
+  $('registration').textContent = `${Math.round(quality.registration_ratio * 100)}% 등록 · ${quality.excluded_frames.length}장 기하 제외${quality.result_status === 'partial' ? ' · 부분 복원' : ''}`;
   $('reprojection').textContent = `${quality.mean_reprojection_error_px.toFixed(2)} px`;
   $('elapsed').textContent = `${quality.processing_seconds.toFixed(1)} s`;
   $('scale-badge').textContent = run.scale.unit === 'm' ? '44cm 기준 · m' : '임의 단위 · 크기 미보정';

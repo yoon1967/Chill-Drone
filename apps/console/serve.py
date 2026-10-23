@@ -61,7 +61,7 @@ class ViewerHandler(BaseHTTPRequestHandler):
             return
         if path == "/api/run":
             if result is None or not (result / "status.json").is_file() or json.loads(
-                    (result / "status.json").read_text(encoding="utf-8")).get("status") != "complete":
+                    (result / "status.json").read_text(encoding="utf-8")).get("status") not in {"complete", "partial"}:
                 self.json_response(state or {"status": "incomplete"}, 503)
                 return
             value = json.loads((result / "scene.json").read_text(encoding="utf-8"))
@@ -85,7 +85,7 @@ class ViewerHandler(BaseHTTPRequestHandler):
         target = static.get(path)
         if path in exports:
             if result is None or not (result / "status.json").is_file() or json.loads(
-                    (result / "status.json").read_text(encoding="utf-8")).get("status") != "complete":
+                    (result / "status.json").read_text(encoding="utf-8")).get("status") not in {"complete", "partial"}:
                 self.send_error(503, "Result is incomplete")
                 return
             target = result / exports[path]
@@ -139,8 +139,8 @@ def main():
     args = parser.parse_args()
     result = args.result.resolve() if args.result else None
     if result and (not (result / "status.json").is_file() or json.loads(
-            (result / "status.json").read_text(encoding="utf-8")).get("status") != "complete"):
-        parser.error("Select a completed reconstruction result")
+            (result / "status.json").read_text(encoding="utf-8")).get("status") not in {"complete", "partial"}):
+        parser.error("Select a complete or partial reconstruction result")
     if not (APP / "node_modules/three/build/three.module.js").is_file():
         parser.error("Install apps/console dependencies first: pnpm install --frozen-lockfile")
     server = ThreadingHTTPServer(("127.0.0.1", args.port), partial(ViewerHandler, result=result,

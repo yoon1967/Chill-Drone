@@ -1,0 +1,4 @@
+-r requirements-video.txt
+-r ../../../scripts/phone_mapping/requirements-features.txt
+-r ../localization/requirements.txt
+-r requirements-preview.txt

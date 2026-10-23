@@ -18,8 +18,12 @@ pnpm --dir apps/console install --frozen-lockfile
 ```
 
 브라우저에서 `http://127.0.0.1:8790/`을 연다. 서버를 종료하려면 실행 터미널에서 Ctrl+C를 누른다.
-`--result`는 완료 상태의 결과 폴더, `--port` 기본값은 8790이다. 원본 프레임은 복원 당시 위치를 유지한다.
+`--result`는 complete 또는 partial 상태의 복원 결과 폴더, `--port` 기본값은 8790이다.
+단일 영상 실행 회차에서는 그 안의 reconstruction/을 지정한다. partial은 등록률 옆에 부분 복원으로 표시한다. 원본 프레임은 복원 당시 위치를 유지한다.
 자료를 옮겼다면 새 위치에서 복원하거나 로컬 전용 `local_assets.json`의 `images_root`를 갱신한다.
+원본 사진이 없어도 점군/경로는 열 수 있지만 촬영 키프레임 사진은 표시되지 않는다.
+PNG·전체 처리 시간은 [파일 실행 안내](../../docs/phone_mapping/video_pipeline.md)를 따른다.
+화면의 복원 소요 시간은 SfM·색상 구간이며 전체 영상→PNG 시간은 회차 루트 timing.json에서 확인한다.
 
 ## 화면 사용
 
