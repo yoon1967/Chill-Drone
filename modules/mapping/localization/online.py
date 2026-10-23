@@ -17,7 +17,8 @@ import cv2
 import numpy as np
 import pycolmap
 
-from surface import build_surface
+from planar import detection_settings, scene_binding
+from streaming_planes import FrameTracker, IncrementalPlaneMap
 
 
 def atomic_json(path, value):
@@ -63,6 +64,7 @@ class LatestSlot:
 class State:
     def __init__(self, root):
         self.root, self.lock = root, Lock()
+        self.last_write = 0.
         self.data = {"schema_version": "online-map-state/1.0", "revision": 0, "map_available": False,
                      "status": "starting", "capture_state": "starting", "mapping_state": "initializing",
                      "frames_received": 0, "keyframes": 0, "frame_drops": 0, "replaced_jobs": 0,
@@ -77,7 +79,13 @@ class State:
                 events = self.data.setdefault("update_history", [])
                 events.append({k: self.data.get(k) for k in ("updated_utc", "mapping_state", "revision", "last_error", "update_seconds", "publish_lag_seconds")})
                 self.data["update_history"] = events[-32:]
-            atomic_json(self.root / "state.json", self.data)
+            # Per-frame counters remain current in memory; avoid two disk replacements
+            # per received frame competing with tracking and JPEG/pose workers.
+            telemetry = set(values) <= {"frame_tracking", "frames_received", "frame_drops", "received_fps"}
+            now = time.monotonic()
+            if not telemetry or now - self.last_write >= .1:
+                atomic_json(self.root / "state.json", self.data)
+                self.last_write = now
 
     def get(self, key):
         with self.lock:
@@ -140,6 +148,20 @@ def capture(source, slot, stop, state, replay_rate=1.0, max_seconds=0):
     finally:
         cap.release()
         slot.close()
+
+
+def propose_boundaries(slot, tracker, frame_lock, state):
+    """Keep line detection off the frame tracking path; coalesce overload explicitly."""
+    while (item := slot.get()) is not None:
+        meta, image = item
+        try:
+            quads, seconds = tracker.propose(image)
+            with frame_lock:
+                meta["plane_quads"] = quads
+            state.update(frame_proposals={"frame_id": meta["frame_id"], "quads": len(quads),
+                "processing_seconds": seconds, "replaced_requests": slot.dropped}, proposal_error=None)
+        except (ValueError, cv2.error):
+            state.update(proposal_error="boundary_detection_failed")
 
 
 def isolated_pose_spikes(cameras, factor=5.0):
@@ -222,7 +244,7 @@ def scene_from_model(model, frames, previous, segment):
                float(p.error), int(p.track.length())] for pid, p in model.points3D.items()]
     xyz = np.array([p[1:4] for p in points])
     registered = {c["frame_id"] for c in cameras}
-    return {"schema_version": "phone-sfm-result/1.1", "input_run_id": "online", "pose_source": "sfm",
+    return {"schema_version": "phone-sfm-result/1.2", "input_run_id": "online", "pose_source": "sfm",
             "camera_parameters_source": "self_estimated; not measured calibration",
             "created_utc": datetime.now(timezone.utc).isoformat(), "segment_id": segment + int(bool(previous) and not aligned),
             "gauge_aligned": aligned, "scale": {"status": "arbitrary", "unit": "arbitrary", "factor": factor,
@@ -247,6 +269,7 @@ class Mapper(Thread):
         self.args, self.state, self.jobs, self.frame_lock = args, state, jobs, frame_lock
         self.previous, self.segment, self.attempt = None, 0, 0
         self.history, self.cell_size = [], None
+        self.plane_map = IncrementalPlaneMap(args.plane_profile, args.plane_error_px)
 
     def run(self):
         while (frames := self.jobs.get()) is not None:
@@ -257,7 +280,7 @@ class Mapper(Thread):
             images.mkdir()
             try:
                 with self.frame_lock:
-                    frames = [f for f in frames if Path(f["path"]).is_file()]
+                    frames = [dict(f) for f in frames if Path(f["path"]).is_file()]
                     for f in frames:
                         shutil.copy2(f["path"], images / f["frame_id"])
                 self.state.update(mapping_state="processing", processing_keyframes=len(frames), replaced_jobs=self.jobs.dropped)
@@ -303,31 +326,37 @@ class Mapper(Thread):
                     scene = scene_from_model(model, frames, self.previous, self.segment)
                     scene["quality"]["excluded_frames"] = rejected
                     scene["quality"]["submitted_frames"] = len(frames) - len(rejected)
-                if not scene["gauge_aligned"]:
-                    self.history, self.cell_size = [], None
-                if self.cell_size is None:
+                # Native landmark IDs/2D observations are still intact before voxel fusion.
+                current_cameras = list(scene["cameras"])
+                objects, object_token = self.plane_map.prepare(model, scene, frames, directory)
+                history = self.history if scene["gauge_aligned"] else []
+                cell_size = self.cell_size if scene["gauge_aligned"] else None
+                if cell_size is None:
                     xyz = np.array([p[1:4] for p in scene["points"]])
-                    self.cell_size = self.args.voxel_size or float(np.linalg.norm(np.ptp(xyz, axis=0))) / 200
+                    cell_size = self.args.voxel_size or float(np.linalg.norm(np.ptp(xyz, axis=0))) / 200
                 scene["quality"]["current_window_points"] = len(scene["points"])
-                scene["points"] = fuse_history(self.history, scene["points"], self.cell_size / 2)
+                scene["points"] = fuse_history(history, scene["points"], cell_size / 2)
                 scene["quality"]["points3D"] = len(scene["points"])
                 xyz = np.array([p[1:4] for p in scene["points"]])
                 scene["quality"]["bounds"] = {"min": xyz.min(axis=0).tolist(), "max": xyz.max(axis=0).tolist()}
-                scene["surface"] = build_surface(scene, self.cell_size)
+                objects["scene_binding_sha256"] = scene_binding(scene)
+                scene["planar_objects"] = objects
                 scene["quality"]["processing_seconds"] = time.perf_counter() - started
                 scene["revision"] = self.attempt
                 atomic_json(directory / "scene.json", scene)
                 atomic_json(directory / "local_assets.json", {"images_root": str(images.resolve()),
                     "frames": [c["frame_id"] for c in scene["cameras"]]})
                 atomic_json(directory / "status.json", {"status": "complete"})
-                self.previous, self.segment = scene["cameras"], scene["segment_id"]
-                self.history = scene["points"]
                 self.state.update(status="mapping", mapping_state="updated", map_available=True,
-                    revision=self.attempt, revision_path=f"revisions/{self.attempt:06d}", segment_id=self.segment,
-                    registered_frames=len(self.previous), points3D=len(scene["points"]),
-                    surface=scene["surface"]["statistics"], update_seconds=scene["quality"]["processing_seconds"],
+                    revision=self.attempt, revision_path=f"revisions/{self.attempt:06d}", segment_id=scene["segment_id"],
+                    registered_frames=len(current_cameras), points3D=len(scene["points"]),
+                    update_seconds=scene["quality"]["processing_seconds"],
+                    objects=objects.get("statistics", {}),
                     publish_lag_seconds=time.monotonic() - max(f["received_at"] for f in frames),
                     last_map_timestamp_s=max(f["timestamp_s"] for f in frames), last_error=None)
+                self.plane_map.commit(object_token)
+                self.previous, self.segment = current_cameras, scene["segment_id"]
+                self.history, self.cell_size = scene["points"], cell_size
             except Exception as error:
                 # Keep the previous valid map and expose degraded state, not fabricated geometry.
                 atomic_json(directory / "status.json", {"status": "failed", "reason": type(error).__name__ + ": " + str(error)[:200]})
@@ -359,18 +388,27 @@ def main():
     parser.add_argument("--threads", type=int, default=4)
     parser.add_argument("--keep-revisions", type=int, default=3)
     parser.add_argument("--voxel-size", type=float, help="World units; arbitrary unless scale is externally calibrated")
+    parser.add_argument("--plane-profile", choices=("balanced", "coverage", "strict"), default="balanced")
+    parser.add_argument("--plane-error-px", type=float, help="Pixel-equivalent plane tolerance, 1..12")
     args = parser.parse_args()
     if (args.session.exists() or not all(np.isfinite(v) for v in (args.sample_fps, args.replay_rate, args.max_seconds, args.min_sharpness))
         or args.sample_fps <= 0 or args.replay_rate < 0 or args.max_seconds < 0 or args.min_sharpness < 0 or args.width < 320 or
         (args.voxel_size is not None and (not np.isfinite(args.voxel_size) or args.voxel_size <= 0)) or
         args.batch_size < 4 or args.max_keyframes < args.batch_size or args.keep_revisions < 2 or args.threads < 1):
         parser.error("Use a new session and positive, bounded input/processing settings")
+    try:
+        detection_settings(args.plane_profile, args.plane_error_px)
+    except ValueError as error:
+        parser.error(str(error))
     args.session = args.session.resolve()
+    cv2.setNumThreads(1)
     args.session.mkdir(parents=True)
     atomic_json(args.session / "settings.json", {"pycolmap": pycolmap.__version__, "opencv": cv2.__version__,
         "max_keyframes": args.max_keyframes, "batch_size": args.batch_size, "sample_fps": args.sample_fps,
         "width": args.width, "threads": args.threads, "min_sharpness": args.min_sharpness,
         "max_fused_points": 50000, "replay_rate": args.replay_rate, "voxel_size": args.voxel_size,
+        "plane_detection": {"profile": args.plane_profile, "plane_error_px": args.plane_error_px},
+        "plane_update_mode": "incremental_keyframe; per_received_frame_LK_tracking",
         "feature_extraction": {"max_num_features": 1200, "max_num_orientations": 1, "first_octave": 0},
         "source": "local_file" if Path(args.source).is_file() else "live_uri_or_camera_index; credentials_not_stored"})
     (args.session / "frames").mkdir()
@@ -379,11 +417,17 @@ def main():
     state.update()
     worker = Mapper(args, state, jobs, frame_lock)
     receiver = Thread(target=capture, args=(args.source, raw, stop, state, args.replay_rate, args.max_seconds), daemon=True)
-    frames, last_sample, previous_gray, accepted, last_job = deque(), -1e9, None, 0, 0
+    frames, last_sample, previous_gray, accepted = deque(), -1e9, None, 0
+    tracker = FrameTracker(args.plane_profile, args.plane_error_px)
+    proposals = LatestSlot()
+    proposer = Thread(target=propose_boundaries, args=(proposals, tracker, frame_lock, state), daemon=True)
+    proposer.start()
     worker.start()
     receiver.start()
     try:
         while (packet := raw.get()) is not None:
+            tracking = tracker.observe(packet.image)
+            state.update(frame_tracking=tracking)
             if packet.timestamp_s - last_sample < 1 / args.sample_fps:
                 continue
             image = packet.image
@@ -405,17 +449,18 @@ def main():
                 frames.append({"frame_id": name, "path": str(path), "timestamp_s": packet.timestamp_s,
                     "received_at": packet.received_at,
                     "source_pts_s": packet.source_pts_s, "timestamp_source": packet.timestamp_source,
-                    "sharpness": sharpness})
+                    "sharpness": sharpness, "plane_quads": None})
+                proposal_meta = frames[-1]
                 while len(frames) > args.max_keyframes:
                     old = Path(frames.popleft()["path"])
                     if old.resolve().parent == (args.session / "frames").resolve():
                         old.unlink(missing_ok=True)
+            proposals.put((proposal_meta, image))
             previous_gray, last_sample = small, packet.timestamp_s
             state.update(keyframes=accepted, active_keyframes=len(frames), frame_drops=raw.dropped,
                          ingestion_lag_seconds=time.monotonic() - packet.received_at)
-            if len(frames) >= args.batch_size and accepted - last_job >= args.batch_size:
+            if len(frames) >= args.batch_size:
                 jobs.put(list(frames))
-                last_job = accepted
     except KeyboardInterrupt:
         state.update(capture_state="stopped")
     except Exception as error:
@@ -424,7 +469,9 @@ def main():
         stop.set()
         raw.close()
         receiver.join(timeout=6)
-        if len(frames) >= args.batch_size and accepted != last_job:
+        proposals.close()
+        proposer.join()
+        if len(frames) >= args.batch_size:
             jobs.put(list(frames))
         jobs.close()
         worker.join()
