@@ -39,7 +39,7 @@
         <div id="viewport" tabindex="0" aria-label="회전하고 객체를 선택할 수 있는 3D 복원 공간"><div class="loading">복원된 공간을 준비하고 있습니다…</div></div>
         <div id="object-labels" aria-label="3D 객체 이름"></div>
         <div class="view-buttons" role="group" aria-label="시점 선택"><button data-view="perspective" class="active">입체</button><button data-view="front">정면</button><button data-view="top">위에서</button><button id="reset" title="전체 점군과 경로에 맞추기">↺ 전체 보기</button></div>
-        <div class="mode-tabs" role="tablist" aria-label="지도 표현 모드"><button role="tab" data-mode="objects" aria-selected="true">객체 · 영상 표면</button><button role="tab" data-mode="hologram" aria-selected="false">홀로그램</button><button role="tab" data-mode="points" aria-selected="false">원본 점군</button></div>
+        <div class="mode-tabs" role="tablist" aria-label="지도 표현 모드"><button role="tab" data-mode="objects" aria-selected="true">객체 · 영상 표면</button><button role="tab" data-mode="hologram" aria-selected="false" aria-controls="hologram-controls" aria-expanded="false">홀로그램</button><button role="tab" data-mode="points" aria-selected="false">원본 점군</button></div>
         <section id="hologram-controls" class="hologram-controls" hidden aria-label="홀로그램 점 좌표 조정">
           <div class="interval-heading"><label for="hologram-interval">점 좌표 간격</label><output id="hologram-interval-value" for="hologram-interval hologram-interval-number">원본 위치</output></div>
           <div class="interval-inputs"><input id="hologram-interval" type="range" min="0" max="10" step="0.01" value="0" aria-describedby="hologram-interval-note"><input id="hologram-interval-number" type="number" min="0" max="10" step="0.01" value="0" aria-label="점 좌표 간격 직접 입력" aria-describedby="hologram-interval-note"></div>
