@@ -12,6 +12,7 @@ let currentIndex = 0, playing = false, previousTime = 0, mode = 'objects';
 let navigating = false, dragging = false, busy = false, revision = null;
 let pollDelay = 2000, previewFrame = null;
 let hologramInterval = 0, intervalFrame = null, originalPositions = new Float64Array();
+let hologramControlsOpen = false;
 const renderTimes = [];
 let lastRenderReport = 0;
 const replay = {session: null, entries: [], following: true, time: 0, lastTick: 0, generation: 0,
@@ -110,9 +111,13 @@ function setPointInterval(value, editingNumber = false) {
     applyPointInterval();
   });
 }
-function setMode(next) {
+function setMode(next, toggleControls = false) {
+  if (next !== 'hologram') hologramControlsOpen = false;
+  else if (toggleControls) hologramControlsOpen = !hologramControlsOpen;
   mode = next;
-  $('hologram-controls').hidden = next !== 'hologram';
+  $('hologram-controls').hidden = !hologramControlsOpen;
+  document.querySelector('[data-mode="hologram"]').setAttribute('aria-expanded', String(hologramControlsOpen));
+  document.querySelectorAll('[data-mode]').forEach((b) => b.setAttribute('aria-selected', String(b.dataset.mode === next)));
   updateIntervalLabel();
   if (!run) return;
   applyPointInterval();
@@ -122,7 +127,6 @@ function setMode(next) {
   cloud.material.color.set(next === 'hologram' ? 0x92f8fa : 0xffffff);
   cloud.material.needsUpdate = true;
   objectLayer.style(next);
-  document.querySelectorAll('[data-mode]').forEach((b) => b.setAttribute('aria-selected', String(b.dataset.mode === next)));
   $('mode-detail').textContent = {objects: '특징점이 지지하는 평면 객체 · 실제 영상 표면',
     hologram: '검출된 평면의 발광 면·격자·경계와 원본 점군', points: '원본 SfM 점군 · 점 표시 필터 적용'}[next];
   $('kind').textContent = {objects: 'PLANAR OBJECTS', hologram: 'HOLOGRAM · PLANAR OBJECTS', points: '원본 3D 점군'}[next];
@@ -453,7 +457,7 @@ $('hologram-interval-reset').addEventListener('click', () => setPointInterval(0)
 $('show-path').addEventListener('change', (e) => { if (route) route.visible = selected.visible = e.target.checked; });
 $('show-cameras').addEventListener('change', (e) => { if (frustums) frustums.visible = e.target.checked; });
 $('show-grid').addEventListener('change', (e) => { if (grid) grid.visible = e.target.checked; });
-document.querySelectorAll('[data-mode]').forEach((b) => b.addEventListener('click', () => setMode(b.dataset.mode)));
+document.querySelectorAll('[data-mode]').forEach((b) => b.addEventListener('click', () => setMode(b.dataset.mode, true)));
 document.querySelectorAll('[data-view]').forEach((b) => b.addEventListener('click', () => { if (run) setView(b.dataset.view); }));
 $('reset').addEventListener('click', () => { if (run) setView('perspective', true); });
 $('camera-view').addEventListener('click', () => { if (run) cameraView(); });
