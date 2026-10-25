@@ -40,6 +40,12 @@
         <div id="object-labels" aria-label="3D 객체 이름"></div>
         <div class="view-buttons" role="group" aria-label="시점 선택"><button data-view="perspective" class="active">입체</button><button data-view="front">정면</button><button data-view="top">위에서</button><button id="reset" title="전체 점군과 경로에 맞추기">↺ 전체 보기</button></div>
         <div class="mode-tabs" role="tablist" aria-label="지도 표현 모드"><button role="tab" data-mode="objects" aria-selected="true">객체 · 영상 표면</button><button role="tab" data-mode="hologram" aria-selected="false">홀로그램</button><button role="tab" data-mode="points" aria-selected="false">원본 점군</button></div>
+        <section id="hologram-controls" class="hologram-controls" hidden aria-label="홀로그램 점 좌표 조정">
+          <div class="interval-heading"><label for="hologram-interval">점 좌표 간격</label><output id="hologram-interval-value" for="hologram-interval hologram-interval-number">원본 위치</output></div>
+          <div class="interval-inputs"><input id="hologram-interval" type="range" min="0" max="10" step="0.01" value="0" aria-describedby="hologram-interval-note"><input id="hologram-interval-number" type="number" min="0" max="10" step="0.01" value="0" aria-label="점 좌표 간격 직접 입력" aria-describedby="hologram-interval-note"></div>
+          <p id="hologram-interval-note">각 축을 가장 가까운 간격의 배수로 옮깁니다.<br>0은 원본 위치 · 같은 위치의 점은 겹쳐 표시됩니다.</p>
+          <button id="hologram-interval-reset" disabled>원본 위치로</button>
+        </section>
         <button id="explore" aria-pressed="false">공간 안으로 이동 ↗</button>
         <div id="move-controls" hidden><span id="explorer-position"></span><div role="group" aria-label="공간 이동"><button data-move="forward">앞으로</button><button data-move="back">뒤로</button><button data-move="left">왼쪽</button><button data-move="right">오른쪽</button><button data-move="up">위로</button><button data-move="down">아래로</button></div></div>
         <div class="legend"><span><i class="point-dot"></i> 복원 점</span><span><i class="path-line"></i> 촬영 경로</span><span id="scale-badge">스케일 확인 중</span></div>

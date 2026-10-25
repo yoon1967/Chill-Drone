@@ -2,6 +2,7 @@ import * as THREE from 'three';
 import { OrbitControls } from '/vendor/OrbitControls.js';
 import { PlanarObjects } from '/objects.js';
 import { connectCapture } from '/capture.js';
+import { updatePointGrid } from '/point-grid.js';
 const $ = (id) => document.getElementById(id);
 const number = (n) => Number(n).toLocaleString('ko-KR');
 const timeOf = (c) => c.source_pts_s ?? c.timestamp_s;
@@ -10,6 +11,7 @@ let center, radius = 1, fullCenter, fullRadius = 1, direction;
 let currentIndex = 0, playing = false, previousTime = 0, mode = 'objects';
 let navigating = false, dragging = false, busy = false, revision = null;
 let pollDelay = 2000, previewFrame = null;
+let hologramInterval = 0, intervalFrame = null, originalPositions = new Float64Array();
 const renderTimes = [];
 let lastRenderReport = 0;
 const replay = {session: null, entries: [], following: true, time: 0, lastTick: 0, generation: 0,
@@ -76,12 +78,44 @@ function showCloud() {
     return [c.r * 255, c.g * 255, c.b * 255];
   });
   cloud.geometry.dispose();
-  cloud.geometry = geometry(points.map((p) => p.slice(1, 4)), colors);
+  const positions = points.map((p) => p.slice(1, 4));
+  originalPositions = new Float64Array(positions.flat());
+  cloud.geometry = geometry(positions, colors);
+  cloud.geometry.getAttribute('position').setUsage(THREE.DynamicDrawUsage);
+  applyPointInterval();
   $('points').textContent = number(points.length);
+}
+function updateIntervalLabel() {
+  const unit = run?.scale.unit === 'm' ? 'm' : '임의 단위';
+  const label = hologramInterval === 0 ? '원본 위치' : `${number(hologramInterval)} ${unit}`;
+  $('hologram-interval-value').textContent = label;
+  $('hologram-interval').setAttribute('aria-valuetext', label);
+  $('hologram-interval-reset').disabled = hologramInterval === 0;
+}
+function applyPointInterval() {
+  if (!cloud) return;
+  const interval = mode === 'hologram' ? hologramInterval : 0;
+  updatePointGrid(cloud.geometry, originalPositions, interval);
+  $('viewport').dataset.pointInterval = String(interval);
+}
+function setPointInterval(value, editingNumber = false) {
+  if (!Number.isFinite(value) || value < 0 || value > 10) return;
+  hologramInterval = value;
+  $('hologram-interval').value = value;
+  if (!editingNumber) $('hologram-interval-number').value = value;
+  updateIntervalLabel();
+  // Coalesce drag events into one position-buffer update per rendered frame.
+  if (intervalFrame === null) intervalFrame = requestAnimationFrame(() => {
+    intervalFrame = null;
+    applyPointInterval();
+  });
 }
 function setMode(next) {
   mode = next;
+  $('hologram-controls').hidden = next !== 'hologram';
+  updateIntervalLabel();
   if (!run) return;
+  applyPointInterval();
   cloud.material.transparent = next !== 'points';
   cloud.material.opacity = next !== 'points' && objectLayer.objects.length ? (next === 'hologram' ? .10 : .22) : 1;
   cloud.material.vertexColors = next !== 'hologram';
@@ -96,6 +130,7 @@ function setMode(next) {
     $('kind').textContent = next === 'hologram' ? 'HOLOGRAM · ORB MAP' : 'ORB-SLAM3 · 특징점 지도';
     $('mode-detail').textContent = '연속 프레임의 같은 지도 점을 추적하고 카메라 위치와 희소 3D 지도를 함께 갱신합니다.';
   }
+  if (next === 'hologram') $('mode-detail').textContent += ' 점 좌표 간격을 조절해 가장 가까운 격자 위치로 표시할 수 있습니다.';
 }
 function selectFrame(index) {
   currentIndex = Math.max(0, Math.min(index, run.cameras.length - 1));
@@ -409,6 +444,12 @@ $('frame-timeline').addEventListener('input', (e) => { if (run) selectFrame(Numb
 $('point-size').addEventListener('input', (e) => { if (cloud) cloud.material.size = Number(e.target.value); });
 $('color-mode').addEventListener('change', showCloud);
 $('error-limit').addEventListener('change', showCloud);
+$('hologram-interval').addEventListener('input', (e) => setPointInterval(e.target.valueAsNumber));
+$('hologram-interval-number').addEventListener('input', (e) => {
+  if (e.target.validity.valid) setPointInterval(e.target.valueAsNumber, true);
+});
+$('hologram-interval-number').addEventListener('change', (e) => { e.target.value = hologramInterval; });
+$('hologram-interval-reset').addEventListener('click', () => setPointInterval(0));
 $('show-path').addEventListener('change', (e) => { if (route) route.visible = selected.visible = e.target.checked; });
 $('show-cameras').addEventListener('change', (e) => { if (frustums) frustums.visible = e.target.checked; });
 $('show-grid').addEventListener('change', (e) => { if (grid) grid.visible = e.target.checked; });
