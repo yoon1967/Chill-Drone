@@ -45,6 +45,19 @@
 `objects.update_mode=incremental_keyframe`은 새 관측 확정·기존 면/텍스처 유지 경로를 나타낸다.
 `/api/run`: 점군 + 평면 객체 + 해당 포인터의 stream 상태. 초기 지도가 없으면 503과 상태 JSON.
 웹은 상태를 먼저 확인하고 revision이 바뀌었을 때만 전체 지도를 읽는다.
+ORB 생산자에서는 선택적으로 `since_revision=6자리버전&session=세션`을 함께 보낼 수 있다.
+같은 세션·segment·schema의 이전 snapshot과 비교해 작아지는 경우 `phone-map-delta/1.0`을 반환한다.
+기존 `/api/run`과 저장 scene 형식은 유지한다. 기준이 없거나 부적합하면 전체 snapshot을 반환한다.
+
+- `base_revision`, `revision`, `session_id`, `segment_id`: 차분이 적용될 지도 범위.
+- `scene`: `points`, `point_observations`를 제외한 최신 scene. 카메라 배열도 최신 순서다.
+- `points_upsert`, `points_removed`: 추가/수정된 행과 제거된 native ORB 점 ID.
+- `point_order`: 복구한 points의 정확한 순서. 누락/중복/모르는 ID가 있으면 전체를 다시 읽는다.
+- `observation_metadata`, `observation_upserts`, `observation_removed`: 관측 헤더와 점별 관측 변경.
+  관측 인덱스는 최신 cameras를 기준으로 해석한다. 다른 생산자의 revision-local 점 ID에 적용하지 않는다.
+
+표시용 홀로그램 실험은 원본 scene과 별도로 소비자에서 선·면을 블록 단위로 캐시한다.
+지도 변경 시 영향을 받는 주변만 재계산하고 원본 결과에는 선·면을 기록하지 않는다.
 `/api/frame/<frame_id>?revision=000001`은 보존된 해당 revision의 whitelist 프레임만 제공한다.
 
 수신 실패/끊김과 EOF를 구분한다. 기존 지도가 있으면 실패 후에도 마지막 지도를 유지하되 상태를 정상으로 꾸미지 않는다.

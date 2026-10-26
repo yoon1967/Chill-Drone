@@ -19,15 +19,19 @@ export function updatePointGrid(geometry, source, interval) {
 // Sample queries against a full k-d tree: profile once per map, never on slider input.
 export function pointSpacingProfile(points) {
   const xyz = points.map((p) => p.slice(1, 4)).filter((p) => p.every(Number.isFinite));
-  const build = (indices, depth = 0) => {
-    if (!indices.length) return null;
+  const sorted = [0, 1, 2].map(axis => xyz.map((_, i) => i).sort((a, b) => xyz[a][axis] - xyz[b][axis] || a - b));
+  // Presort once, then partition each axis in linear time per level: O(n log n).
+  const build = (orders, depth = 0) => {
+    if (!orders[0].length) return null;
     const axis = depth % 3;
-    indices.sort((a, b) => xyz[a][axis] - xyz[b][axis]);
+    const indices = orders[axis];
     const mid = indices.length >> 1;
-    return {index: indices[mid], axis, left: build(indices.slice(0, mid), depth + 1),
-      right: build(indices.slice(mid + 1), depth + 1)};
+    const index = indices[mid], leftIds = new Set(indices.slice(0, mid));
+    const left = orders.map(order => order.filter(i => leftIds.has(i)));
+    const right = orders.map(order => order.filter(i => i !== index && !leftIds.has(i)));
+    return {index, axis, left: build(left, depth + 1), right: build(right, depth + 1)};
   };
-  const tree = build(xyz.map((_, i) => i));
+  const tree = build(sorted);
   const nearest = (query) => {
     let best = Infinity;
     const visit = (node) => {
@@ -72,10 +76,11 @@ export function pointGridCells(points, interval, observations, cameraCount) {
     let cell = cells.get(key);
     if (!cell) {
       cell = {position: indices.map((v) => interval === 0 || v === 0 ? v || 0 : v * interval),
-        frames: new Set(), fallback: 0, points: 0};
+        frames: new Set(), fallback: 0, points: 0, sourceIds: []};
       cells.set(key, cell);
     }
     cell.points++;
+    cell.sourceIds.push(p[0]);
     const frames = metadata?.frame_index_by_point?.[p[0]];
     if (Array.isArray(frames) && frames.every((i) => Number.isInteger(i) && i >= 0 && i < cameraCount)) {
       for (const frame of frames) cell.frames.add(frame);
@@ -85,9 +90,9 @@ export function pointGridCells(points, interval, observations, cameraCount) {
       lowerBound = true;
     }
   }
-  const values = [...cells.values()].map((cell) => ({position: cell.position, points: cell.points,
+  const values = [...cells.values()].map((cell) => ({position: cell.position, points: cell.points, sourceIds: cell.sourceIds,
     support: Math.max(cell.frames.size, cell.fallback)}));
-  return {cells: values, lowerBound, basis: metadata?.basis || 'unknown',
+  return {cells: values, interval, lowerBound, basis: metadata?.basis || 'unknown', cameraCount,
     maxSupport: values.reduce((max, cell) => Math.max(max, cell.support), 1), sourceCount: points.length};
 }
 
