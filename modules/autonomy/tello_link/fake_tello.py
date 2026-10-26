@@ -38,6 +38,14 @@ class FakeTello:
         self.send_video = send_video
         self.reply_delay = reply_delay
         self.received: list[str] = []
+        # 비행 흉내: 이륙하면 80cm까지 오르고, rc 상하 입력으로 높이가 바뀌며, 15초간 명령이 없으면 착륙한다.
+        self.flying = False
+        self.h_cm = 0.0
+        self.bat = 87
+        self.temp_override: int | None = None
+        self.motion_delay = 1.0          # 이륙·착륙에 걸리는 시간(응답이 늦게 온다)
+        self._rc = (0, 0, 0, 0)
+        self._last_cmd_mono = time.monotonic()
         self._client_ip: str | None = None
         self._stop = threading.Event()
         self._streaming = threading.Event()
@@ -69,7 +77,12 @@ class FakeTello:
                 break
             cmd = data.decode("utf-8", "replace").strip()
             self.received.append(cmd)
+            self._last_cmd_mono = time.monotonic()
             if cmd.startswith("rc "):
+                try:
+                    self._rc = tuple(int(v) for v in cmd.split()[1:5])
+                except ValueError:
+                    pass
                 continue  # 실제 Tello도 rc에는 응답하지 않는다
             if cmd == "command":
                 self._client_ip = addr[0]
@@ -77,9 +90,37 @@ class FakeTello:
                 self._streaming.set()
             elif cmd == "streamoff":
                 self._streaming.clear()
+            elif cmd == "emergency":
+                self.flying, self.h_cm, self._rc = False, 0.0, (0, 0, 0, 0)
+            elif cmd in ("takeoff", "land"):
+                # 실제처럼 동작이 끝난 뒤 응답한다. 그동안 다른 명령(emergency)은 계속 받는다.
+                threading.Thread(target=self._move, args=(cmd, addr), daemon=True).start()
+                continue
             reply = REPLIES.get(cmd, "ok")
             time.sleep(self.reply_delay)
             self._sock.sendto(reply.encode(), addr)
+
+    def _move(self, cmd: str, addr) -> None:
+        if cmd == "takeoff":
+            self.flying = True
+            self._rc = (0, 0, 0, 0)
+            target = 80.0
+        else:
+            target = 0.0
+        start, t0 = self.h_cm, time.monotonic()
+        while time.monotonic() - t0 < self.motion_delay and not self._stop.is_set():
+            if cmd == "takeoff" and not self.flying:  # 이륙 중 emergency
+                return
+            frac = (time.monotonic() - t0) / self.motion_delay
+            self.h_cm = start + (target - start) * frac
+            time.sleep(0.05)
+        self.h_cm = target
+        if cmd == "land":
+            self.flying = False
+        try:
+            self._sock.sendto(b"ok", addr)
+        except OSError:
+            pass
 
     def _state_loop(self) -> None:
         out = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
@@ -89,12 +130,18 @@ class FakeTello:
             if not (self.send_state and self._client_ip):
                 continue
             t = time.monotonic() - t0
+            if self.flying:
+                self.h_cm = max(0.0, self.h_cm + self._rc[2] / 100 * 100 * 0.1)  # rc 100 ≈ 1m/s로 가정
+                if time.monotonic() - self._last_cmd_mono > 15:  # 실제 Tello의 15초 자동 착륙 흉내
+                    self.flying, self.h_cm = False, 0.0
             yaw = int(5 * math.sin(t / 3))
-            temp = 58 + min(int(t / 20), 25)
+            temp = self.temp_override if self.temp_override is not None else 58 + min(int(t / 20), 25)
+            h = int(self.h_cm)
+            tof = h + 10 if h > 0 else 10
             packet = (
                 f"mid:-1;x:-100;y:-100;z:-100;mpry:0,0,0;pitch:0;roll:1;yaw:{yaw};"
-                f"vgx:0;vgy:0;vgz:0;templ:{temp};temph:{temp + 3};tof:10;h:0;bat:87;"
-                f"baro:{12.5 + 0.02 * math.sin(t):.2f};time:0;agx:-2.00;agy:1.00;agz:-998.00;\r\n"
+                f"vgx:0;vgy:0;vgz:0;templ:{temp};temph:{temp + 3};tof:{tof};h:{h};bat:{self.bat};"
+                f"baro:{12.5 + h / 100 + 0.02 * math.sin(t):.2f};time:0;agx:-2.00;agy:1.00;agz:-998.00;\r\n"
             )
             try:
                 out.sendto(packet.encode(), (self._client_ip, self.state_port))

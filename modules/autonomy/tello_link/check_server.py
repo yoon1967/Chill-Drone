@@ -1,10 +1,11 @@
-"""Tello 연결 점검 웹 화면 (이륙 없음).
+"""Tello 연결 점검·조작 웹 화면.
 
-    python check_server.py            # 실제 Tello (PC Wi-Fi를 TELLO-xxxxxx에 연결)
-    python check_server.py --fake     # 드론 없이 가짜 Tello로 화면 확인
+    python check_server.py                   # 연결 점검만 (이륙 차단)
+    python check_server.py --flight          # 조작 화면 켜기 (이륙·rc 허용, 안전 장치 포함)
+    python check_server.py --fake --flight   # 드론 없이 가짜 Tello로 조작 화면 확인
     브라우저: http://127.0.0.1:8010
 
-비행·설정 명령은 tello_link에서 막는다. 이 서버에는 그 차단을 푸는 옵션이 없다.
+--flight 없이는 비행 명령이 tello_link에서 막힌다. 설정 명령(ap, wifi 등)은 항상 막는다.
 """
 
 from __future__ import annotations
@@ -20,13 +21,14 @@ import threading
 import time
 from contextlib import asynccontextmanager
 
-from fastapi import Body, FastAPI, HTTPException, Request
+from fastapi import Body, FastAPI, HTTPException, Request, WebSocket, WebSocketDisconnect
 from fastapi.responses import FileResponse, Response, StreamingResponse
 
 HERE = os.path.dirname(os.path.abspath(__file__))
 sys.path.insert(0, HERE)
 
-from tello_link import DEFAULT_HOST, TelloLink, now_iso  # noqa: E402
+from flight_control import FlightController  # noqa: E402
+from tello_link import DEFAULT_HOST, TelloLink, classify, now_iso  # noqa: E402
 from tello_video import TelloVideo  # noqa: E402
 
 REPO_ROOT = os.path.abspath(os.path.join(HERE, "..", "..", ".."))
@@ -74,8 +76,11 @@ class Checker:
         else:
             host, cmd_port, local_port, state_port, video_port, bind = args.drone_ip, 8889, 8889, 8890, 11111, "0.0.0.0"
         self.host = host
+        self.flight_mode = args.flight
         self.link = TelloLink(host=host, cmd_port=cmd_port, local_cmd_port=local_port, state_port=state_port,
-                              bind_ip=bind, log_root=args.log_root, source="fake" if args.fake else "tello").start()
+                              bind_ip=bind, log_root=args.log_root, source="fake" if args.fake else "tello",
+                              allow_flight=args.flight).start()
+        self.flight = FlightController(self.link).start() if args.flight else None
         self.video = TelloVideo(port=video_port, bind_ip=bind)
         self.stream_requested_mono: float | None = None
         self.stream_on = False
@@ -85,6 +90,8 @@ class Checker:
         self._lock = threading.Lock()
 
     def close(self):
+        if self.flight:
+            self.flight.close()  # 비행 중이면 착륙부터
         self.video.stop()
         self.link.close()
         if self.fake:
@@ -93,10 +100,10 @@ class Checker:
     # ---------- 동작 ----------
     def run_check(self) -> dict:
         with self._lock:
-            results = [self.link.send("command", timeout=3).to_dict()]
+            results = [self.link.send("command", timeout=3, source="check").to_dict()]
             if results[0]["ok"]:
                 for q in CHECK_QUERIES:
-                    r = self.link.send(q, timeout=3).to_dict()
+                    r = self.link.send(q, timeout=3, source="check").to_dict()
                     results.append(r)
                     if r["ok"]:
                         self.info[q] = r["response"]
@@ -106,7 +113,7 @@ class Checker:
 
     def video_on(self) -> dict:
         self.video.start()
-        r = self.link.send("streamon", timeout=3).to_dict()
+        r = self.link.send("streamon", timeout=3, source="check").to_dict()
         if r["ok"]:
             self.stream_on = True
             self.stream_requested_mono = time.monotonic()
@@ -114,7 +121,7 @@ class Checker:
         return r
 
     def video_off(self) -> dict:
-        r = self.link.send("streamoff", timeout=3).to_dict()
+        r = self.link.send("streamoff", timeout=3, source="check").to_dict()
         self.stream_on = False
         self.stream_requested_mono = None
         self.video.stop()
@@ -253,7 +260,8 @@ class Checker:
             "video": vstats,
             "stream_on": self.stream_on,
             "info": self.info,
-            "history": list(self.link.history)[-30:],
+            "history": [h for h in self.link.history if not h["cmd"].startswith("rc ")][-30:],
+            "flight": self.flight.status() if self.flight else None,
         }
 
 
@@ -284,7 +292,7 @@ def build_app(args) -> FastAPI:
         yield
         checker.close()
 
-    app = FastAPI(title="Tello 연결 점검", lifespan=lifespan)
+    app = FastAPI(title="Tello 연결 점검·조작", lifespan=lifespan)
     app.state.checker = checker
 
     @app.get("/")
@@ -304,7 +312,10 @@ def build_app(args) -> FastAPI:
         cmd = str(body.get("cmd", "")).strip()
         if not cmd:
             raise HTTPException(400, "cmd가 비어 있습니다")
-        r = checker.link.send(cmd, timeout=3).to_dict()
+        if classify(cmd) == "flight":
+            # 비행 명령은 이륙 전 점검·데드맨을 거치도록 조작 패널(/api/flight/*)로만 보낸다.
+            raise HTTPException(403, {"message": "비행 명령은 조작 패널에서만 보냅니다"})
+        r = checker.link.send(cmd, timeout=3, source="manual").to_dict()
         if r["ok"] and cmd in ("battery?", "sdk?", "sn?", "wifi?"):
             checker.info[cmd] = r["response"]
         if r["blocked"]:
@@ -318,6 +329,50 @@ def build_app(args) -> FastAPI:
     @app.post("/api/video/off")
     def video_off():
         return checker.video_off()
+
+    # ---------- 조작 (--flight일 때만) ----------
+    def flight():
+        if checker.flight is None:
+            raise HTTPException(403, "조작 모드가 꺼져 있습니다. --flight로 실행하세요")
+        return checker.flight
+
+    @app.post("/api/flight/confirm")
+    def flight_confirm(body: dict = Body(...)):
+        flight().confirm_operator(bool(body.get("confirmed")))
+        return flight().status()
+
+    @app.post("/api/flight/takeoff")
+    def flight_takeoff():
+        return flight().takeoff(source="web")
+
+    @app.post("/api/flight/land")
+    def flight_land():
+        return flight().land(source="web")
+
+    @app.post("/api/flight/emergency")
+    async def flight_emergency():
+        # 작업 스레드 대기열을 거치지 않도록 비동기로 바로 보낸다.
+        return flight().emergency(source="web")
+
+    @app.websocket("/ws/control")
+    async def control_ws(ws: WebSocket):
+        await ws.accept()
+        ctrl = checker.flight
+        if ctrl is None:
+            await ws.close(code=1008)
+            return
+        try:
+            while True:
+                msg = await ws.receive_json()
+                if msg.get("emergency"):
+                    ctrl.emergency(source="keyboard")
+                elif "rc" in msg:
+                    lr, fb, ud, yaw = (float(v) for v in msg["rc"])
+                    ctrl.set_input(lr, fb, ud, yaw, source="keyboard")
+        except (WebSocketDisconnect, ValueError, TypeError):
+            pass
+        finally:
+            ctrl.set_input(0, 0, 0, 0, source="ws_closed")  # 연결이 끊기면 제자리
 
     @app.get("/snapshot.jpg")
     def snapshot():
@@ -344,8 +399,9 @@ def build_app(args) -> FastAPI:
 
 
 def main():
-    ap = argparse.ArgumentParser(description="Tello 연결 점검 웹 화면 (이륙 없음)")
+    ap = argparse.ArgumentParser(description="Tello 연결 점검·조작 웹 화면")
     ap.add_argument("--fake", action="store_true", help="드론 없이 가짜 Tello로 실행")
+    ap.add_argument("--flight", action="store_true", help="조작 화면 켜기 (이륙·rc 허용, 안전 장치 포함)")
     ap.add_argument("--fake-no-state", action="store_true", help="가짜: 상태 패킷 차단 상황 재현")
     ap.add_argument("--fake-no-video", action="store_true", help="가짜: 영상 패킷 차단 상황 재현")
     ap.add_argument("--drone-ip", default=DEFAULT_HOST)
@@ -356,7 +412,8 @@ def main():
 
     import uvicorn
     app = build_app(args)
-    print(f"Tello 연결 점검: http://{args.host}:{args.port}  (모드: {'가짜' if args.fake else '실제'})")
+    print(f"Tello 연결 점검: http://{args.host}:{args.port}  (모드: {'가짜' if args.fake else '실제'}"
+          f"{', 조작 켜짐' if args.flight else ', 이륙 차단'})")
     print(f"회차 로그: {app.state.checker.link.log.dir}")
     uvicorn.run(app, host=args.host, port=args.port, log_level="warning")
 

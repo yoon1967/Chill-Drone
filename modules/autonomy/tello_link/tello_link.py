@@ -73,6 +73,7 @@ class CommandResult:
     reason: str | None
     rtt_ms: float | None
     blocked: bool = False
+    source: str | None = None  # 입력 출처: keyboard, script, safety, check 등
 
     def to_dict(self) -> dict:
         return asdict(self)
@@ -248,7 +249,8 @@ class TelloLink:
         self._state_sock.bind((self.bind_ip, self.state_port))
         self._state_sock.settimeout(0.5)
         if self.log_root:
-            self.log = RunLog(self.log_root, self.run_id, self._manifest())
+            self.manifest = self._manifest()
+            self.log = RunLog(self.log_root, self.run_id, self.manifest)
         self.event("link_started", {"host": self.host, "cmd_port": self.cmd_port, "state_port": self.state_port})
         self._stop.clear()
         self._state_thread = threading.Thread(target=self._state_loop, name="tello-state", daemon=True)
@@ -296,8 +298,16 @@ class TelloLink:
                 "metrics": "metrics.json (종료 시)",
                 "pose": None,
             },
-            "notes": "연결 점검 회차. pose는 만들지 않는다. 운용자가 보낸 명령은 commands.jsonl에 모두 남는다.",
+            # 사람이 조종한 회차는 자율 성공으로 세지 않는다. 조작을 시작하면 true로 바뀐다.
+            "operator_controlled": False,
+            "notes": "pose는 만들지 않는다. 운용자가 보낸 명령은 commands.jsonl에 source와 함께 모두 남는다.",
         }
+
+    def update_manifest(self, **fields) -> None:
+        if not self.log:
+            return
+        self.manifest.update(fields)
+        self.log._write_json("manifest.json", self.manifest)
 
     def event(self, kind: str, detail: dict) -> None:
         if self.log:
@@ -312,12 +322,12 @@ class TelloLink:
             return False, "config_blocked"
         return True, None
 
-    def send(self, cmd: str, timeout: float | None = None) -> CommandResult:
+    def send(self, cmd: str, timeout: float | None = None, source: str | None = None) -> CommandResult:
         cmd = cmd.strip()
         category = classify(cmd)
         allowed, reason = self.is_allowed(cmd)
         if not allowed:
-            result = CommandResult(cmd, category, None, None, False, False, reason, None, blocked=True)
+            result = CommandResult(cmd, category, None, None, False, False, reason, None, blocked=True, source=source)
             self._record(result)
             return result
         if self._cmd_sock is None:
@@ -333,7 +343,7 @@ class TelloLink:
             rtt = (time.monotonic() - t0) * 1000.0
 
         if response is None:
-            result = CommandResult(cmd, category, now_iso(sent), None, False, False, reason, None)
+            result = CommandResult(cmd, category, now_iso(sent), None, False, False, reason, None, source=source)
         else:
             lowered = response.lower()
             if category == "query":
@@ -341,24 +351,41 @@ class TelloLink:
             else:
                 ok = lowered == "ok"
             result = CommandResult(cmd, category, now_iso(sent), response, ok, True,
-                                   None if ok else "error_response", round(rtt, 1))
+                                   None if ok else "error_response", round(rtt, 1), source=source)
         if cmd == "command":
             self.sdk_mode = result.ok
         self._record(result)
         return result
 
-    def rc(self, lr: int, fb: int, ud: int, yaw: int) -> CommandResult:
+    def rc(self, lr: int, fb: int, ud: int, yaw: int, source: str | None = None) -> CommandResult:
         """rc 명령은 응답이 없으므로 보내기만 한다. allow_flight=True일 때만 동작한다."""
         vals = [max(-100, min(100, int(v))) for v in (lr, fb, ud, yaw)]
         cmd = "rc " + " ".join(str(v) for v in vals)
         if not self.allow_flight:
-            result = CommandResult(cmd, "flight", None, None, False, False, "flight_blocked", None, blocked=True)
+            result = CommandResult(cmd, "flight", None, None, False, False, "flight_blocked", None,
+                                   blocked=True, source=source)
             self._record(result)
             return result
         with self._cmd_lock:
             sent = time.time()
             self._cmd_sock.sendto(cmd.encode("utf-8"), (self.host, self.cmd_port))
-        result = CommandResult(cmd, "flight", now_iso(sent), None, True, True, "no_response_expected", None)
+        result = CommandResult(cmd, "flight", now_iso(sent), None, True, True, "no_response_expected", None,
+                               source=source)
+        self._record(result)
+        return result
+
+    def emergency_now(self, source: str | None = None) -> CommandResult:
+        """`emergency`를 잠금을 기다리지 않고 바로 보낸다(모터 즉시 정지).
+
+        이륙처럼 응답을 오래 기다리는 명령이 잠금을 잡고 있어도 막히지 않게 한다.
+        응답은 기다리지 않는다. 늦게 온 `ok`는 다음 명령 전에 버려진다.
+        """
+        sent = time.time()
+        for _ in range(2):  # UDP 유실에 대비해 두 번 보낸다
+            self._cmd_sock.sendto(b"emergency", (self.host, self.cmd_port))
+        result = CommandResult("emergency", "stop", now_iso(sent), None, True, True, "sent_without_wait", None,
+                               source=source)
+        self.event("emergency", {"source": source})
         self._record(result)
         return result
 
@@ -383,6 +410,8 @@ class TelloLink:
         except ConnectionResetError:
             # Windows는 상대 포트가 닫혀 있으면 ICMP를 이 예외로 돌려준다.
             return None, "connection_reset"
+        except OSError:
+            return None, "socket_closed"
         try:
             return data.decode("utf-8").strip(), None
         except UnicodeDecodeError:
