@@ -15,17 +15,29 @@ from .orbslam3 import IMAGE, SessionPublisher, atomic_json, read_json, write_set
 
 
 def live_camera(config):
-    width, height = int(config["width"]), int(config["height"])
-    fps = float(config.get("fps", 30))
+    def number(value):
+        if isinstance(value, bool) or not isinstance(value, (int, float)) or not math.isfinite(value):
+            raise ValueError("camera_values_must_be_finite_numbers")
+        return value
+
+    width, height = number(config["width"]), number(config["height"])
+    fps = number(config.get("fps", 30))
+    if width != int(width) or height != int(height):
+        raise ValueError("camera_dimensions_must_be_integers")
+    width, height = int(width), int(height)
     if not (320 <= width <= 960 and 180 <= height <= 960 and 1 <= fps <= 60):
         raise ValueError("camera_dimensions_or_fps_out_of_range")
     supplied = config.get("camera")
-    if supplied:
+    if supplied is not None:
+        if not isinstance(supplied, dict):
+            raise ValueError("invalid_camera_intrinsics")
         camera = dict(supplied)
-        if not all(math.isfinite(float(camera[k])) for k in ("width", "height", "fx", "fy", "cx", "cy")):
+        for key in ("width", "height", "fx", "fy", "cx", "cy"):
+            camera[key] = number(camera[key])
+        if min(camera[k] for k in ("width", "height", "fx", "fy")) <= 0:
             raise ValueError("invalid_camera_intrinsics")
-        if min(float(camera[k]) for k in ("width", "height", "fx", "fy")) <= 0:
-            raise ValueError("invalid_camera_intrinsics")
+        if not (0 <= camera["cx"] <= camera["width"] and 0 <= camera["cy"] <= camera["height"]):
+            raise ValueError("camera_principal_point_out_of_bounds")
         if abs(camera["width"] / camera["height"] - width / height) > .01:
             raise ValueError("camera_crop_or_orientation_mismatch")
         for key in ("fx", "cx"):
@@ -34,15 +46,18 @@ def live_camera(config):
             camera[key] *= height / supplied["height"]
         camera.setdefault("calibration_status", "user_supplied; accuracy_not_independently_verified")
     else:
-        fov = float(config.get("fov", 60))
+        fov = number(config.get("fov", 60))
         if not 25 <= fov <= 120:
             raise ValueError("horizontal_fov_out_of_range")
         focal = width / (2 * math.tan(math.radians(fov) / 2))
         camera = dict(fx=focal, fy=focal, cx=width / 2, cy=height / 2,
                       calibration_status="fov_estimated; not_calibrated", distortion=[0.] * 4)
     d = camera.get("distortion", [0.] * 4)
-    if len(d) != 4 or not np.isfinite(d).all():
+    if not isinstance(d, list) or len(d) != 4:
         raise ValueError("invalid_camera_distortion")
+    d = [number(value) for value in d]
+    if not isinstance(camera.get("calibration_status"), str):
+        raise ValueError("invalid_calibration_status")
     camera.update(width=width, height=height, fps=fps, distortion=d)
     return camera
 

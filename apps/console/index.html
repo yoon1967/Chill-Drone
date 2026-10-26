@@ -33,7 +33,9 @@
         <label>영상 입력 <select id="input-source"><option value="camera">연결된 카메라</option><option value="demo" hidden>현재 녹화 영상 · 스트리밍 시연</option></select></label>
         <button id="camera-start">카메라 연결 · 시작</button><button id="camera-stop" disabled>수신 종료</button>
       </div>
+      <div id="camera-devices" class="live-actions"><label>카메라 장치 <select id="camera-device"><option value="">브라우저 기본 카메라</option></select></label><button id="camera-refresh" type="button">장치 새로고침</button><span id="camera-device-note">권한을 허용하면 장치 이름을 확인할 수 있습니다.</span></div>
       <details><summary>카메라 보정</summary><label>보정 JSON <input id="camera-calibration" type="file" accept=".json,application/json"></label><label>수평 화각 <input id="camera-fov" type="number" min="25" max="120" value="60"> °</label><p>보정 파일이 없으면 화각 추정값을 사용합니다. 단안 좌표는 실제 미터가 아닙니다. 영상은 이 PC에서만 처리·저장됩니다.</p></details>
+      <p id="camera-input-info">웹캠으로 지도를 만들려면 같은 공간을 보며 카메라의 위치를 천천히 옮겨야 합니다. 고정 카메라는 영상 연결만 확인할 수 있습니다.</p>
       <p id="camera-status" role="status">Docker 실행 후 카메라를 연결하세요. 권한은 시작할 때 요청합니다.</p>
       <video id="input-preview" muted playsinline hidden aria-label="전송 중인 입력 영상"></video>
     </section>

@@ -38,5 +38,7 @@ export function captureError(error) {
     return {state: 'failed', message: '연결된 카메라를 찾지 못했습니다. 카메라 연결이나 녹화 영상 입력을 확인하세요.'};
   if (error.name === 'NotReadableError')
     return {state: 'failed', message: '카메라를 열지 못했습니다. 다른 앱에서 사용 중인지 확인한 뒤 다시 시작하세요.'};
+  if (error.name === 'OverconstrainedError')
+    return {state: 'failed', message: '선택한 카메라나 영상 설정을 사용할 수 없습니다. 장치 목록을 새로고침하고 카메라를 다시 선택하세요.'};
   return {state: 'failed', message: `영상 연결 실패: ${error.message}`};
 }
