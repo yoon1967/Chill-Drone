@@ -47,13 +47,20 @@
       <button id="live-follow">최신 지도</button><p id="replay-state" role="status">기록된 지도 갱신을 준비합니다.</p>
     </section>
     <div class="workspace">
-      <section class="viewer" aria-label="3D 복원 공간">
-        <div class="viewer-top"><span class="live-dot"></span><span>실제 촬영 기반</span><span id="kind">공간 구조 준비 중</span></div>
-        <div id="viewport" tabindex="0" aria-label="회전하고 객체를 선택할 수 있는 3D 복원 공간"><div class="loading">복원된 공간을 준비하고 있습니다…</div></div>
-        <div id="map-empty" class="map-empty" role="status"><strong id="empty-title">지도를 불러오는 중</strong><p id="empty-detail">잠시 기다려 주세요.</p></div>
-        <div id="object-labels" aria-label="3D 객체 이름"></div>
-        <div class="view-buttons" role="group" aria-label="시점 선택"><button data-view="perspective" class="active">입체</button><button data-view="front">정면</button><button data-view="top">위에서</button><button id="reset" title="전체 점군과 경로에 맞추기">↺ 전체 보기</button></div>
-        <div class="mode-tabs" role="tablist" aria-label="지도 표현 모드"><button role="tab" data-mode="objects" aria-selected="true">객체 · 영상 표면</button><button role="tab" data-mode="hologram" aria-selected="false" aria-controls="hologram-controls" aria-expanded="false">홀로그램</button><button role="tab" data-mode="points" aria-selected="false">원본 점군</button></div>
+      <div class="viewer-column">
+        <section class="viewer" aria-label="3D 복원 공간">
+          <div class="viewer-top"><span class="live-dot"></span><span>실제 촬영 기반</span><span id="kind">공간 구조 준비 중</span></div>
+          <div id="viewport" tabindex="0" aria-label="회전하고 객체를 선택할 수 있는 3D 복원 공간"><div class="loading">복원된 공간을 준비하고 있습니다…</div></div>
+          <div id="map-empty" class="map-empty" role="status"><strong id="empty-title">지도를 불러오는 중</strong><p id="empty-detail">잠시 기다려 주세요.</p></div>
+          <div id="object-labels" aria-label="3D 객체 이름"></div>
+          <div class="view-buttons" role="group" aria-label="시점 선택"><button data-view="perspective" class="active">입체</button><button data-view="front">정면</button><button data-view="top">위에서</button><button id="reset" title="전체 점군과 경로에 맞추기">↺ 전체 보기</button></div>
+          <div class="mode-tabs" role="tablist" aria-label="지도 표현 모드"><button role="tab" data-mode="objects" aria-selected="true">객체 · 영상 표면</button><button role="tab" data-mode="hologram" aria-selected="false" aria-controls="hologram-controls" aria-expanded="false">홀로그램</button><button role="tab" data-mode="points" aria-selected="false">원본 점군</button></div>
+          <button id="explore" aria-pressed="false">공간 안으로 이동 ↗</button>
+          <div id="move-controls" hidden><span id="explorer-position"></span><div role="group" aria-label="공간 이동"><button data-move="forward">앞으로</button><button data-move="back">뒤로</button><button data-move="left">왼쪽</button><button data-move="right">오른쪽</button><button data-move="up">위로</button><button data-move="down">아래로</button></div></div>
+          <div class="legend"><span><i class="point-dot"></i> 복원 점</span><span><i class="path-line"></i> 촬영 경로</span><span id="scale-badge">스케일 확인 중</span></div>
+          <div class="viewer-hint" id="viewer-hint">드래그 회전 · 휠 확대 · 오른쪽 드래그 이동</div>
+          <div class="axis-key"><span>X</span><span>Y</span><span>Z</span></div>
+        </section>
         <section id="hologram-controls" class="hologram-controls" hidden aria-label="홀로그램 점 좌표 조정">
           <div class="hologram-hud">
           <div class="interval-heading"><label for="hologram-interval">점 좌표 간격</label><output id="hologram-interval-value" for="hologram-interval hologram-interval-number">원본 위치</output></div>
@@ -70,13 +77,23 @@
             <p id="hologram-confidence-basis"></p>
             <p id="hologram-confidence-summary" role="status" aria-live="polite"></p>
           </div>
+          <div class="hologram-hud surface-hud">
+            <div class="interval-heading"><label for="surface-style">구조 표시 · 실험</label><select id="surface-style"><option value="points">점만</option><option value="lines">선만</option><option value="faces" selected>선·면</option></select></div>
+            <div class="interval-heading"><label for="surface-connection">연결 범위</label><output id="surface-connection-value" for="surface-connection">2.50×</output></div>
+            <input id="surface-connection" type="range" min="1" max="4" step="0.25" value="2.5" aria-describedby="surface-note">
+            <div class="interval-heading"><label for="surface-color">색상 차이 허용</label><output id="surface-color-value" for="surface-color">30 ΔE</output></div>
+            <input id="surface-color" type="range" min="5" max="70" step="1" value="30" aria-describedby="surface-note">
+            <div class="interval-heading"><label for="surface-angle">이웃 면 꺾임 허용</label><output id="surface-angle-value" for="surface-angle">55°</output></div>
+            <input id="surface-angle" type="range" min="10" max="85" step="5" value="55" aria-describedby="surface-note">
+            <label><input id="surface-wide" type="checkbox" checked> 비슷한 색의 넓은 표면 채우기</label>
+            <p id="surface-note">값을 높이면 더 넓게 연결합니다. 원본 색상과 이웃 방향으로 묶으며, 한 평면일 필요는 없습니다. 공동 관측이 적은 후보는 옅게 표시합니다.</p>
+            <p>넓은 표면은 발견된 특징점 위치에 맞춰 크기가 다른 사각 패치로 채웁니다. 영상의 색상 연결도 확인하며, 두 시점 이상 일치하면 더 밝게 표시합니다.</p>
+            <p id="surface-summary" role="status" aria-live="polite"></p>
+            <p id="surface-update-summary" role="status" aria-live="polite"></p>
+            <p id="surface-wide-summary" role="status" aria-live="polite"></p>
+          </div>
         </section>
-        <button id="explore" aria-pressed="false">공간 안으로 이동 ↗</button>
-        <div id="move-controls" hidden><span id="explorer-position"></span><div role="group" aria-label="공간 이동"><button data-move="forward">앞으로</button><button data-move="back">뒤로</button><button data-move="left">왼쪽</button><button data-move="right">오른쪽</button><button data-move="up">위로</button><button data-move="down">아래로</button></div></div>
-        <div class="legend"><span><i class="point-dot"></i> 복원 점</span><span><i class="path-line"></i> 촬영 경로</span><span id="scale-badge">스케일 확인 중</span></div>
-        <div class="viewer-hint" id="viewer-hint">드래그 회전 · 휠 확대 · 오른쪽 드래그 이동</div>
-        <div class="axis-key"><span>X</span><span>Y</span><span>Z</span></div>
-      </section>
+      </div>
       <aside>
         <section id="slam-panel" hidden aria-label="프레임 특징점 추적">
           <div class="section-title"><h2>연속 프레임 추적</h2><strong id="slam-tracking-state">초기화 중</strong></div>
