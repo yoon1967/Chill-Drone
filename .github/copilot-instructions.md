@@ -10,5 +10,7 @@ MR은 [공통 양식](../.gitlab/merge_request_templates/Default.md)으로 작�
 develop/master에 직접 push하지 않는다. 실제 단일 Jira 키로 브랜치·커밋·MR을 연결한다.
 커밋·MR 제목은 type(scope): [실제 Jira 키] 변경 형식이며 개별 커밋의 키만 생략 가능하다.
 기존 사용자 변경을 보존하고, 규칙 경로·실제 검증 결과·미완료 단계를 보고한다.
+브랜치·MR 삭제/닫기·소스 브랜치 자동 삭제 전에는 .gitlab/WORKFLOW_SETUP.md의
+「브랜치·MR 삭제·닫기 전 필수 확인」을 반드시 읽고 생성자 검증·사용자 확인을 수행한다.
 현재 개발 원본은 GitLab이다. 폴더·병렬 작업은 docs/team/START_HERE.md를 따른다.
 GitHub 공개·외부 기여는 CONTRIBUTING.md와 docs/team/GITHUB_RELEASE.md를 따르며, 임의로 원본을 바꾸거나 중복 PR을 만들지 않는다.
