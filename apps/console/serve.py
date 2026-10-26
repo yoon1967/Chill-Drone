@@ -167,7 +167,13 @@ class ViewerHandler(BaseHTTPRequestHandler):
         self.send_header("Content-Length", str(len(payload)))
         self.send_header("Cache-Control", "no-store")
         self.end_headers()
-        self.wfile.write(payload)
+        self.write_payload(payload)
+
+    def write_payload(self, payload):
+        try:
+            self.wfile.write(payload)
+        except (BrokenPipeError, ConnectionResetError, ConnectionAbortedError):
+            pass  # Switching tabs cancels in-flight JSON/image requests in the browser.
 
     def snapshot(self, revision=None, state=None):
         if not self.session:
@@ -425,7 +431,7 @@ class ViewerHandler(BaseHTTPRequestHandler):
         if path in exports and path != "/api/run":
             self.send_header("Content-Disposition", f'attachment; filename="{exports[path]}"')
         self.end_headers()
-        self.wfile.write(payload)
+        self.write_payload(payload)
 
 
 def main():
