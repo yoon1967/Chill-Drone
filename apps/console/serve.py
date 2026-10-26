@@ -11,11 +11,31 @@ from pathlib import Path
 import re
 import sys
 import threading
+from types import SimpleNamespace
 from urllib.parse import parse_qs, unquote, urlsplit
 
 APP = Path(__file__).resolve().parent
 sys.path.insert(0, str(APP.parents[1]))
 from modules.mapping.localization.observations import native_observations
+
+
+def prepare_demo_camera(source, *, camera=None, calibration_result=None, session=None):
+    """Validate a recorded input against its own calibration before serving it."""
+    from modules.mapping.localization.orbslam3 import calibration
+    from modules.mapping.localization.orbslam3_live import live_camera
+
+    if camera is None and calibration_result is None:
+        camera = Path(session) / "camera.json" if session else None
+        if camera is None or not camera.is_file():
+            raise ValueError("Demo requires --demo-camera, --demo-calibration-result, or a session camera.json")
+    value = calibration(SimpleNamespace(source=source, camera=camera,
+        calibration_result=calibration_result, width=960))
+    # The browser caps both dimensions, including portrait recordings.
+    if value["height"] > 960:
+        value = calibration(SimpleNamespace(source=source, camera=camera,
+            calibration_result=calibration_result, width=round(value["width"] * 960 / value["height"])))
+    return live_camera({"width": value["width"], "height": value["height"],
+                        "fps": value["fps"], "camera": value})
 
 
 class ObservationCache:
@@ -70,14 +90,19 @@ class Timeline:
             return self.cache[key]
 
 
+class ViewerServer(ThreadingHTTPServer):
+    # JPEG uploads and the viewer's parallel state/image requests share this listener.
+    request_queue_size = 32
+
+
 class ViewerHandler(BaseHTTPRequestHandler):
-    def __init__(self, *args, result=None, session=None, objects=None, live=None, timeline=None, observations=None, demo=None, **kwargs):
+    def __init__(self, *args, result=None, session=None, objects=None, live=None, timeline=None, observations=None, demo=None, demo_camera=None, **kwargs):
         self.result = Path(result).resolve() if result else None
         self.session = Path(session).resolve() if session else None
         self.objects = Path(objects).resolve() if objects else None
         self.live, self.timeline, self.demo = live, timeline, demo
+        self.demo_camera = demo_camera
         self.observations = observations
-        self.saved_session = self.session
         if live and live.current:
             self.session = live.current.path
         super().__init__(*args, **kwargs)
@@ -185,7 +210,7 @@ class ViewerHandler(BaseHTTPRequestHandler):
                     break
                 try:
                     self.wfile.write(chunk)
-                except (BrokenPipeError, ConnectionResetError):
+                except (BrokenPipeError, ConnectionResetError, ConnectionAbortedError):
                     break  # Browsers routinely cancel MP4 range requests while seeking.
                 remaining -= len(chunk)
 
@@ -216,11 +241,8 @@ class ViewerHandler(BaseHTTPRequestHandler):
             self.source_video()
             return
         if path == "/api/live":
-            camera = None
-            if self.demo and self.saved_session and (self.saved_session / "camera.json").is_file():
-                camera = json.loads((self.saved_session / "camera.json").read_text(encoding="utf-8"))
             self.json_response({"enabled": self.live is not None, "demo_available": self.demo is not None,
-                "demo_camera": camera, "current": self.live.current.stats() if self.live and self.live.current else None})
+                "demo_camera": self.demo_camera, "current": self.live.current.stats() if self.live and self.live.current else None})
             return
         try:
             requested = parse_qs(url.query).get("revision", [None])[0] if path == "/api/run" else None
@@ -360,6 +382,9 @@ def main():
     parser.add_argument("--enable-camera", action="store_true", help="Enable local browser camera -> Docker ORB-SLAM3")
     parser.add_argument("--live-root", type=Path, default=APP.parents[1] / "output/phone_mapping")
     parser.add_argument("--demo-source", type=Path, help="One local MP4 explicitly exposed for streaming demonstration")
+    calibration = parser.add_mutually_exclusive_group()
+    calibration.add_argument("--demo-camera", type=Path, help="Intrinsics JSON for this exact demo camera/crop")
+    calibration.add_argument("--demo-calibration-result", type=Path, help="Reuse only intrinsics from this video's saved reconstruction")
     args = parser.parse_args()
     result = args.result.resolve() if args.result else None
     if args.session and args.objects:
@@ -376,8 +401,18 @@ def main():
     demo = args.demo_source.resolve() if args.demo_source else None
     if demo and (not demo.is_file() or demo.suffix.lower() != ".mp4"):
         parser.error("Demo source must be a local MP4")
-    server = ThreadingHTTPServer(("127.0.0.1", args.port), partial(ViewerHandler, result=result,
-        session=args.session, objects=args.objects, live=live, timeline=Timeline(), observations=ObservationCache(), demo=demo))
+    if (demo and not args.enable_camera) or ((args.demo_camera or args.demo_calibration_result) and not demo):
+        parser.error("Demo calibration requires --demo-source and --enable-camera")
+    demo_camera = None
+    if demo:
+        try:
+            demo_camera = prepare_demo_camera(demo, camera=args.demo_camera,
+                calibration_result=args.demo_calibration_result, session=args.session)
+        except (OSError, ValueError, KeyError, TypeError) as error:
+            parser.error(str(error))
+    server = ViewerServer(("127.0.0.1", args.port), partial(ViewerHandler, result=result,
+        session=args.session, objects=args.objects, live=live, timeline=Timeline(), observations=ObservationCache(),
+        demo=demo, demo_camera=demo_camera))
     print(f"Phone mapping viewer: http://127.0.0.1:{args.port}/", flush=True)
     try:
         server.serve_forever()
