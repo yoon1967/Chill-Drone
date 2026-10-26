@@ -2,7 +2,7 @@ import * as THREE from 'three';
 import { OrbitControls } from '/vendor/OrbitControls.js';
 import { PlanarObjects } from '/objects.js';
 import { connectCapture } from '/capture.js';
-import { updatePointGrid } from '/point-grid.js';
+import { updatePointGrid, pointSpacingProfile, pointGridCells, displayPointCells } from '/point-grid.js';
 const $ = (id) => document.getElementById(id);
 const number = (n) => Number(n).toLocaleString('ko-KR');
 const timeOf = (c) => c.source_pts_s ?? c.timestamp_s;
@@ -13,6 +13,9 @@ let navigating = false, dragging = false, busy = false, revision = null;
 let pollDelay = 2000, previewFrame = null;
 let hologramInterval = 0, intervalFrame = null, originalPositions = new Float64Array();
 let hologramControlsOpen = false;
+let confidenceThreshold = 3, gridCells = null, filteredPoints = [];
+let spacingProfile = {step: .0001, max: .05, recommended: .003, median: 0};
+const decimal = (n) => Number(n).toLocaleString('ko-KR', {maximumFractionDigits: 12});
 const renderTimes = [];
 let lastRenderReport = 0;
 const replay = {session: null, entries: [], following: true, time: 0, lastTick: 0, generation: 0,
@@ -70,6 +73,8 @@ function dispose() {
 function showCloud() {
   if (!run) return;
   const points = run.points.filter((p) => p[7] <= Number($('error-limit').value));
+  filteredPoints = points;
+  gridCells = null;
   const colors = points.map((p) => {
     const colorMode = $('color-mode').value;
     if (colorMode === 'rgb') return p.slice(4, 7);
@@ -84,11 +89,24 @@ function showCloud() {
   cloud.geometry = geometry(positions, colors);
   cloud.geometry.getAttribute('position').setUsage(THREE.DynamicDrawUsage);
   applyPointInterval();
-  $('points').textContent = number(points.length);
+}
+function configureSpacing() {
+  spacingProfile = pointSpacingProfile(run.points);
+  // A selected fine interval remains valid when replay advances to a coarser map.
+  if (hologramInterval > 0) spacingProfile.step = Math.min(spacingProfile.step,
+    10 ** Math.floor(Math.log10(hologramInterval)) / 10);
+  for (const id of ['hologram-interval', 'hologram-interval-number']) {
+    $(id).step = spacingProfile.step;
+    $(id).max = Math.max(spacingProfile.max, hologramInterval);
+    $(id).value = hologramInterval;
+  }
+  $('hologram-interval-profile').textContent = `조절 단위 ${decimal(spacingProfile.step)} · ` +
+    (spacingProfile.median ? `최근접 거리 약 ${decimal(Number(spacingProfile.median.toPrecision(2)))} (표본 ${spacingProfile.samples}점)` : '점 사이 거리 추정 불가');
+  $('hologram-interval-recommend').textContent = `권장 ${decimal(spacingProfile.recommended)} 적용`;
 }
 function updateIntervalLabel() {
   const unit = run?.scale.unit === 'm' ? 'm' : '임의 단위';
-  const label = hologramInterval === 0 ? '원본 위치' : `${number(hologramInterval)} ${unit}`;
+  const label = hologramInterval === 0 ? '원본 위치' : `${decimal(hologramInterval)} ${unit}`;
   $('hologram-interval-value').textContent = label;
   $('hologram-interval').setAttribute('aria-valuetext', label);
   $('hologram-interval-reset').disabled = hologramInterval === 0;
@@ -96,20 +114,51 @@ function updateIntervalLabel() {
 function applyPointInterval() {
   if (!cloud) return;
   const interval = mode === 'hologram' ? hologramInterval : 0;
-  updatePointGrid(cloud.geometry, originalPositions, interval);
-  $('viewport').dataset.pointInterval = String(interval);
+  let count;
+  if (mode === 'hologram') {
+    gridCells ??= pointGridCells(filteredPoints, interval, run.point_observations, run.cameras.length);
+    count = displayPointCells(cloud.geometry, gridCells, confidenceThreshold);
+    const max = Math.max(gridCells.maxSupport, confidenceThreshold);
+    for (const id of ['hologram-confidence', 'hologram-confidence-number']) {
+      $(id).max = max; $(id).value = confidenceThreshold;
+    }
+    $('hologram-confidence-value').textContent = `최소 ${confidenceThreshold}프레임`;
+    $('hologram-confidence').setAttribute('aria-valuetext', `최소 ${confidenceThreshold}프레임`);
+    $('hologram-confidence-basis').textContent = gridCells.lowerBound ?
+      '이전 자료: 프레임 연결 정보 없음 · 개별 트랙 관측 수의 하한 사용, 격자 합산 불가' :
+      `${gridCells.basis === 'keyframes' ? '선택된 키프레임' : '등록된 프레임'} 기준 · 같은 프레임은 한 번만 계산`;
+    $('hologram-confidence-summary').textContent = `${number(count)} / ${number(gridCells.cells.length)}곳 표시 · 원본 ${number(gridCells.sourceCount)}점` +
+      (count ? '' : ' · 조건을 만족하는 점이 없습니다');
+  } else {
+    updatePointGrid(cloud.geometry, originalPositions, 0);
+    count = filteredPoints.length;
+  }
+  $('points').textContent = number(root?.visible === false ? 0 : count);
+  Object.assign($('viewport').dataset, {pointInterval: interval, confidenceThreshold: mode === 'hologram' ? confidenceThreshold : 1,
+    visiblePoints: count, confidenceBasis: gridCells?.lowerBound ? 'track_lower_bound' : gridCells?.basis || ''});
+  replayControls();
 }
-function setPointInterval(value, editingNumber = false) {
-  if (!Number.isFinite(value) || value < 0 || value > 10) return;
-  hologramInterval = value;
-  $('hologram-interval').value = value;
-  if (!editingNumber) $('hologram-interval-number').value = value;
-  updateIntervalLabel();
-  // Coalesce drag events into one position-buffer update per rendered frame.
+function schedulePointDisplay() {
   if (intervalFrame === null) intervalFrame = requestAnimationFrame(() => {
     intervalFrame = null;
     applyPointInterval();
   });
+}
+function setPointInterval(value, editingNumber = false) {
+  if (!Number.isFinite(value) || value < 0 || value > Math.max(spacingProfile.max, hologramInterval) * 100) return;
+  hologramInterval = value;
+  gridCells = null;
+  for (const id of ['hologram-interval', 'hologram-interval-number']) $(id).max = Math.max(spacingProfile.max, value);
+  $('hologram-interval').value = value;
+  if (!editingNumber) $('hologram-interval-number').value = value;
+  updateIntervalLabel();
+  // Coalesce drag events into one position-buffer update per rendered frame.
+  schedulePointDisplay();
+}
+function setConfidence(value) {
+  if (!Number.isInteger(value) || value < 1 || value > 1000000) return;
+  confidenceThreshold = value;
+  schedulePointDisplay();
 }
 function setMode(next, toggleControls = false) {
   if (next !== 'hologram') hologramControlsOpen = false;
@@ -134,7 +183,7 @@ function setMode(next, toggleControls = false) {
     $('kind').textContent = next === 'hologram' ? 'HOLOGRAM · ORB MAP' : 'ORB-SLAM3 · 특징점 지도';
     $('mode-detail').textContent = '연속 프레임의 같은 지도 점을 추적하고 카메라 위치와 희소 3D 지도를 함께 갱신합니다.';
   }
-  if (next === 'hologram') $('mode-detail').textContent += ' 점 좌표 간격을 조절해 가장 가까운 격자 위치로 표시할 수 있습니다.';
+  if (next === 'hologram') $('mode-detail').textContent += ' 격자로 좌표를 모은 뒤 관측 프레임 수로 신뢰할 점을 고릅니다.';
 }
 function selectFrame(index) {
   currentIndex = Math.max(0, Math.min(index, run.cameras.length - 1));
@@ -185,6 +234,7 @@ function applyRun(value) {
   const preserve = run && run.input_run_id === value.input_run_id && run.segment_id === value.segment_id;
   const frame = run?.cameras[currentIndex]?.frame_id;
   run = value;
+  configureSpacing();
   $('viewport').dataset.revision = String(run.revision ?? 0);
   $('viewport').dataset.session = run.input_run_id;
   document.querySelector('.workspace').classList.toggle('slam-workspace', Boolean(run.slam));
@@ -284,7 +334,7 @@ function replayControls() {
     `${playing ? '생성 과정 재생' : '기록 일시정지'} · 지도 ${replay.applied} · 표시 ${$('points').textContent}점`;
   $('replay-state').textContent = `${detail} · ${replay.entries.length}개 지도 갱신 기록${estimate ? ' · 이전 기록 시각은 마지막 키프레임 기준 추정' : ' · 입력 영상 시각 기준'}`;
   Object.assign($('replay-state').dataset, {time: replay.time, revision: replay.applied ?? 0,
-    following: replay.following, playing, points: root?.visible === false ? 0 : cloud?.geometry.getAttribute('position')?.count || 0});
+    following: replay.following, playing, points: root?.visible === false ? 0 : cloud?.geometry.drawRange.count || 0});
 }
 async function refreshTimeline(state) {
   if (state.backend !== 'orb_slam3_monocular') return;
@@ -450,10 +500,14 @@ $('color-mode').addEventListener('change', showCloud);
 $('error-limit').addEventListener('change', showCloud);
 $('hologram-interval').addEventListener('input', (e) => setPointInterval(e.target.valueAsNumber));
 $('hologram-interval-number').addEventListener('input', (e) => {
-  if (e.target.validity.valid) setPointInterval(e.target.valueAsNumber, true);
+  if (!e.target.validity.badInput && !e.target.validity.stepMismatch) setPointInterval(e.target.valueAsNumber, true);
 });
 $('hologram-interval-number').addEventListener('change', (e) => { e.target.value = hologramInterval; });
 $('hologram-interval-reset').addEventListener('click', () => setPointInterval(0));
+$('hologram-interval-recommend').addEventListener('click', () => setPointInterval(spacingProfile.recommended));
+$('hologram-confidence').addEventListener('input', (e) => setConfidence(e.target.valueAsNumber));
+$('hologram-confidence-number').addEventListener('input', (e) => setConfidence(e.target.valueAsNumber));
+$('hologram-confidence-number').addEventListener('change', (e) => { e.target.value = confidenceThreshold; });
 $('show-path').addEventListener('change', (e) => { if (route) route.visible = selected.visible = e.target.checked; });
 $('show-cameras').addEventListener('change', (e) => { if (frustums) frustums.visible = e.target.checked; });
 $('show-grid').addEventListener('change', (e) => { if (grid) grid.visible = e.target.checked; });

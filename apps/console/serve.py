@@ -14,6 +14,31 @@ import threading
 from urllib.parse import parse_qs, unquote, urlsplit
 
 APP = Path(__file__).resolve().parent
+sys.path.insert(0, str(APP.parents[1]))
+from modules.mapping.localization.observations import native_observations
+
+
+class ObservationCache:
+    """Enrich legacy scenes in memory, without rewriting any saved reconstruction."""
+    def __init__(self):
+        self.key = None
+        self.value = None
+        self.lock = threading.Lock()
+
+    def read(self, session, scene):
+        if not session or scene.get("pose_source") != "orb_slam3":
+            return None
+        path = session / "native.json"
+        try:
+            stat = path.stat()
+            key = (str(path), stat.st_mtime_ns, stat.st_size, scene.get("revision"), scene.get("segment_id"))
+            with self.lock:
+                if key != self.key:
+                    value = native_observations(scene, json.loads(path.read_text(encoding="utf-8")))
+                    self.key, self.value = key, value
+                return self.value
+        except (OSError, ValueError, KeyError, TypeError):
+            return None
 
 
 class Timeline:
@@ -46,11 +71,12 @@ class Timeline:
 
 
 class ViewerHandler(BaseHTTPRequestHandler):
-    def __init__(self, *args, result=None, session=None, objects=None, live=None, timeline=None, demo=None, **kwargs):
+    def __init__(self, *args, result=None, session=None, objects=None, live=None, timeline=None, observations=None, demo=None, **kwargs):
         self.result = Path(result).resolve() if result else None
         self.session = Path(session).resolve() if session else None
         self.objects = Path(objects).resolve() if objects else None
         self.live, self.timeline, self.demo = live, timeline, demo
+        self.observations = observations
         self.saved_session = self.session
         if live and live.current:
             self.session = live.current.path
@@ -226,6 +252,10 @@ class ViewerHandler(BaseHTTPRequestHandler):
                 return
             value = json.loads((result / "scene.json").read_text(encoding="utf-8"))
             value.pop("surface", None)  # Read old results without exposing the retired mesh.
+            if not value.get("point_observations") and self.observations:
+                evidence = self.observations.read(self.session, value)
+                if evidence:
+                    value["point_observations"] = evidence
             if state:
                 value["stream"] = state
             try:
@@ -341,14 +371,13 @@ def main():
         parser.error("Install apps/console dependencies first: pnpm install --frozen-lockfile")
     live = None
     if args.enable_camera:
-        sys.path.insert(0, str(APP.parents[1]))
         from modules.mapping.localization.orbslam3_live import LiveManager
         live = LiveManager(args.live_root)
     demo = args.demo_source.resolve() if args.demo_source else None
     if demo and (not demo.is_file() or demo.suffix.lower() != ".mp4"):
         parser.error("Demo source must be a local MP4")
     server = ThreadingHTTPServer(("127.0.0.1", args.port), partial(ViewerHandler, result=result,
-        session=args.session, objects=args.objects, live=live, timeline=Timeline(), demo=demo))
+        session=args.session, objects=args.objects, live=live, timeline=Timeline(), observations=ObservationCache(), demo=demo))
     print(f"Phone mapping viewer: http://127.0.0.1:{args.port}/", flush=True)
     try:
         server.serve_forever()

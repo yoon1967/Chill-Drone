@@ -25,6 +25,12 @@ display 좌표는 native world에 diag(1,-1,-1)을 적용하며 카메라 중심
 지도 수정 후 이전 좌표의 점/경로를 누적하지 않고 완성된 한 snapshot으로 교체한다.
 다른 map ID로 전환하면 웹도 별도 좌표계로 교체한다. 추적 상실 중에는 마지막 유효 지도를 유지한다.
 
+새 scene은 [결과 계약의 관측 연결](PHONE_SFM_RESULT_V1.md#선택적-관측-프레임-연결)을 함께 발행한다.
+`point_observations.basis=keyframes`이며 전체 수신 프레임 수가 아닌 선택된 키프레임의 고유 관측이다.
+과거 scene은 native snapshot의 revision·map ID·카메라 ID/프레임 목록이 모두 일치할 때만
+웹 응답 메모리에서 보완한다. 저장 파일은 수정하지 않는다. 최신 native로 이전 재생 기록을
+보완하지 않으며 연결 정보가 없는 기록은 명시적인 하한 계산으로 표시한다.
+
 `state.json`은 입력/정상 추적 수, 추적 상태, 반복 관측 수, 처리 시간 P95,
 영상 시각 대비 재생 지연과 마지막 유효 revision을 노출한다.
 `initializing_frames`와 `lost_tracking_frames`를 구분하며 초기화 전 프레임을 추적 상실로 세지 않는다.
