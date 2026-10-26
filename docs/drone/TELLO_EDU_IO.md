@@ -3,7 +3,7 @@
 PC와 Tello EDU 사이에 오가는 데이터를 한곳에 정리한다. 자율비행·지도·탐지·백엔드·웹이 같은 이름과 단위를 쓰도록 하는 것이 목적이다.
 
 - 기준 기체: Tello EDU 본체(확장 키트·외부 센서 없음), `sdk?` 응답 `30`
-- 실측: 2026-10-23, Windows 11 PC, 지상에서만 확인(이륙 없음)
+- 실측: 2026-10-23, Windows 11 PC. 연결 점검은 지상, 수동 비행 2회(실내, 운용자 조작, rc ±30)
 - 구현: `modules/autonomy/tello_link/` ([MR !23](https://lab.ssafy.com/s15-final/S15P31B205/-/merge_requests/23), S15P31B205-156)
 - 표기: **실측**은 우리 기체로 확인한 값, **문서**는 Tello SDK 문서·널리 쓰는 라이브러리 기준이며 아직 확인하지 않은 값이다.
 
@@ -72,10 +72,10 @@ flowchart LR
 | query | `wifi?` | - | 신호 세기(SNR) | 허용 | ✅ `90` |
 | query | `speed?`, `time?` | - | 설정 속도(cm/s), 비행 시간 | 허용 | 미확인 |
 | query | `height?`, `temp?`, `attitude?`, `baro?`, `acceleration?`, `tof?` | - | 각 값(SDK 1.3 문서) | 허용 | 미확인 |
-| stop | `land` | - | `ok` | 항상 허용 | 미확인(이륙 전) |
+| stop | `land` | - | `ok` | 항상 허용 | ✅ 응답까지 3.2~4.6초(착륙 완료 후 `ok`) |
 | stop | `emergency` | - | `ok` | 항상 허용 | 미확인. **모터 즉시 정지, 공중이면 추락** |
 | stop | `stop` | - | `ok` | 항상 허용 | 미확인. 제자리 정지 |
-| flight | `takeoff` | - | `ok` | 차단 | 차단 확인 |
+| flight | `takeoff` | - | `ok` | 차단(`--flight`에서 점검 후 허용) | ✅ 응답까지 8.6~8.7초, 약 80cm에서 정지 |
 | flight | `up/down/left/right/forward/back x` | x: 20~500 (cm) | `ok` | 차단 | - |
 | flight | `cw/ccw x` | x: 1~360 (°) | `ok` | 차단 | - |
 | flight | `go x y z speed` | x·y·z: -500~500 (cm), speed: 10~100 (cm/s) | `ok` | 차단 | - |
@@ -85,7 +85,10 @@ flowchart LR
 | config | `ap`, `wifi`, `multiwifi`, `port`, `mon`, `moff`, `mdirection` | 문서 참고 | `ok` | 차단 | - |
 | config | `setfps`, `setbitrate`, `setresolution`, `downvision` | SDK 3.0 문서 | `ok` | 차단 | 우리 기체 지원 여부 미확인 |
 
-`rc` 값은 조종기 입력 비율이지 속도가 아니다. 실제 속도와의 관계는 비행 응답 측정(-156)으로 따로 구한다.
+`rc` 값은 조종기 입력 비율이지 속도가 아니다. 실제 속도와의 관계는 비행 응답 측정으로 따로 구한다.
+실측: rc ±30을 누르는 동안 `vgx`·`vgy`는 -2~3 범위였다(줄자 미측정).
+
+`takeoff`·`land`는 동작이 끝난 뒤 `ok`가 온다. 이 동안 다른 명령은 응답을 기다리느라 늦어지므로, `tello_link`는 `emergency`만 잠금 없이 바로 보낸다.
 
 ## 4. 상태 채널 (UDP 8890)
 
@@ -98,12 +101,12 @@ mid:-1;x:-100;y:-100;z:-100;mpry:0,0,0;pitch:-8;roll:1;yaw:54;vgx:0;vgy:0;vgz:0;
 | 필드 | 뜻 | 원시 단위 | 지상 실측 | `tello_link` SI 출력 | 상태 |
 | --- | --- | --- | --- | --- | --- |
 | `pitch`, `roll`, `yaw` | 자세 | ° (정수) | -8, 1, 54 | `pitch_rad`, `roll_rad`, `yaw_rad` | 단위 확정 |
-| `h` | 이륙 지점 기준 높이 | cm | 0 | `height_m` | 단위 확정, 비행 중 확인 필요 |
+| `h` | 이륙 지점 기준 높이 | cm | 0 (비행 중 70~150) | `height_m` | 확정. 이륙 직후 약 80, 높이 상한 1.5m에서 150으로 멈춤 |
 | `tof` | 하방 ToF 거리 | cm | 10 | `tof_m`, `tof_valid`, `tof_reason` | 10 이하·6553 이상은 무효로 처리(기준은 비행 중 확인 필요) |
 | `bat` | 배터리 | % | 100 | `battery_pct` | 확정 |
 | `templ`, `temph` | 기체 온도 최저·최고 | °C | 46~91 | `temp_low_c`, `temp_high_c` | 확정 |
 | `time` | 모터 동작 시간 | s | 0 | `motor_time_s` | 지상만 확인 |
-| `vgx`, `vgy`, `vgz` | 속도 | 문서마다 다름(dm/s 또는 cm/s) | 0 | 원시값만 | **미확정**, 비행 측정 필요 |
+| `vgx`, `vgy`, `vgz` | 속도 | 문서마다 다름(dm/s 또는 cm/s) | 0 (rc ±30 비행 중 -2~3) | 원시값만 | **dm/s로 추정**, 줄자 비교 전까지 미확정 |
 | `agx`, `agy`, `agz` | 가속도 | 0.001g로 추정 | -99, -28, -1004 | 원시값만 | 지상에서 `agz` ≈ -1g. 축 방향은 미확정 |
 | `baro` | 기압 고도 | m로 추정(djitellopy는 ×100으로 cm 변환) | 12.5~34.09 | 원시값만 | **미확정**, 절대값보다 변화량으로 써야 함 |
 | `mid` | Mission Pad ID | - | -1 (인식 안 됨) | - | Pad 미사용 |
