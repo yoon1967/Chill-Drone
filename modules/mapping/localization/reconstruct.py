@@ -245,8 +245,13 @@ def export_result(model, run, images_root, frames, output, elapsed, components, 
               "point_fields": ["point_id", "x", "y", "z", "r", "g", "b", "error_px", "track_length"],
               "points": rows,
               "limitations": limitations}
+    if __package__:
+        from .observations import sfm_observations
+    else:
+        from observations import sfm_observations
+    result["point_observations"] = sfm_observations(points, cameras)
     write_json(output / "scene.json", result)
-    write_json(output / "poses.json", {k: v for k, v in result.items() if k not in ("points", "point_fields")})
+    write_json(output / "poses.json", {k: v for k, v in result.items() if k not in ("points", "point_fields", "point_observations")})
     write_json(output / "quality.json", quality)
     write_json(output / "scale.json", scale)
     with (output / "points.ply").open("w", encoding="ascii", newline="\n") as stream:

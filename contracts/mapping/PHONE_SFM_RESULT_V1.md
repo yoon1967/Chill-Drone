@@ -12,7 +12,7 @@
 | `status.json` | running / failed / complete / partial. complete/partial 결과를 웹에서 연다 |
 | `scene.json` | `schema_version=phone-sfm-result/1.0`, 회차·시각·점·카메라·스케일·품질 |
 | `points.ply` | ASCII PLY. 표시 좌표의 XYZ, 원본 영상에서 평균한 RGB 0~255 |
-| `poses.json` | scene의 points/point_fields를 제외한 메타데이터와 카메라 |
+| `poses.json` | scene의 points/point_fields/point_observations를 제외한 메타데이터와 카메라 |
 | `trajectory.csv` | frame_id, source_pts_s, x/y/z, unit, pose_source |
 | `scale.json`, `quality.json` | scene과 같은 스케일/품질 필드 |
 | `settings.json`, `provenance.json` | 고정 도구·설정·검증 결과·입출력 해시·실행 환경 |
@@ -25,6 +25,21 @@
 `points` 한 행은 `[point_id,x,y,z,r,g,b,error_px,track_length]`다.
 point_id는 native COLMAP ID이고 SIFT 후보 트랙 ID와 다르다.
 등록된 카메라는 원본 영상 `source_pts_s`의 초 단위 PTS 순서로 정렬한다. 절대 촬영 시각은 생성하지 않는다.
+
+## 선택적 관측 프레임 연결
+
+새 생산자는 `scene.point_observations`를 추가한다. 기존 9열 점 행과 schema 버전은 유지한다.
+`schema_version=point-observations/1.0`, `basis=registered_frames`(SfM) 또는 `keyframes`(ORB-SLAM3),
+`frame_index_by_point`는 문자열 point ID → 해당 **scene.cameras의 인덱스 배열**이다.
+배열은 정렬된 고유 정수이며 같은 프레임의 여러 관측을 한 번만 센다. 빈 배열은 관측 0회다.
+이 정보는 해당 revision·segment의 카메라 목록과 함께 교체하며 다른 지도/버전에서 가져오지 않는다.
+선택되지 않은 일반 처리 프레임의 관측 수를 뜻하지 않는다.
+
+홀로그램은 오차 표시 필터 → 좌표 격자화 → 같은 격자의 관측 인덱스 합집합 → 최소 프레임 수
+검사 순서로 한 점을 표시한다. 서로 다른 점의 track_length를 더하지 않는다. 간격 0에서는 정확히
+같은 XYZ만 묶는다. 원본 점·카메라·저장 산출물은 바꾸지 않는다.
+이 필드가 없는 과거 결과는 같은 격자의 **최대 개별 track_length**를 관측 수 하한으로 사용하고
+화면에 연결 정보 없음/격자 합산 불가를 표시한다. 이 하한은 정확한 프레임 합집합이 아니다.
 
 ## 카메라와 좌표
 

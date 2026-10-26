@@ -18,6 +18,11 @@ import uuid
 import cv2
 import numpy as np
 
+if __package__:
+    from .observations import native_observations
+else:
+    from observations import native_observations
+
 IMAGE = "ssafy-orbslam3:local"
 DISPLAY = np.diag([1., -1., -1.])
 
@@ -156,7 +161,7 @@ def convert(native, camera, progress, session):
         raise ValueError("empty_native_map")
     xyz = np.array([p[1:4] for p in points])
     count = progress.get("frames_received", 0)
-    return {"schema_version": "phone-sfm-result/1.2", "pose_source": "orb_slam3", "input_run_id": session.name,
+    result = {"schema_version": "phone-sfm-result/1.2", "pose_source": "orb_slam3", "input_run_id": session.name,
         "created_utc": datetime.now(timezone.utc).isoformat(), "revision": native["revision"],
         "segment_id": native["map_id"], "gauge_aligned": True,
         "coordinate_system": {"native": "ORB-SLAM3 world; camera x-right y-down z-forward", "display_rotation": DISPLAY.tolist()},
@@ -173,6 +178,8 @@ def convert(native, camera, progress, session):
             "big_change_index": native["big_change_index"], "final": native["final"],
             "calibration_status": camera["calibration_status"], "keyframes": len(cameras)},
         "limitations": ["단안 임의 단위 · 실제 치수 미검증", "ORB-SLAM3의 희소 지도 · 밀집 표면 복원은 별도 단계"]}
+    result["point_observations"] = native_observations(result, native)
+    return result
 
 
 def preview(session, progress, camera):
