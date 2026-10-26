@@ -1,0 +1,7 @@
+# tello_link.py, fake_tello.py(영상 제외), 테스트는 표준 라이브러리만 사용한다.
+# 아래는 점검 웹 화면과 영상 수신용이다.
+fastapi>=0.110        # MIT
+uvicorn[standard]>=0.29  # BSD-3-Clause
+av>=12                # BSD-3-Clause (휠에 FFmpeg 포함, 라이선스는 README 참고)
+pillow>=10            # MIT-CMU (HPND)
+numpy>=1.24           # BSD-3-Clause, 가짜 Tello 테스트 영상 생성에만 사용

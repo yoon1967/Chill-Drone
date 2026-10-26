@@ -4,3 +4,7 @@
 
 최초 구현 시 지원 버전·설치·실행·테스트·설정 이름과 입출력 계약 링크를 이 문서에 추가한다.
 팀 작업 절차는 저장소 루트의 docs/team/START_HERE.md를 따른다.
+
+## 현재 들어 있는 것
+
+- [tello_link](tello_link/README.md): Tello EDU SDK 연결 모듈과 연결 점검 화면(S15P31B205-156, 이륙 없음). -207 ROS 2 드라이버에서 import해 쓰는 것을 전제로 한다.
