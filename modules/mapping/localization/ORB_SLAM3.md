@@ -83,6 +83,43 @@ Docker Linux 엔진을 켜고 `http://127.0.0.1:8793/`에서 **카메라 연결 
 선택하면 브라우저에서 디코딩·JPEG 전송하고 실제 Docker 추적을 새로 실행한다. 저장 결과
 재생과 달리 이 기능에는 Docker가 필요하다. 실제 카메라·기체 검증 결과로 취급하지 않는다.
 
+### 저장 결과에서 녹화 영상 전송 재현
+
+기존 온라인 세션이 없어도 같은 영상의 저장 복원에서 **카메라 내부 파라미터만** 가져와
+시연할 수 있다. 원래 카메라 경로와 3D 점은 새 SLAM 계산에 넣지 않는다.
+
+```powershell
+.\.venv\Scripts\python.exe -B apps/console/serve.py `
+  --result output/phone_mapping/my_prior_result --port 8791 --enable-camera `
+  --demo-source data/raw/my_capture/source_video.mp4 `
+  --demo-calibration-result output/phone_mapping/my_prior_result
+```
+
+실측 카메라 JSON은 `--demo-camera camera.json`으로 대신 지정한다. 두 보정 옵션은 동시에
+사용하지 않는다. 옵션을 생략하면 기존 `--session`의 `camera.json`을 사용한다. 보정값이
+없거나 영상의 가로세로 비율이 다르면 서버 시작 단계에서 오류를 알린다. 보정값은 같은
+렌즈·크롭·방향의 영상에만 사용하며, 저장 결과의 자체 추정값은 실측 보정으로 표시하지 않는다.
+
+브라우저에서 **현재 녹화 영상 · 스트리밍 시연 → 스트리밍 시연 시작**을 선택한다.
+서버는 시작 시 브라우저와 같은 최대 960px 크기로 보정값을 맞춘다.
+
+반복 가능한 HTTP 종단 검증은 별도 터미널에서 실행한다.
+
+```powershell
+.\.venv\Scripts\python.exe -B tests/integration/replay_live_slam.py `
+  --url http://127.0.0.1:8791 --source data/raw/my_capture/source_video.mp4 `
+  --report output/phone_mapping/my_live_check/replay_report.json
+```
+
+브라우저 시연과 HTTP 검증은 한 번에 하나씩 실행한다. 이 검증은 OpenCV로 영상을 원래
+속도로 읽어 브라우저와 동일한 start/frame/stop API로 JPEG를 보낸다. 점군 응답을 실행 중
+두 번 이상 읽고 추적된 프레임이 있는지 검사한다. 보고서에는 원본 해시·입력 시각·수신 및
+추적 상태·관찰한 지도 revision을 남긴다. 실패 시 입력, SLAM 시작, 프레임/지도 전송,
+SLAM 처리 단계를 표시하며 0이 아닌 종료 코드를 반환한다. 보고서 경로는 새 파일이어야 한다.
+로컬 HTTP에 직접 연결하며 지연된 원본 프레임은 생략해 재생 속도를 유지한다. 생략 수와
+전송 수를 따로 기록하고 종료 중에만 나온 지도는 실시간 갱신 횟수에 포함하지 않는다.
+이는 녹화 파일의 HTTP 연결 검증이며 브라우저 디코딩·렌더링과 실제 카메라는 별도로 확인한다.
+
 ## 지도 생성 과정 재생
 
 **재생**은 입력 영상 시각에 맞춰 `timeline.json`의 실제 지도 revision을 차례로 읽는다.
