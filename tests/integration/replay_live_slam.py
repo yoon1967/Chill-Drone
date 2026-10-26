@@ -49,7 +49,7 @@ def replay(args):
     def observe():
         nonlocal last_revision, stage
         stage = "state_transport"
-        state = request(connection, "/api/state")
+        state = request(connection, "/api/live/state?" + urlencode({"session": session}))
         if state.get("session_id") != session:
             raise RuntimeError("viewer_session_changed")
         report["observations"].append({"wall_seconds": round(time.monotonic() - started, 3),
@@ -58,7 +58,7 @@ def replay(args):
         revision = state.get("revision", 0)
         if revision and revision != last_revision:
             stage = "map_transport"
-            scene = request(connection, "/api/run?" + urlencode({"revision": f"{revision:06d}", "session": session}))
+            scene = request(connection, "/api/live/run?" + urlencode({"revision": f"{revision:06d}", "session": session}))
             if scene.get("revision") != revision or not scene.get("points") or not scene.get("cameras"):
                 raise RuntimeError("invalid_map_response")
             report["map_updates"].append({"revision": revision, "points": len(scene["points"]),

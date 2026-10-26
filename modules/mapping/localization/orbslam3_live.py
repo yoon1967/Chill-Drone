@@ -76,11 +76,17 @@ class LiveSession:
 
     def stats(self):
         with self.condition:
-            return {"session_id": self.id, "input": "browser_camera", "transport_ready": self.ready,
+            lifecycle = ("failed" if self.error else "complete") if self.done else \
+                "stopping" if self.closing else "receiving" if self.ready else "starting"
+            return {"source": "live", "backend": "orb_slam3_monocular",
+                    "session_id": self.id, "session_status": lifecycle,
+                    "input": "browser_camera", "transport_ready": self.ready,
                     "transport_active": not self.done, "transport_stopping": self.closing,
                     "transport_received": self.received, "transport_submitted": self.submitted,
                     "frame_drops": self.dropped, "queue_depth": int(self.pending is not None),
-                    "queue_capacity": 1, "stop_reason": self.reason if self.closing else None}
+                    "queue_capacity": 1, "stop_reason": self.reason if self.closing else None,
+                    "last_input_timestamp_s": self.last_pts if self.last_pts >= 0 else None,
+                    "last_input_sequence": self.last_sequence if self.last_sequence >= 0 else None}
 
     def offer(self, jpeg, pts, sequence):
         if not math.isfinite(pts) or not 0 <= pts <= 86400 or sequence < 0:
@@ -215,9 +221,11 @@ class LiveManager:
             return self.current.stats()
 
     def require(self, session_id):
-        if not self.current or self.current.id != session_id:
-            raise RuntimeError("camera_session_mismatch")
-        return self.current
+        with self.lock:
+            current = self.current
+            if not current or current.id != session_id:
+                raise RuntimeError("camera_session_mismatch")
+            return current
 
     def shutdown(self):
         if self.current and not self.current.done:

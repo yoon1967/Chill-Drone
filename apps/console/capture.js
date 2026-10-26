@@ -60,6 +60,7 @@ export async function connectCapture(onStart) {
       if (!jpeg) throw new Error('영상 프레임 인코딩 실패');
       const state = await post(`/api/live/frame?session=${encodeURIComponent(session)}`, jpeg,
         {'Content-Type': 'image/jpeg', 'X-Frame-Timestamp': String(pts), 'X-Frame-Sequence': String(currentSequence)});
+      if (!active || session !== id) return;
       sent++;
       message(`수신 중 · 전송 ${sent}장 · 전송 대기 중 생략 ${skipped}장 · 처리 대기 교체/입력 누락 ${state.frame_drops}장 · 대기 ${state.queue_depth}/1`);
       Object.assign($('camera-status').dataset, {sent, skipped, dropped: state.frame_drops, session});
@@ -101,7 +102,9 @@ export async function connectCapture(onStart) {
       id = started.session_id;
       const deadline = Date.now() + 65000;
       while (true) {
-        const state = await (await fetch('/api/state')).json();
+        const response = await fetch(`/api/live/state?session=${encodeURIComponent(id)}`);
+        const state = await response.json();
+        if (!response.ok) throw new Error(state.error || '영상 세션 상태를 읽지 못했습니다.');
         if (state.status === 'failed') throw new Error(state.last_error || 'SLAM 시작 실패');
         if (state.transport_ready) break;
         if (Date.now() > deadline) throw new Error('SLAM 시작 시간 초과');

@@ -51,8 +51,13 @@ PNG·전체 처리 시간은 [파일 실행 안내](../../docs/phone_mapping/vid
 [온라인 처리 안내](../../modules/mapping/localization/ONLINE.md)에서 영상 수신과 영상 경계 기반 객체 복원을 준비한다.
 웹 자체는 Python 표준 라이브러리와 설치된 Three.js를 계속 사용한다.
 
-`--result <완료 결과> --objects <객체 폴더>`로 저장된 지도에 평면 객체를 붙이거나,
-`--session <온라인 실행 폴더>`로 수신 중인 지도를 연결한다. 두 입력 모드는 함께 지정하지 않는다.
+`--result <완료 결과> --objects <객체 폴더>`로 저장된 지도에 평면 객체를 붙이고,
+`--session <온라인 실행 폴더>`로 수신 중이거나 기록된 지도를 연결한다. 두 입력을 함께 지정할 수 있다.
+저장 결과는 `/api/saved/state`, `/api/saved/run`, 온라인 세션은 `/api/live/state`, `/api/live/run`에서
+각각 조회한다. 실시간 세션을 새로 시작해도 saved 경로의 결과·단위·이미지·내려받기는 유지한다.
+카메라 입력만 받을 때는 `--enable-camera`만으로도 시작할 수 있다.
+현재 화면과 이전 `/api/run` 경로는 온라인 세션이 있으면 이를 따라간다. 입력별 화면은
+[소스 조회 계약](../../contracts/mapping/VIEWER_SOURCES_V1.md)의 고정 경로를 사용한다.
 웹은 2초마다 상태를 확인하고 새 revision만 가져온다. 지도와 객체는 같은 응답으로 읽는다.
 갱신 중 사용자의 시점·표현 모드는 유지하며 좌표 segment가 바뀌면 시점을 다시 맞춘다.
 

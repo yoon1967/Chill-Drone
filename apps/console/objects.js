@@ -78,8 +78,8 @@ export class PlanarObjects {
       g.setAttribute('uv', new THREE.Float32BufferAttribute([0, 1, 1, 1, 1, 0, 0, 0], 2));
       g.setIndex([0, 1, 2, 0, 2, 3]);
       g.computeVertexNormals();
-      const query = run.stream ? `?revision=${String(run.revision).padStart(6, '0')}` : '';
-      const texture = loader.load(`/api/object-texture/${encodeURIComponent(o.texture_file)}${query}`, undefined, undefined, () => {
+      const query = run.stream ? `?revision=${String(run.revision).padStart(6, '0')}&session=${encodeURIComponent(run.stream.session_id)}` : '';
+      const texture = loader.load(`/api/${run.source}/object-texture/${encodeURIComponent(o.texture_file)}${query}`, undefined, undefined, () => {
         if (this.run === run) $('object-status').textContent = '일부 영상 표면을 읽지 못했습니다. 경계와 특징점으로 확인하세요.';
       });
       texture.colorSpace = THREE.SRGBColorSpace;
