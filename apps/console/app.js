@@ -125,16 +125,17 @@ function liveStatus(state) {
   const locallyActive = ['requesting', 'connecting', 'receiving', 'stopping'].includes(local);
   const lifecycle = state.session_status || state.status;
   const recorded = !locallyActive && state.session_id;
-  $('input-state').textContent = locallyActive || !recorded || ['denied', 'disconnected', 'failed'].includes(local) ? names[local] || names.idle :
+  const useLocal = locallyActive || !recorded || ['denied', 'disconnected', 'failed'].includes(local) || (local === 'stopped' && !['complete', 'failed'].includes(lifecycle));
+  $('input-state').textContent = useLocal ? names[local] || names.idle :
     ({starting: '연결 중', receiving: '수신 중', stopping: '종료 중', complete: '영상 종료 · 기록', failed: '수신 중단'}[lifecycle] || '저장된 세션');
-  $('input-detail').textContent = locallyActive || !recorded || ['denied', 'disconnected', 'failed'].includes(local) ?
+  $('input-detail').textContent = useLocal ?
     captureState.message || '시작 버튼을 누르면 카메라 권한을 요청합니다.' : `처리 ${number(state.frames_received || 0)}장 · 마지막 입력 ${state.last_input_sequence ?? '기록 없음'}`;
   const trackingNames = {2: '추적 중', 3: '재위치 탐색', 4: '추적 상실'};
   $('tracking-state').textContent = !state.session_id ? '대기 중' : lifecycle === 'failed' ? '추적 중단' :
-    lifecycle === 'complete' ? '추적 종료' : trackingNames[state.tracking_state] || '초기화 중';
+    lifecycle === 'complete' ? '추적 종료' : lifecycle === 'stopping' ? '추적 종료 중' : trackingNames[state.tracking_state] || '초기화 중';
   $('tracking-detail').textContent = state.session_id ? `정상 추적 ${number(state.tracked_frames || 0)}장 · 초기화 ${number(state.initializing_frames || 0)}장 · 추적 상실 ${number(state.lost_tracking_frames || 0)}장` : '아직 받은 영상이 없습니다.';
   const available = state.map_available;
-  $('map-state').textContent = available ? !replay.following ? '기록 재생' : lifecycle === 'failed' ? '마지막 지도 유지' : lifecycle === 'complete' ? '최종 지도' : '지도 갱신 중' : lifecycle === 'failed' ? '생성 실패' : state.session_id ? '초기화 대기' : '생성 전';
+  $('map-state').textContent = available ? !replay.following ? '기록 재생' : lifecycle === 'failed' ? '마지막 지도 유지' : lifecycle === 'complete' ? '최종 지도' : lifecycle === 'stopping' ? '지도 마무리 중' : '지도 갱신 중' : lifecycle === 'failed' ? '생성 실패' : state.session_id ? '초기화 대기' : '생성 전';
   $('map-detail').textContent = available ? `최신 지도 ${state.revision}회 갱신 · ${run?.source === 'live' ? `${$('points').textContent}점 표시` : '점군 불러오는 중'}${!replay.following ? ` · 기록 버전 ${replay.applied ?? 0}` : ''} · ${state.scale?.unit === 'm' ? '미터 단위' : '임의 단위'}` :
     lifecycle === 'failed' ? '유효한 3D 지도가 생성되지 않았습니다. 입력과 카메라 보정값을 확인한 뒤 다시 시작하세요.' : '카메라가 움직이며 충분한 시차와 관측점이 모이면 점이 표시됩니다.';
   $('session-detail').textContent = state.session_id ? `세션 ${state.session_id}${state.last_error ? ' · 처리 오류 발생' : ''}` : '현재 연결된 실시간 세션이 없습니다.';
@@ -533,6 +534,7 @@ async function drawReplay() {
       value = response.value;
     }
     if (!source.isCurrent(context) || generation !== replay.generation || replay.following) return;
+    if (value.source !== 'live' || value.input_run_id !== replay.session) throw new Error('다른 세션의 지도 응답을 거부했습니다.');
     replay.cache.set(entry.revision, value);
     while (replay.cache.size > 3) replay.cache.delete(replay.cache.keys().next().value);
     applyRun(value);
@@ -597,9 +599,9 @@ function showState(state) {
     `증분 공간 지도 · 새 면 ${state.objects.new_objects || 0}개 · 유지 ${state.objects.retained_objects || 0}개 · 기존 면 관측 ${state.objects.reused_boundaries || 0}회 재사용 · 깊이 확인 대기 ${state.objects.pending_frames || 0}시점` :
     state.frame_tracking ? `프레임별 특징점 추적 중 · ${state.frame_tracking.tracked_features}점 이어받음 · 충분한 시차와 카메라 위치를 기다립니다.` : '';
   const mapAge = state.last_map_timestamp_s == null ? '' : ` · 지도 시각 ${state.last_map_timestamp_s.toFixed(1)}s`;
-  const names = {starting: '연결 준비', receiving: '영상 수신', mapping: '지도 갱신', complete: '영상 종료 · 최종 지도', failed: '초기화/입력 실패', stopped_or_disconnected: '수신 중단'};
+  const names = {idle: '영상 입력 전', starting: '연결 준비', receiving: '영상 수신', mapping: '지도 갱신', complete: '영상 종료 · 최종 지도', failed: '초기화/입력 실패', stopped_or_disconnected: '수신 중단'};
   $('stream-state').textContent = state.status === 'offline' ? '저장된 지도 · 실시간 수신 아님' :
-    `${names[state.status] || state.status} · 갱신 ${state.revision} · 건너뛴 프레임 ${state.frame_drops}${mapAge}${state.mapping_state === 'processing' ? ' · 계산 중' : ''}${state.last_error ? ' · 일부 갱신 실패, 마지막 지도 유지' : ''}`;
+    `${names[state.status] || state.status} · 갱신 ${state.revision || 0} · 건너뛴 프레임 ${state.frame_drops || 0}${mapAge}${state.mapping_state === 'processing' ? ' · 계산 중' : ''}${state.last_error ? ' · 일부 갱신 실패, 마지막 지도 유지' : ''}`;
 }
 async function poll() {
   const context = source.context();
@@ -610,6 +612,7 @@ async function poll() {
     if (!result) return;
     if (!result.ok) throw new Error('지도 상태를 읽지 못했습니다.');
     const state = result.value;
+    if (state.source !== context.source) throw new Error('선택한 지도와 응답의 출처가 다릅니다.');
     if (run && state.source === 'live' && state.session_id !== run.input_run_id) { clearMap(); revision = null; }
     await refreshTimeline(state, context);
     if (!source.isCurrent(context)) return;
@@ -765,7 +768,10 @@ document.querySelectorAll('[data-source]').forEach((tab) => {
 window.addEventListener('hashchange', () => selectSource(location.hash === '#live' ? 'live' : 'saved'));
 selectSource(source.source, true);
 connectCapture({
-  onStart() { if (source.source === 'live') selectSource('live', true); },
+  onStart(id) {
+    lastLiveState = {source: 'live', session_id: id, session_status: 'starting', status: 'starting', map_available: false};
+    if (source.source === 'live') selectSource('live', true);
+  },
   onStatus(status) {
     captureState = status;
     $('live-tab-indicator').textContent = status.state === 'receiving' ? '수신 중' : ['requesting', 'connecting', 'stopping'].includes(status.state) ? '연결 중' : '';
