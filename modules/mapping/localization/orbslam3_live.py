@@ -204,7 +204,10 @@ class LiveSession:
                 writer.join(timeout=2)
                 reader.join(timeout=2)
                 self.publisher.update(self.stats())
-                if process.returncode:
+                # Exit 3 means the stream ended without an initialized map. A requested
+                # stop is a completed empty recording, not a camera/transport failure.
+                empty_stop = process.returncode == 3 and self.closing and self.publisher.revision == 0
+                if process.returncode and not empty_stop:
                     raise RuntimeError("tracker_failed_or_no_initialized_map; see local orb.log")
         except Exception as error:
             self.error = str(error)

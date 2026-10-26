@@ -102,6 +102,7 @@ test('cancel pending permission; late old stream is released without touching a 
   const pending = f.get('camera-start').handlers.click();
   assert.equal(f.get('camera-stop').disabled, false);
   await f.get('camera-stop').handlers.click();
+  assert.match(f.get('camera-status').textContent, /연결을 취소/);
   await f.get('camera-start').handlers.click();
   first.resolve(oldMedia); await pending;
   assert.equal(oldMedia.track.stops, 1);

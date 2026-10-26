@@ -98,8 +98,9 @@ export async function connectCapture({onStart = () => {}, onStatus = () => {}, o
     controls();
     await post('/api/live/stop', JSON.stringify({session_id: run.session}));
   }
-  async function stop(run = current, reason = '수신을 종료했습니다. 마지막 지도와 생성 기록을 저장합니다.', state = 'stopped') {
+  async function stop(run = current, reason = null, state = 'stopped') {
     if (!run || run.cancelled) return;
+    reason ??= run.session ? '수신을 종료했습니다. 마지막 지도와 생성 기록을 저장합니다.' : '영상 연결을 취소했습니다.';
     release(run); controls();
     message('영상 수신을 종료하는 중입니다.', 'stopping', run);
     try { await stopSession(run); }
