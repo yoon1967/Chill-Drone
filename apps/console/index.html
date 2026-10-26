@@ -13,9 +13,20 @@
     <span class="local"><i></i> 로컬 자료 · 비공개</span>
   </header>
   <main>
+    <nav class="source-tabs" role="tablist" aria-label="지도 선택">
+      <button id="tab-saved" role="tab" data-source="saved" aria-selected="true" aria-controls="map-content">저장 지도</button>
+      <button id="tab-live" role="tab" data-source="live" aria-selected="false" aria-controls="map-content" tabindex="-1">실시간 지도 <span id="live-tab-indicator"></span></button>
+    </nav>
+    <div id="map-content" role="tabpanel" aria-labelledby="tab-saved">
     <section class="heading"><div><p class="eyebrow">VIDEO → SPATIAL RECONSTRUCTION</p><h1>영상 속 공간을, 입체로.</h1><p id="run-name">복원 결과를 불러오는 중입니다.</p></div>
-      <a id="download" class="download" href="/api/points.ply" download>지도 내려받기 <span>↗</span></a></section>
+      <a id="download" class="download" hidden download>지도 내려받기 <span>↗</span></a></section>
     <div id="error" role="alert" hidden></div>
+    <section id="live-status" class="live-status" hidden aria-label="실시간 처리 상태">
+      <dl><div><dt>영상 입력</dt><dd><strong id="input-state">입력 전</strong><p id="input-detail">시작 버튼을 누르면 영상을 연결합니다.</p></dd></div>
+        <div><dt>특징점 추적</dt><dd><strong id="tracking-state">대기 중</strong><p id="tracking-detail">아직 받은 영상이 없습니다.</p></dd></div>
+        <div><dt>3D 지도</dt><dd><strong id="map-state">생성 전</strong><p id="map-detail">충분한 움직임과 관측점이 모이면 점이 표시됩니다.</p></dd></div></dl>
+      <p id="session-detail"></p>
+    </section>
     <section id="live-panel" class="live-panel" hidden aria-label="실시간 영상 연결">
       <div><strong>카메라에서 공간으로</strong><p>영상을 받으며 같은 특징점을 추적하고 3D 점을 갱신합니다.</p></div>
       <div class="live-actions">
@@ -37,6 +48,7 @@
       <section class="viewer" aria-label="3D 복원 공간">
         <div class="viewer-top"><span class="live-dot"></span><span>실제 촬영 기반</span><span id="kind">공간 구조 준비 중</span></div>
         <div id="viewport" tabindex="0" aria-label="회전하고 객체를 선택할 수 있는 3D 복원 공간"><div class="loading">복원된 공간을 준비하고 있습니다…</div></div>
+        <div id="map-empty" class="map-empty" role="status"><strong id="empty-title">지도를 불러오는 중</strong><p id="empty-detail">잠시 기다려 주세요.</p></div>
         <div id="object-labels" aria-label="3D 객체 이름"></div>
         <div class="view-buttons" role="group" aria-label="시점 선택"><button data-view="perspective" class="active">입체</button><button data-view="front">정면</button><button data-view="top">위에서</button><button id="reset" title="전체 점군과 경로에 맞추기">↺ 전체 보기</button></div>
         <div class="mode-tabs" role="tablist" aria-label="지도 표현 모드"><button role="tab" data-mode="objects" aria-selected="true">객체 · 영상 표면</button><button role="tab" data-mode="hologram" aria-selected="false" aria-controls="hologram-controls" aria-expanded="false">홀로그램</button><button role="tab" data-mode="points" aria-selected="false">원본 점군</button></div>
@@ -102,7 +114,8 @@
       </aside>
     </div>
     <section class="notes"><div><p class="eyebrow">READING THIS SPACE</p><h2>특징점을 묶어,<br>사물의 면을 발견합니다.</h2></div><div><p id="scale-note"></p><p>색상 경계는 영상의 테두리와 여러 시점의 3D 특징점이 지지하는 평면입니다. 객체 모드는 실제 촬영 영상을 입히고, 홀로그램은 같은 면을 발광 격자로 표시합니다. 빨간색은 가로형 또는 대표 앞면과 다른 방향의 후보이며, 실제 윗면이라는 의미는 아닙니다. 점이 없는 내부는 경계를 바탕으로 추정한 영역이며, 유리 너머 구조와 물체의 부피를 측정한 결과는 아닙니다.</p><p class="muted">기하 일치 점수는 평면 지지·경계 일치·점 분포의 조합입니다. 학습된 사물함 분류 확률이나 비행 안전도를 뜻하지 않습니다.</p></div></section>
-    <footer><span>COLMAP · OFFLINE RECONSTRUCTION</span><div><a href="/api/poses.json" download>카메라 자세 JSON ↗</a><a href="/api/trajectory.csv" download>경로 CSV ↗</a></div></footer>
+    <footer><span>COLMAP · OFFLINE RECONSTRUCTION</span><div><a href="/api/saved/poses.json" download>카메라 자세 JSON ↗</a><a href="/api/saved/trajectory.csv" download>경로 CSV ↗</a></div></footer>
+    </div>
   </main>
   <script type="module" src="/app.js"></script>
 </body>
