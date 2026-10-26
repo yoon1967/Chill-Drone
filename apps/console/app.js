@@ -2,6 +2,7 @@ import * as THREE from 'three';
 import { OrbitControls } from '/vendor/OrbitControls.js';
 import { PlanarObjects } from '/objects.js';
 import { connectCapture } from '/capture.js';
+import { MapSource } from '/map-source.js';
 import { updatePointGrid, pointSpacingProfile, pointGridCells, displayPointCells } from '/point-grid.js';
 const $ = (id) => document.getElementById(id);
 const number = (n) => Number(n).toLocaleString('ko-KR');
@@ -9,8 +10,16 @@ const timeOf = (c) => c.source_pts_s ?? c.timestamp_s;
 let run, root, cloud, route, frustums, grid, selected;
 let center, radius = 1, fullCenter, fullRadius = 1, direction;
 let currentIndex = 0, playing = false, previousTime = 0, mode = 'objects';
-let navigating = false, dragging = false, busy = false, revision = null;
+let navigating = false, dragging = false, busy = null, revision = null;
 let pollDelay = 2000, previewFrame = null;
+let pollTimer, captureState = {state: 'idle'}, captureHandle, lastLiveState = {};
+const source = new MapSource(location.hash === '#live' ? 'live' : 'saved');
+const views = new Map();
+const savedCopy = {
+  title: document.querySelector('.notes h2').innerHTML,
+  detail: $('scale-note').nextElementSibling.textContent,
+  note: document.querySelector('.notes .muted').textContent,
+};
 let hologramInterval = 0, intervalFrame = null, originalPositions = new Float64Array();
 let hologramControlsOpen = false;
 let confidenceThreshold = 3, gridCells = null, filteredPoints = [];
@@ -39,6 +48,98 @@ const objectLayer = new PlanarObjects(renderer, camera, controls, (frame, showCa
   if (index >= 0) selectFrame(index);
   if (showCamera) { stopExplore(); cameraView(); }
 }, stopExplore);
+
+function clearMap(title = '지도를 불러오는 중', detail = '잠시 기다려 주세요.') {
+  stopExplore();
+  dispose();
+  root = cloud = route = selected = frustums = grid = run = null;
+  objectLayer.apply(null, null);
+  $('viewport').dataset.source = source.source;
+  $('viewport').dataset.session = '';
+  $('viewport').dataset.revision = '0';
+  for (const id of ['frame', 'slam-preview']) $(id).removeAttribute('src');
+  for (const id of ['frames', 'points', 'reprojection', 'elapsed', 'timestamp', 'frame-name']) $(id).textContent = '—';
+  for (const id of ['registration', 'run-date', 'render-state', 'mode-detail', 'frame-proof', 'stream-state', 'incremental-state']) $(id).textContent = '';
+  $('scale-badge').textContent = source.source === 'live' ? '단안 임의 단위' : '스케일 확인 전';
+  $('kind').textContent = '지도 대기';
+  $('download').hidden = true;
+  document.querySelectorAll('footer a').forEach((a) => { a.hidden = true; });
+  document.querySelector('.object-panel').hidden = true;
+  document.querySelector('.capture').hidden = true;
+  document.querySelector('.notes').hidden = true;
+  $('slam-panel').hidden = true;
+  document.querySelectorAll('.view-buttons button, .mode-tabs button, #explore, #camera-view, #frame-timeline').forEach((b) => { b.disabled = true; });
+  showEmpty(title, detail);
+}
+
+function showEmpty(title, detail) {
+  $('map-empty').hidden = false;
+  $('empty-title').textContent = title;
+  $('empty-detail').textContent = detail;
+}
+
+function resetReplay() {
+  playing = false;
+  replay.generation++;
+  Object.assign(replay, {session: null, entries: [], following: true, time: 0, loading: false, applied: null, manifestRevision: null});
+  replay.cache.clear();
+  $('map-playback').hidden = true;
+}
+
+function selectSource(next, force = false) {
+  if (!force && next === source.source) return;
+  if (run) views.set(source.source, {session: run.input_run_id, segment: run.segment_id, mode,
+    frame: run.cameras[currentIndex]?.frame_id, position: camera.position.clone(), up: camera.up.clone(),
+    target: controls.target.clone(), fov: camera.fov, view: document.querySelector('[data-view].active')?.dataset.view});
+  source.select(next);
+  clearTimeout(pollTimer);
+  resetReplay();
+  revision = previewFrame = null;
+  renderTimes.length = 0;
+  pollDelay = next === 'live' ? 500 : 2000;
+  hologramControlsOpen = false;
+  mode = views.get(next)?.mode || (next === 'saved' ? 'objects' : 'points');
+  clearMap();
+  setMode(mode);
+  $('error').hidden = true;
+  document.querySelectorAll('[data-source]').forEach((tab) => {
+    const selected = tab.dataset.source === next;
+    tab.setAttribute('aria-selected', String(selected));
+    tab.tabIndex = selected ? 0 : -1;
+  });
+  $('map-content').setAttribute('aria-labelledby', `tab-${next}`);
+  $('live-panel').hidden = $('live-status').hidden = next !== 'live';
+  document.querySelector('.workspace').classList.toggle('slam-workspace', next === 'live');
+  document.querySelector('h1').textContent = next === 'saved' ? '영상 속 공간을, 입체로.' : '영상이 들어오는 지금, 공간으로.';
+  $('run-name').textContent = next === 'saved' ? '저장된 실험 결과를 불러옵니다.' : '실시간 입력과 지도 생성 상태를 확인합니다.';
+  document.querySelector('footer > span').textContent = next === 'saved' ? 'COLMAP · OFFLINE RECONSTRUCTION' : 'ORB-SLAM3 · MONOCULAR TRACKING';
+  poll();
+}
+
+function liveStatus(state) {
+  lastLiveState = state;
+  captureHandle?.update(state);
+  const local = captureState.state;
+  const names = {idle: '입력 전', requesting: '권한 확인 중', connecting: '연결 중', receiving: '수신 중', stopping: '종료 중',
+    stopped: '수신 종료', denied: '권한 거부', disconnected: '연결 중단', failed: '입력 실패', disabled: '새 입력 사용 안 함'};
+  const locallyActive = ['requesting', 'connecting', 'receiving', 'stopping'].includes(local);
+  const lifecycle = state.session_status || state.status;
+  const recorded = !locallyActive && state.session_id;
+  const useLocal = locallyActive || !recorded || ['denied', 'disconnected', 'failed'].includes(local) || (local === 'stopped' && !['complete', 'failed'].includes(lifecycle));
+  $('input-state').textContent = useLocal ? names[local] || names.idle :
+    ({starting: '연결 중', receiving: '수신 중', stopping: '종료 중', complete: '영상 종료 · 기록', failed: '수신 중단'}[lifecycle] || '저장된 세션');
+  $('input-detail').textContent = useLocal ?
+    captureState.message || '시작 버튼을 누르면 카메라 권한을 요청합니다.' : `처리 ${number(state.frames_received || 0)}장 · 마지막 입력 ${state.last_input_sequence ?? '기록 없음'}`;
+  const trackingNames = {2: '추적 중', 3: '재위치 탐색', 4: '추적 상실'};
+  $('tracking-state').textContent = !state.session_id ? '대기 중' : lifecycle === 'failed' ? '추적 중단' :
+    lifecycle === 'complete' ? '추적 종료' : lifecycle === 'stopping' ? '추적 종료 중' : trackingNames[state.tracking_state] || '초기화 중';
+  $('tracking-detail').textContent = state.session_id ? `정상 추적 ${number(state.tracked_frames || 0)}장 · 초기화 ${number(state.initializing_frames || 0)}장 · 추적 상실 ${number(state.lost_tracking_frames || 0)}장` : '아직 받은 영상이 없습니다.';
+  const available = state.map_available;
+  $('map-state').textContent = available ? !replay.following ? '기록 재생' : lifecycle === 'failed' ? '마지막 지도 유지' : lifecycle === 'complete' ? '최종 지도' : lifecycle === 'stopping' ? '지도 마무리 중' : '지도 갱신 중' : lifecycle === 'failed' ? '생성 실패' : state.session_id ? '초기화 대기' : '생성 전';
+  $('map-detail').textContent = available ? `최신 지도 ${state.revision}회 갱신 · ${run?.source === 'live' ? `${$('points').textContent}점 표시` : '점군 불러오는 중'}${!replay.following ? ` · 기록 버전 ${replay.applied ?? 0}` : ''} · ${state.scale?.unit === 'm' ? '미터 단위' : '임의 단위'}` :
+    lifecycle === 'failed' ? '유효한 3D 지도가 생성되지 않았습니다. 입력과 카메라 보정값을 확인한 뒤 다시 시작하세요.' : '카메라가 움직이며 충분한 시차와 관측점이 모이면 점이 표시됩니다.';
+  $('session-detail').textContent = state.session_id ? `세션 ${state.session_id}${state.last_error ? ' · 처리 오류 발생' : ''}` : '현재 연결된 실시간 세션이 없습니다.';
+}
 
 function line(points, color, opacity = 1) {
   return new THREE.Line(new THREE.BufferGeometry().setFromPoints(points),
@@ -232,11 +333,18 @@ function applyRun(value) {
   if (!['phone-sfm-result/1.0', 'phone-sfm-result/1.1', 'phone-sfm-result/1.2'].includes(value.schema_version) || !value.points?.length || !value.cameras?.length)
     throw new Error('지원하는 지도와 카메라 경로가 없습니다.');
   const preserve = run && run.input_run_id === value.input_run_id && run.segment_id === value.segment_id;
-  const frame = run?.cameras[currentIndex]?.frame_id;
+  const view = !run && views.get(source.source);
+  const restore = view && view.session === value.input_run_id && view.segment === value.segment_id;
+  const frame = run?.cameras[currentIndex]?.frame_id || (restore ? view.frame : null);
   run = value;
   configureSpacing();
   $('viewport').dataset.revision = String(run.revision ?? 0);
   $('viewport').dataset.session = run.input_run_id;
+  $('viewport').dataset.source = run.source;
+  $('map-empty').hidden = true;
+  document.querySelector('.capture').hidden = false;
+  document.querySelector('.notes').hidden = false;
+  document.querySelectorAll('.view-buttons button, #explore, #camera-view, #frame-timeline').forEach((b) => { b.disabled = false; });
   document.querySelector('.workspace').classList.toggle('slam-workspace', Boolean(run.slam));
   dispose();
   root = new THREE.Group();
@@ -284,6 +392,12 @@ function applyRun(value) {
   if (mode === 'objects' && !run.planar_objects) mode = 'points';
   setMode(mode);
   const quality = run.quality;
+  $('frames').parentElement.querySelector('span').textContent = '등록 프레임';
+  $('elapsed').nextElementSibling.textContent = '입력 검증 이후 SfM·색상';
+  document.querySelector('.notes h2').innerHTML = savedCopy.title;
+  $('scale-note').nextElementSibling.textContent = savedCopy.detail;
+  document.querySelector('.notes .muted').textContent = savedCopy.note;
+  document.querySelector('footer > span').textContent = 'COLMAP · OFFLINE RECONSTRUCTION';
   $('run-name').textContent = `${run.input_run_id} · ${timeOf(run.cameras[0]).toFixed(1)}–${timeOf(run.cameras.at(-1)).toFixed(1)}초 · ${run.stream ? '온라인 지도' : '저장된 지도'}`;
   $('run-date').textContent = new Date(run.created_utc).toLocaleDateString('ko-KR');
   $('frames').textContent = `${quality.registered_frames} / ${quality.input_frames}`;
@@ -315,6 +429,18 @@ function applyRun(value) {
     if (mode !== 'points' && objectLayer.objects.length) objectLayer.focusAll();
     else setView('perspective');
   }
+  if (restore) {
+    camera.position.copy(view.position);
+    camera.up.copy(view.up);
+    camera.fov = view.fov;
+    camera.updateProjectionMatrix();
+    controls.target.copy(view.target);
+    controls.update();
+    document.querySelectorAll('[data-view]').forEach((b) => b.classList.toggle('active', b.dataset.view === view.view));
+  }
+  $('download').hidden = false;
+  $('download').firstChild.textContent = run.stream ? '지도 JSON 내려받기 ' : '점군 PLY 내려받기 ';
+  $('download').download = run.stream ? `${run.input_run_id}-${run.revision}.json` : 'points.ply';
   $('download').href = run.stream ? `/api/live/run?revision=${String(run.revision).padStart(6, '0')}&session=${encodeURIComponent(run.stream.session_id)}` : '/api/saved/points.ply';
   document.querySelectorAll('footer a').forEach((a) => {
     a.hidden = Boolean(run.stream);
@@ -338,8 +464,9 @@ function replayControls() {
   $('replay-state').textContent = `${detail} · ${replay.entries.length}개 지도 갱신 기록${estimate ? ' · 이전 기록 시각은 마지막 키프레임 기준 추정' : ' · 입력 영상 시각 기준'}`;
   Object.assign($('replay-state').dataset, {time: replay.time, revision: replay.applied ?? 0,
     following: replay.following, playing, points: root?.visible === false ? 0 : cloud?.geometry.drawRange.count || 0});
+  if (source.source === 'live' && lastLiveState.source === 'live') liveStatus(lastLiveState);
 }
-async function refreshTimeline(state) {
+async function refreshTimeline(state, context) {
   if (state.backend !== 'orb_slam3_monocular') return;
   $('map-playback').hidden = false;
   const session = state.session_id;
@@ -356,10 +483,10 @@ async function refreshTimeline(state) {
     playing = false;
   }
   if (state.map_available && replay.manifestRevision !== state.revision) {
-    const response = await fetch(`/api/live/timeline?session=${encodeURIComponent(session)}`);
-    if (response.status === 409) return;
+    const response = await source.read(`timeline?session=${encodeURIComponent(session)}`, context);
+    if (!response) return;
     if (!response.ok) throw new Error('지도 재생 이력을 읽지 못했습니다.');
-    const timeline = await response.json();
+    const timeline = response.value;
     if (timeline.session_id === replay.session) {
       replay.entries = timeline.entries;
       replay.manifestRevision = state.revision;
@@ -376,7 +503,8 @@ function frameAtReplayTime() {
   $('slam-preview').alt = '선택한 지도 기록의 촬영 키프레임';
 }
 async function drawReplay() {
-  if (replay.following || replay.loading) return;
+  if (source.source !== 'live' || replay.following || replay.loading) return;
+  const context = source.context();
   const generation = replay.generation;
   const entry = replay.entries.findLast((e) => e.timestamp_s <= replay.time);
   if (!entry) {
@@ -387,20 +515,26 @@ async function drawReplay() {
     $('timestamp').textContent = '초기화 대기';
     $('frame-name').textContent = '첫 유효 지도 이전';
     $('viewport').dataset.revision = '0';
+    $('download').hidden = true;
+    document.querySelector('.capture').hidden = true;
+    showEmpty('첫 유효 지도 이전', '지도 생성 시간 슬라이더를 움직이거나 재생해 점이 생성되는 과정을 확인하세요.');
     replay.applied = null;
     replayControls();
     return;
   }
   if (replay.applied === entry.revision && root?.visible) { frameAtReplayTime(); return; }
-  replay.loading = true;
+  const task = {};
+  replay.loading = task;
   try {
     let value = replay.cache.get(entry.revision);
     if (!value) {
-      const response = await fetch(`/api/live/run?revision=${String(entry.revision).padStart(6, '0')}&session=${encodeURIComponent(replay.session)}`);
+      const response = await source.read(`run?revision=${String(entry.revision).padStart(6, '0')}&session=${encodeURIComponent(replay.session)}`, context);
+      if (!response) return;
       if (!response.ok) throw new Error('저장된 지도 버전을 불러오지 못했습니다.');
-      value = await response.json();
+      value = response.value;
     }
-    if (generation !== replay.generation || replay.following) return;
+    if (!source.isCurrent(context) || generation !== replay.generation || replay.following) return;
+    if (value.source !== 'live' || value.input_run_id !== replay.session) throw new Error('다른 세션의 지도 응답을 거부했습니다.');
     replay.cache.set(entry.revision, value);
     while (replay.cache.size > 3) replay.cache.delete(replay.cache.keys().next().value);
     applyRun(value);
@@ -408,9 +542,10 @@ async function drawReplay() {
     frameAtReplayTime();
     replayControls();
   } catch (error) {
+    if (!source.isCurrent(context) || generation !== replay.generation) return;
     playing = false;
     $('replay-state').textContent = error.message;
-  } finally { replay.loading = false; }
+  } finally { if (replay.loading === task) replay.loading = false; }
 }
 function seekReplay(time) {
   replay.following = false;
@@ -431,6 +566,11 @@ setInterval(() => {
   if (!replay.following) drawReplay();
 }, 100);
 function showState(state) {
+  if (state.source === 'live') liveStatus(state);
+  else {
+    $('slam-panel').hidden = true;
+    $('incremental-state').hidden = true;
+  }
   if (state.backend === 'orb_slam3_monocular') {
     pollDelay = 250;
     $('slam-panel').hidden = false;
@@ -438,7 +578,7 @@ function showState(state) {
     $('slam-tracking-state').textContent = names[state.tracking_state] || '초기화 중';
     const tracking = state.frame_tracking || {};
     $('slam-timing').textContent = `지도 점 ${tracking.tracked_features || 0}개 · 직전 프레임과 동일 ${tracking.reused_features || 0}개 · 추적 ${Number(state.tracking_ms || 0).toFixed(1)}ms · 재생 지연 ${Number(state.input_lag_seconds || 0).toFixed(2)}초`;
-    $('slam-tracking-state').textContent = replay.following ? names[state.tracking_state] || '초기화 중' : '기록 재생';
+    $('slam-tracking-state').textContent = replay.following ? state.status === 'complete' ? '추적 종료' : state.status === 'failed' ? '추적 중단' : names[state.tracking_state] || '초기화 중' : '기록 재생';
     $('slam-preview-note').textContent = replay.following ?
       '노란 점: 직전 처리 프레임과 같은 지도 점 · 초록 점: 이번에 연결된 지도 점 · 숫자: 지도 점 ID' :
       '선택한 지도 버전의 촬영 키프레임입니다. 점군·경로는 그 시점에 실제로 저장된 지도 전체로 교체합니다.';
@@ -446,8 +586,7 @@ function showState(state) {
       previewFrame = state.frame_id;
       $('slam-preview').src = `/api/live/slam-preview?frame=${encodeURIComponent(previewFrame)}&session=${encodeURIComponent(state.session_id)}`;
     }
-    const pendingMap = !state.map_available && run && state.session_id !== run.input_run_id ?
-      ' · 새 세션 초기화, 이전 지도 표시' : state.map_available && state.map_id !== state.segment_id ? ' · 새 좌표계 준비, 마지막 지도 유지' : '';
+    const pendingMap = state.map_available && state.map_id !== state.segment_id ? ' · 새 좌표계 준비, 마지막 지도 유지' : '';
     $('stream-state').textContent = `${state.status === 'complete' ? '영상 종료' : state.status === 'failed' ? '실행 실패' : '영상 추적'} · 처리 ${state.frames_received || 0}장 · 정상 추적 ${state.tracked_frames || 0}장 · 초기화 ${state.initializing_frames || 0}장 · 추적 상실 ${state.lost_tracking_frames || 0}장 · 지도 ${state.revision || 0}회 갱신${pendingMap}${state.input === 'browser_camera' ? ` · 입력 누락/대기 교체 ${state.frame_drops || 0}장 · 대기 ${state.queue_depth || 0}/1` : ''}`;
     $('incremental-state').hidden = false;
     const calibration = state.calibration_status || run?.slam?.calibration_status || '';
@@ -460,34 +599,52 @@ function showState(state) {
     `증분 공간 지도 · 새 면 ${state.objects.new_objects || 0}개 · 유지 ${state.objects.retained_objects || 0}개 · 기존 면 관측 ${state.objects.reused_boundaries || 0}회 재사용 · 깊이 확인 대기 ${state.objects.pending_frames || 0}시점` :
     state.frame_tracking ? `프레임별 특징점 추적 중 · ${state.frame_tracking.tracked_features}점 이어받음 · 충분한 시차와 카메라 위치를 기다립니다.` : '';
   const mapAge = state.last_map_timestamp_s == null ? '' : ` · 지도 시각 ${state.last_map_timestamp_s.toFixed(1)}s`;
-  const names = {starting: '연결 준비', receiving: '영상 수신', mapping: '지도 갱신', complete: '영상 종료 · 최종 지도', failed: '초기화/입력 실패', stopped_or_disconnected: '수신 중단'};
+  const names = {idle: '영상 입력 전', starting: '연결 준비', receiving: '영상 수신', mapping: '지도 갱신', complete: '영상 종료 · 최종 지도', failed: '초기화/입력 실패', stopped_or_disconnected: '수신 중단'};
   $('stream-state').textContent = state.status === 'offline' ? '저장된 지도 · 실시간 수신 아님' :
-    `${names[state.status] || state.status} · 갱신 ${state.revision} · 건너뛴 프레임 ${state.frame_drops}${mapAge}${state.mapping_state === 'processing' ? ' · 계산 중' : ''}${state.last_error ? ' · 일부 갱신 실패, 마지막 지도 유지' : ''}`;
+    `${names[state.status] || state.status} · 갱신 ${state.revision || 0} · 건너뛴 프레임 ${state.frame_drops || 0}${mapAge}${state.mapping_state === 'processing' ? ' · 계산 중' : ''}${state.last_error ? ' · 일부 갱신 실패, 마지막 지도 유지' : ''}`;
 }
 async function poll() {
-  if (busy) return;
-  busy = true;
+  const context = source.context();
+  if (busy === context.generation) return;
+  busy = context.generation;
   try {
-    const state = await (await fetch('/api/state')).json();
-    await refreshTimeline(state);
+    const result = await source.read('state', context);
+    if (!result) return;
+    if (!result.ok) throw new Error('지도 상태를 읽지 못했습니다.');
+    const state = result.value;
+    if (state.source !== context.source) throw new Error('선택한 지도와 응답의 출처가 다릅니다.');
+    if (run && state.source === 'live' && state.session_id !== run.input_run_id) { clearMap(); revision = null; }
+    await refreshTimeline(state, context);
+    if (!source.isCurrent(context)) return;
     showState(state);
+    $('error').hidden = true;
     if (!replay.following) return;
+    if (!state.map_available) {
+      if (!run) showEmpty(state.source === 'saved' ? '저장된 지도가 없습니다' : state.status === 'failed' ? '3D 지도를 만들지 못했습니다' : state.session_id ? '3D 지도를 준비하고 있습니다' : '영상 입력을 기다리고 있습니다',
+        state.source === 'saved' ? '저장 결과를 연결한 서버에서 이 탭을 열어 주세요.' : state.status === 'failed' ? '입력 상태를 확인한 뒤 다시 시작하세요.' : state.session_id ? '영상 수신과 지도 초기화는 별도 단계입니다. 충분한 시차와 특징점이 모이면 표시됩니다.' : '위에서 입력을 선택하고 시작하세요. 카메라 권한은 시작할 때 요청합니다.');
+      return;
+    }
     if (run && (state.status === 'offline' || (state.revision === revision && (!state.session_id || state.session_id === run.input_run_id)))) return;
     const query = state.session_id ? `?session=${encodeURIComponent(state.session_id)}&revision=${String(state.revision).padStart(6, '0')}` : '';
-    const response = await fetch(`/api/${state.source === 'saved' ? 'saved' : 'live'}/run${query}`);
-    if (response.status === 409) return;
+    const response = await source.read(`run${query}`, context);
+    if (!response) return;
     if (response.status === 503) { $('run-name').textContent = '영상 수신 중 · 충분한 시차와 관측점을 기다립니다.'; return; }
     if (!response.ok) throw new Error(`지도 읽기 실패 ${response.status}`);
-    const value = await response.json();
+    const value = response.value;
     if (value.source !== state.source || (state.session_id && value.input_run_id !== state.session_id)) return;
-    if (!replay.following || (state.session_id && state.session_id !== replay.session)) return;
+    if (!replay.following || (state.backend === 'orb_slam3_monocular' && state.session_id !== replay.session)) return;
     applyRun(value);
     revision = run.revision ?? 0;
-    replay.applied = revision;
-    replayControls();
+    if (state.source === 'live') { replay.applied = revision; replayControls(); liveStatus(state); }
     $('error').hidden = true;
-  } catch (error) { $('error').hidden = false; $('error').textContent = `지도를 갱신하지 못했습니다. ${error.message}`; }
-  finally { busy = false; setTimeout(poll, pollDelay); }
+  } catch (error) {
+    if (!source.isCurrent(context)) return;
+    $('error').hidden = false;
+    $('error').textContent = `지도를 갱신하지 못했습니다. ${error.message}${run ? ' 마지막 유효 지도를 표시합니다.' : ''}`;
+    if (!run) showEmpty('지도 서버에 연결하지 못했습니다', '연결이 복구되면 자동으로 다시 불러옵니다.');
+  } finally {
+    if (source.isCurrent(context)) { busy = null; pollTimer = setTimeout(poll, pollDelay); }
+  }
 }
 $('play').addEventListener('click', () => {
   if (!replay.entries.length) return;
@@ -598,7 +755,32 @@ function animate(time) {
   renderer.render(scene, camera);
 }
 requestAnimationFrame(animate);
-poll();
-connectCapture(() => {
-  playing = false; replay.following = true; replay.generation++; revision = null; previewFrame = null;
-}).catch((error) => { $('camera-status').textContent = `영상 입력 준비 실패: ${error.message}`; });
+document.querySelectorAll('[data-source]').forEach((tab) => {
+  tab.addEventListener('click', () => { location.hash = tab.dataset.source; });
+  tab.addEventListener('keydown', (event) => {
+    if (!['ArrowLeft', 'ArrowRight', 'Home', 'End'].includes(event.key)) return;
+    event.preventDefault();
+    const next = event.key === 'Home' ? 'saved' : event.key === 'End' ? 'live' : source.source === 'saved' ? 'live' : 'saved';
+    $(`tab-${next}`).focus();
+    location.hash = next;
+  });
+});
+window.addEventListener('hashchange', () => selectSource(location.hash === '#live' ? 'live' : 'saved'));
+selectSource(source.source, true);
+connectCapture({
+  onStart(id) {
+    lastLiveState = {source: 'live', session_id: id, session_status: 'starting', status: 'starting', map_available: false};
+    if (source.source === 'live') selectSource('live', true);
+  },
+  onStatus(status) {
+    captureState = status;
+    $('live-tab-indicator').textContent = status.state === 'receiving' ? '수신 중' : ['requesting', 'connecting', 'stopping'].includes(status.state) ? '연결 중' : '';
+    if (source.source === 'live') liveStatus(lastLiveState);
+  },
+}).then((handle) => { captureHandle = handle; captureHandle.update(lastLiveState); })
+  .catch((error) => {
+    captureState = {state: 'failed', message: `영상 입력 준비 실패: ${error.message}`};
+    $('camera-status').textContent = captureState.message;
+    $('camera-start').disabled = true;
+    if (source.source === 'live') liveStatus(lastLiveState);
+  });

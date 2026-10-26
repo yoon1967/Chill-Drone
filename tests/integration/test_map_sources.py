@@ -8,7 +8,7 @@ from pathlib import Path
 import tempfile
 import threading
 import unittest
-from unittest.mock import patch
+from unittest.mock import Mock, patch
 import uuid
 
 import cv2
@@ -322,6 +322,22 @@ class MapSourceTests(unittest.TestCase):
             code, state = self.request(port, "/api/live/state")
             self.assertEqual((code, state["source"], state["error"]), (503, "live", "source_unavailable"))
             self.assertEqual(self.request(port, "/api/saved/run")[0], 200)
+
+
+class CancelledResponseTests(unittest.TestCase):
+    def test_cancelled_json_writes_are_expected_but_other_io_errors_propagate(self):
+        # Windows tab cancellation can raise 10053 after all response headers were sent.
+        handler = ViewerHandler.__new__(ViewerHandler)
+        handler.send_response, handler.send_header, handler.end_headers = Mock(), Mock(), Mock()
+        handler.wfile = Mock()
+        for error in [BrokenPipeError(), ConnectionResetError(), ConnectionAbortedError(10053, "cancelled")]:
+            with self.subTest(error=type(error).__name__):
+                handler.wfile.write.side_effect = error
+                handler.json_response({"source": "saved"})
+                handler.send_response.assert_called_with(200)
+        handler.wfile.write.side_effect = OSError("unexpected I/O failure")
+        with self.assertRaisesRegex(OSError, "unexpected I/O failure"):
+            handler.json_response({"source": "saved"})
 
 
 if __name__ == "__main__":

@@ -167,7 +167,13 @@ class ViewerHandler(BaseHTTPRequestHandler):
         self.send_header("Content-Length", str(len(payload)))
         self.send_header("Cache-Control", "no-store")
         self.end_headers()
-        self.wfile.write(payload)
+        self.write_payload(payload)
+
+    def write_payload(self, payload):
+        try:
+            self.wfile.write(payload)
+        except (BrokenPipeError, ConnectionResetError, ConnectionAbortedError):
+            pass  # Switching tabs cancels in-flight JSON/image requests in the browser.
 
     def snapshot(self, revision=None, state=None):
         if not self.session:
@@ -357,7 +363,7 @@ class ViewerHandler(BaseHTTPRequestHandler):
                 value["planar_objects"] = collection
             self.json_response(value)
             return
-        static = {"/": APP / "index.html", "/app.js": APP / "app.js", "/objects.js": APP / "objects.js", "/capture.js": APP / "capture.js", "/point-grid.js": APP / "point-grid.js", "/style.css": APP / "style.css",
+        static = {"/": APP / "index.html", "/app.js": APP / "app.js", "/objects.js": APP / "objects.js", "/capture.js": APP / "capture.js", "/map-source.js": APP / "map-source.js", "/point-grid.js": APP / "point-grid.js", "/style.css": APP / "style.css",
                   "/vendor/three.module.js": APP / "node_modules/three/build/three.module.js",
                   "/vendor/three.core.js": APP / "node_modules/three/build/three.core.js",
                   "/vendor/OrbitControls.js": APP / "node_modules/three/examples/jsm/controls/OrbitControls.js"}
@@ -425,7 +431,7 @@ class ViewerHandler(BaseHTTPRequestHandler):
         if path in exports and path != "/api/run":
             self.send_header("Content-Disposition", f'attachment; filename="{exports[path]}"')
         self.end_headers()
-        self.wfile.write(payload)
+        self.write_payload(payload)
 
 
 def main():

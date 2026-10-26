@@ -1,23 +1,38 @@
 // Browser media PTS are kept separate from map playback time and rendering cadence.
-export async function connectCapture(onStart) {
+import { captureError } from './map-source.js';
+
+export async function connectCapture({onStart = () => {}, onStatus = () => {}, onReady = () => {}} = {}) {
   const $ = (id) => document.getElementById(id);
   const info = await (await fetch('/api/live')).json();
-  if (!info.enabled) return;
-  $('live-panel').hidden = false;
+  onReady(info);
+  if (!info.enabled) {
+    $('camera-start').disabled = $('camera-stop').disabled = true;
+    const message = '이 서버는 저장된 기록 조회만 지원합니다. 새 영상 입력은 카메라 입력을 켠 서버에서 시작하세요.';
+    $('camera-status').textContent = message;
+    onStatus({state: 'disabled', message});
+    return {update() {}};
+  }
   $('input-source').querySelector('[value=demo]').hidden = !info.demo_available;
   const video = $('input-preview'), canvas = document.createElement('canvas');
   const context = canvas.getContext('2d', {alpha: false});
   let media, id, sending = false, active = false, starting = false, base = null, sourceBase = null,
     lastMedia = -1, sequence = 0, sent = 0, skipped = 0, callback;
-  const message = (text) => { $('camera-status').textContent = text; };
+  let serverState = {};
+  const message = (text, state = 'receiving') => { $('camera-status').textContent = text; onStatus({state, message: text, session: id}); };
+  const update = (state = serverState) => {
+    serverState = state;
+    const occupied = state.session_id && !['idle', 'complete', 'failed', 'stopped_or_disconnected'].includes(state.session_status || state.status);
+    $('camera-start').disabled = starting || active || Boolean(occupied);
+  };
   const post = async (url, body, headers = {}) => {
     const response = await fetch(url, {method: 'POST', headers: {'X-Mapping-Client': '1', ...headers}, body, signal: AbortSignal.timeout(15000)});
     const value = await response.json();
     if (!response.ok) throw new Error(value.error || `영상 연결 실패 ${response.status}`);
     return value;
   };
-  async function stop(reason = '수신을 종료했습니다. 마지막 지도와 생성 기록을 저장합니다.') {
+  async function stop(reason = '수신을 종료했습니다. 마지막 지도와 생성 기록을 저장합니다.', finalState = 'stopped') {
     active = false;
+    message('영상 수신을 종료하는 중입니다.', 'stopping');
     if (callback && video.cancelVideoFrameCallback) video.cancelVideoFrameCallback(callback);
     video.pause();
     video.hidden = true;
@@ -31,8 +46,9 @@ export async function connectCapture(onStart) {
       try { await post('/api/live/stop', JSON.stringify({session_id: current})); }
       catch (error) { reason += ` (${error.message})`; }
     }
-    $('camera-start').disabled = false;
-    message(reason);
+    $('input-source').disabled = false;
+    update();
+    message(reason, finalState);
   }
   function schedule() {
     if (!active) return;
@@ -65,13 +81,14 @@ export async function connectCapture(onStart) {
       message(`수신 중 · 전송 ${sent}장 · 전송 대기 중 생략 ${skipped}장 · 처리 대기 교체/입력 누락 ${state.frame_drops}장 · 대기 ${state.queue_depth}/1`);
       Object.assign($('camera-status').dataset, {sent, skipped, dropped: state.frame_drops, session});
     } catch (error) {
-      if (active && session === id) await stop(`영상 수신 중단: ${error.message}`);
+      if (active && session === id) await stop(`영상 수신 중단: ${error.message}`, 'disconnected');
     } finally { sending = false; }
   }
   $('camera-start').addEventListener('click', async () => {
     if (starting || active) return;
     starting = true;
     $('camera-start').disabled = true;
+    $('input-source').disabled = true;
     const demo = $('input-source').value === 'demo';
     try {
       base = sourceBase = null; lastMedia = -1; sequence = sent = skipped = 0;
@@ -81,10 +98,11 @@ export async function connectCapture(onStart) {
         video.load();
       } else {
         if (!navigator.mediaDevices?.getUserMedia) throw new Error('이 브라우저에서 카메라를 사용할 수 없습니다. localhost 또는 HTTPS에서 열어주세요.');
+        message('카메라 권한을 확인하고 있습니다. 브라우저의 권한 요청을 확인하세요.', 'requesting');
         media = await navigator.mediaDevices.getUserMedia({video: {width: {ideal: 960}, height: {ideal: 540}, frameRate: {ideal: 30, max: 30}, facingMode: {ideal: 'environment'}}, audio: false});
         video.removeAttribute('src');
         video.srcObject = media;
-        media.getVideoTracks()[0].addEventListener('ended', () => { if (active) stop('카메라 연결이 끊겨 수신을 종료했습니다.'); }, {once: true});
+        media.getVideoTracks()[0].addEventListener('ended', () => { if (active) return stop('카메라 연결이 끊겨 수신을 종료했습니다.', 'disconnected'); }, {once: true});
       }
       if (video.readyState < 1) await new Promise((resolve, reject) => {
         video.onloadedmetadata = resolve;
@@ -97,9 +115,11 @@ export async function connectCapture(onStart) {
       const camera = demo ? info.demo_camera : calibrationFile ? JSON.parse(await calibrationFile.text()) : null;
       const config = {width: canvas.width, height: canvas.height, fps: demo ? info.demo_camera?.fps || 30 : media.getVideoTracks()[0].getSettings().frameRate || 30,
         fov: Number($('camera-fov').value), camera};
-      message(`ORB-SLAM3 시작 중 · ${camera ? '카메라 보정값 사용' : '화각 추정 · 미보정'} · ${canvas.width}×${canvas.height}`);
+      message(`ORB-SLAM3 시작 중 · ${camera ? '카메라 보정값 사용' : '화각 추정 · 미보정'} · ${canvas.width}×${canvas.height}`, 'connecting');
       const started = await post('/api/live/start', JSON.stringify(config), {'Content-Type': 'application/json'});
       id = started.session_id;
+      serverState = started;
+      onStart(id);
       const deadline = Date.now() + 65000;
       while (true) {
         const response = await fetch(`/api/live/state?session=${encodeURIComponent(id)}`);
@@ -112,11 +132,10 @@ export async function connectCapture(onStart) {
       }
       active = true;
       $('camera-stop').disabled = false;
-      onStart(id);
       schedule();
       await video.play();
-    } catch (error) { await stop(`연결할 수 없습니다: ${error.message}`); }
-    finally { starting = false; }
+    } catch (error) { const failure = captureError(error); await stop(failure.message, failure.state); }
+    finally { starting = false; update(); }
   });
   $('camera-stop').addEventListener('click', () => stop());
   video.addEventListener('ended', () => { if (active) stop('시연 영상이 끝났습니다. 생성된 점군과 기록을 저장합니다.'); });
@@ -127,4 +146,6 @@ export async function connectCapture(onStart) {
     media?.getTracks().forEach((track) => track.stop());
     if (id) fetch('/api/live/stop', {method: 'POST', headers: {'X-Mapping-Client': '1'}, body: JSON.stringify({session_id: id}), keepalive: true}).catch(() => {});
   });
+  message('입력 전 · 시작 버튼을 눌러 영상을 연결하세요. 카메라 권한은 시작할 때 요청합니다.', 'idle');
+  return {update};
 }
