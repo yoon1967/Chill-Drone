@@ -4,12 +4,14 @@ import { PlanarObjects } from '/objects.js';
 import { connectCapture } from '/capture.js';
 import { MapSource } from '/map-source.js';
 import { updatePointGrid, pointSpacingProfile, pointGridCells, displayPointCells } from '/point-grid.js';
+import { applySceneDelta } from '/map-delta.js';
 const $ = (id) => document.getElementById(id);
 const number = (n) => Number(n).toLocaleString('ko-KR');
 const timeOf = (c) => c.source_pts_s ?? c.timestamp_s;
 let run, root, cloud, route, frustums, grid, selected;
 let center, radius = 1, fullCenter, fullRadius = 1, direction;
-let currentIndex = 0, playing = false, previousTime = 0, mode = 'objects';
+let currentIndex = 0, playing = false, previousTime = 0,
+  mode = new URLSearchParams(location.search).get('mode') === 'hologram' ? 'hologram' : 'objects';
 let navigating = false, dragging = false, busy = null, revision = null;
 let pollDelay = 2000, previewFrame = null;
 let pollTimer, captureState = {state: 'idle'}, captureHandle, lastLiveState = {};
@@ -21,8 +23,15 @@ const savedCopy = {
   note: document.querySelector('.notes .muted').textContent,
 };
 let hologramInterval = 0, intervalFrame = null, originalPositions = new Float64Array();
-let hologramControlsOpen = false;
+let hologramControlsOpen = mode === 'hologram';
 let confidenceThreshold = 3, gridCells = null, filteredPoints = [];
+let surfaceGroup = null, surfaceCache = null, surfaceStyle = 'faces', surfaceConnection = 2.5;
+let surfaceTimer = null;
+let surfaceWorker = null, surfaceInFlight = null, surfaceQueued = null, surfaceDesired = 0;
+let surfaceAck = 0;
+const surfacePatches = new Map();
+let surfaceColorThreshold = 30, surfaceNormalAngle = 55;
+let surfaceWide = true;
 let spacingProfile = {step: .0001, max: .05, recommended: .003, median: 0};
 const decimal = (n) => Number(n).toLocaleString('ko-KR', {maximumFractionDigits: 12});
 const renderTimes = [];
@@ -51,15 +60,23 @@ const objectLayer = new PlanarObjects(renderer, camera, controls, (frame, showCa
 
 function clearMap(title = '지도를 불러오는 중', detail = '잠시 기다려 주세요.') {
   stopExplore();
+  clearSurfacePatches(); surfaceGroup = null; surfaceCache = null;
+  clearTimeout(surfaceTimer); surfaceTimer = null;
+  surfaceWorker?.terminate(); surfaceWorker = null;
+  surfaceInFlight = surfaceQueued = null; surfaceDesired++; surfaceAck = 0;
   dispose();
   root = cloud = route = selected = frustums = grid = run = null;
   objectLayer.apply(null, null);
   $('viewport').dataset.source = source.source;
   $('viewport').dataset.session = '';
   $('viewport').dataset.revision = '0';
+  Object.assign($('viewport').dataset, {visiblePoints: 0, surfaceStyle: 'points', surfaceGroups: 0,
+    surfaceLines: 0, surfaceFaces: 0, surfaceWeakFaces: 0, surfacePointOnly: 0,
+    surfaceWidePlanes: 0, surfaceWideFaces: 0, surfaceWideQuads: 0});
   for (const id of ['frame', 'slam-preview']) $(id).removeAttribute('src');
   for (const id of ['frames', 'points', 'reprojection', 'elapsed', 'timestamp', 'frame-name']) $(id).textContent = '—';
   for (const id of ['registration', 'run-date', 'render-state', 'mode-detail', 'frame-proof', 'stream-state', 'incremental-state']) $(id).textContent = '';
+  for (const id of ['surface-summary', 'surface-update-summary', 'surface-wide-summary', 'hologram-confidence-summary']) $(id).textContent = '';
   $('scale-badge').textContent = source.source === 'live' ? '단안 임의 단위' : '스케일 확인 전';
   $('kind').textContent = '지도 대기';
   $('download').hidden = true;
@@ -97,8 +114,8 @@ function selectSource(next, force = false) {
   revision = previewFrame = null;
   renderTimes.length = 0;
   pollDelay = next === 'live' ? 500 : 2000;
-  hologramControlsOpen = false;
-  mode = views.get(next)?.mode || (next === 'saved' ? 'objects' : 'points');
+  mode = views.get(next)?.mode || (new URLSearchParams(location.search).get('mode') === 'hologram' ? 'hologram' : next === 'saved' ? 'objects' : 'points');
+  hologramControlsOpen = mode === 'hologram';
   clearMap();
   setMode(mode);
   $('error').hidden = true;
@@ -237,7 +254,159 @@ function applyPointInterval() {
   $('points').textContent = number(root?.visible === false ? 0 : count);
   Object.assign($('viewport').dataset, {pointInterval: interval, confidenceThreshold: mode === 'hologram' ? confidenceThreshold : 1,
     visiblePoints: count, confidenceBasis: gridCells?.lowerBound ? 'track_lower_bound' : gridCells?.basis || ''});
+  updateSurfacePreview();
   replayControls();
+}
+function clearSurfacePatches() {
+  for (const patch of surfacePatches.values()) patch.group.traverse(o => { o.geometry?.dispose(); o.material?.dispose(); });
+  surfacePatches.clear();
+  surfaceGroup?.clear();
+}
+function applySurfacePatch({key, kind, model}) {
+  let patch = surfacePatches.get(key);
+  if (!patch || kind === 'topology') {
+    if (patch) {
+      patch.group.traverse(o => { o.geometry?.dispose(); o.material?.dispose(); });
+      surfaceGroup.remove(patch.group);
+    }
+    const position = new THREE.Float32BufferAttribute(model.positions, 3).setUsage(THREE.DynamicDrawUsage);
+    patch = {group: new THREE.Group(), position, layers: new Map()};
+    const make = (name, type, color, opacity, capacity) => {
+      const g = new THREE.BufferGeometry();
+      g.setAttribute('position', position);
+      g.setIndex(new THREE.BufferAttribute(new Uint32Array(capacity), 1).setUsage(THREE.DynamicDrawUsage));
+      g.computeBoundingSphere();
+      const material = type === 'face' ? new THREE.MeshBasicMaterial({color, side: THREE.DoubleSide, transparent: true,
+        opacity, depthWrite: false, polygonOffset: true, polygonOffsetFactor: 1, polygonOffsetUnits: 1}) :
+        type === 'point' ? new THREE.PointsMaterial({color, size: 3, sizeAttenuation: false, transparent: true, opacity, depthWrite: false}) :
+        new THREE.LineBasicMaterial({color, transparent: true, opacity, depthWrite: false});
+      const object = type === 'face' ? new THREE.Mesh(g, material) : type === 'point' ? new THREE.Points(g, material) : new THREE.LineSegments(g, material);
+      object.userData.surfaceFace = type === 'face';
+      patch.layers.set(name, object); patch.group.add(object);
+    };
+    make('strongTriangles', 'face', 0x62dfee, .18, model.triangles.length);
+    make('weakTriangles', 'face', 0x62dfee, .07, model.triangles.length);
+    make('strongEdges', 'line', 0x77e9f2, model.synthetic ? .25 : .55, model.edges.length);
+    make('weakEdges', 'line', 0x77e9f2, model.synthetic ? .12 : .22, model.edges.length);
+    make('strongBoundary', 'line', 0xb5faff, .85, model.boundary.length);
+    make('weakBoundary', 'line', 0xb5faff, .42, model.boundary.length);
+    make('strongVertices', 'point', 0xb5faff, .95, model.nodeKeys.length);
+    make('weakVertices', 'point', 0xb5faff, .45, model.nodeKeys.length);
+    surfacePatches.set(key, patch); surfaceGroup.add(patch.group);
+  } else {
+    const array = patch.position.array;
+    let first = Infinity, last = -1;
+    for (let i = 0; i < model.positions.length; i++) if (array[i] !== Math.fround(model.positions[i])) {
+      array[i] = model.positions[i]; first = Math.min(first, i); last = i;
+    }
+    if (last >= 0) {
+      patch.position.addUpdateRange(first, last - first + 1); patch.position.needsUpdate = true;
+      patch.group.traverse(o => o.geometry?.computeBoundingSphere());
+    }
+  }
+  const strong = new Set(model.strongEdges), weak = [...new Set(model.weakEdges)].filter(i => !strong.has(i));
+  const indices = {...model, strongVertices: model.synthetic ? [] : [...strong], weakVertices: model.synthetic ? [] : weak};
+  for (const [name, object] of patch.layers) {
+    const values = indices[name], attr = object.geometry.getIndex();
+    let changed = object.geometry.drawRange.count !== values.length;
+    if (!changed) for (let i = 0; i < values.length; i++) if (attr.array[i] !== values[i]) { changed = true; break; }
+    if (changed) {
+      attr.array.set(values); attr.addUpdateRange(0, values.length); attr.needsUpdate = true;
+      object.geometry.setDrawRange(0, values.length);
+    }
+    object.visible = values.length > 0 && (!object.userData.surfaceFace || surfaceStyle === 'faces');
+  }
+}
+function pumpSurfaceWorker() {
+  if (surfaceInFlight || !surfaceQueued) return;
+  if (!surfaceWorker) {
+    surfaceWorker = new Worker('/point-surface-worker.js', {type: 'module'});
+    surfaceWorker.onmessage = ({data}) => {
+      const request = surfaceInFlight;
+      surfaceInFlight = null;
+      if (request && data.id === surfaceDesired) {
+        if (data.error) {
+          $('surface-update-summary').textContent = `구조 갱신 실패 · 이전 결과 유지: ${data.error}`;
+        } else {
+          const result = data.result;
+          surfaceGroup ??= new THREE.Group();
+          if (surfaceGroup.parent !== root) root.add(surfaceGroup);
+          if (result.reset) clearSurfacePatches();
+          for (const key of result.removed) {
+            const patch = surfacePatches.get(key);
+            if (patch) {
+              patch.group.traverse(o => { o.geometry?.dispose(); o.material?.dispose(); });
+              surfaceGroup.remove(patch.group); surfacePatches.delete(key);
+            }
+          }
+          for (const patch of result.patches) applySurfacePatch(patch);
+          surfaceAck = data.version;
+          surfaceCache = {...request.tag, model: result.stats, elapsed: result.stats.analysisMs};
+          updateSurfacePreview();
+        }
+      }
+      pumpSurfaceWorker();
+    };
+    surfaceWorker.onerror = () => {
+      surfaceInFlight = null;
+      $('surface-update-summary').textContent = '구조 갱신 실패 · 페이지를 새로 고쳐 다시 시도하세요.';
+    };
+  }
+  const request = surfaceQueued;
+  surfaceQueued = null; surfaceInFlight = request;
+  request.payload.ack = surfaceAck;
+  surfaceWorker.postMessage(request.payload);
+}
+function updateSurfacePreview(immediate = false) {
+  if (!run || !root) return;
+  const enabled = root.visible !== false && mode === 'hologram' && surfaceStyle !== 'points';
+  if (surfaceGroup) surfaceGroup.visible = enabled;
+  if (!enabled) {
+    clearTimeout(surfaceTimer); surfaceTimer = null;
+    if (!objectLayer.objects.length) cloud.material.opacity = 1;
+    $('surface-summary').textContent = root.visible === false ? '초기화 · 표시할 구조가 없습니다.' : '점만 표시 · 구조 연결 숨김';
+    Object.assign($('viewport').dataset, {surfaceStyle: 'points', surfaceGroups: 0, surfaceLines: 0,
+      surfaceFaces: 0, surfaceWeakFaces: 0, surfacePointOnly: root.visible === false ? 0 : cloud.geometry.drawRange.count});
+    return;
+  }
+  const tag = {grid: gridCells, threshold: confidenceThreshold, connection: surfaceConnection,
+    colorThreshold: surfaceColorThreshold, normalAngle: surfaceNormalAngle, wideSurfaces: surfaceWide};
+  const matches = cached => cached && Object.keys(tag).every(key => cached[key] === tag[key]);
+  if (!matches(surfaceCache)) {
+    $('surface-update-summary').textContent = '바뀐 주변을 갱신합니다 · 기존 선·면 유지';
+    if (!matches(surfaceQueued?.tag) && !matches(surfaceInFlight?.tag)) {
+      if (!immediate) {
+        clearTimeout(surfaceTimer);
+        surfaceTimer = setTimeout(() => { surfaceTimer = null; updateSurfacePreview(true); }, 160);
+      } else {
+        const id = ++surfaceDesired;
+        surfaceQueued = {tag, payload: {id, points: filteredPoints, grid: gridCells, observations: run.point_observations,
+          settings: {...tag, grid: undefined, spacing: spacingProfile.median},
+          context: {source: run.source, session: run.input_run_id, segment: run.segment_id, poseSource: run.pose_source, revision: run.revision,
+            frameKeys: run.cameras.map(c => c.frame_id), cameras: run.cameras,
+            displayRotation: run.coordinate_system?.display_rotation}}};
+        pumpSurfaceWorker();
+      }
+    }
+    $('viewport').dataset.surfaceStyle = 'pending';
+    return;
+  }
+  for (const patch of surfacePatches.values()) for (const object of patch.layers.values())
+    if (object.userData.surfaceFace) object.visible = surfaceStyle === 'faces' && object.geometry.drawRange.count > 0;
+  const m = surfaceCache.model;
+  if (!objectLayer.objects.length) cloud.material.opacity = m.edges ? .32 : 1;
+  $('surface-summary').textContent = `선 ${number(m.edges)}개 · ` +
+    (surfaceStyle === 'faces' ? `삼각면 ${number(m.faces)}개 (옅은 후보 ${number(m.weakFaces)}개) · ` : '') + `점만 ${number(m.pointOnly)}곳`;
+  $('surface-update-summary').textContent = `유지 ${number(m.retainedFaces)}면 · 추가 ${number(m.addedFaces)}면 · 제거 ${number(m.removedFaces)}면` +
+    ` · 블록 ${number(m.remeshedBlocks)}곳 갱신 / ${number(m.reusedBlocks)}곳 재사용 · ${m.analysisMs.toFixed(1)}ms`;
+  $('surface-wide-summary').textContent = surfaceWide ?
+    `넓은 표면 ${number(m.widePlanes || 0)}곳 · 특징점 기준 사각 패치 ${number(m.wideQuads || 0)}개 · 재사용 ${number(m.wideReused || 0)}곳 · 영상 ${number(m.wideImageViews || 0)}시점 확인` : '넓은 표면 채우기 꺼짐';
+  Object.assign($('viewport').dataset, {surfaceStyle, surfaceGroups: m.groups, surfaceLines: m.edges,
+    surfaceFaces: surfaceStyle === 'faces' ? m.faces : 0, surfaceWeakFaces: surfaceStyle === 'faces' ? m.weakFaces : 0,
+    surfacePointOnly: m.pointOnly, surfaceAnalysisMs: m.analysisMs.toFixed(1), surfaceAlgorithm: m.algorithm,
+    surfaceColorThreshold, surfaceNormalAngle, surfaceRetainedFaces: m.retainedFaces,
+    surfaceUpdatedBlocks: m.remeshedBlocks, surfaceReusedBlocks: m.reusedBlocks, surfaceUpdateReason: m.reason,
+    surfaceWidePlanes: m.widePlanes || 0, surfaceWideFaces: m.wideFaces || 0, surfaceWideQuads: m.wideQuads || 0});
 }
 function schedulePointDisplay() {
   if (intervalFrame === null) intervalFrame = requestAnimationFrame(() => {
@@ -272,7 +441,8 @@ function setMode(next, toggleControls = false) {
   if (!run) return;
   applyPointInterval();
   cloud.material.transparent = next !== 'points';
-  cloud.material.opacity = next !== 'points' && objectLayer.objects.length ? (next === 'hologram' ? .10 : .22) : 1;
+  cloud.material.opacity = next !== 'points' && objectLayer.objects.length ? (next === 'hologram' ? .10 : .22) :
+    next === 'hologram' && surfaceGroup?.visible && surfaceCache?.model.edges ? .32 : 1;
   cloud.material.vertexColors = next !== 'hologram';
   cloud.material.color.set(next === 'hologram' ? 0x92f8fa : 0xffffff);
   cloud.material.needsUpdate = true;
@@ -285,6 +455,7 @@ function setMode(next, toggleControls = false) {
     $('mode-detail').textContent = '연속 프레임의 같은 지도 점을 추적하고 카메라 위치와 희소 3D 지도를 함께 갱신합니다.';
   }
   if (next === 'hologram') $('mode-detail').textContent += ' 격자로 좌표를 모은 뒤 관측 프레임 수로 신뢰할 점을 고릅니다.';
+  if (next === 'hologram') $('mode-detail').textContent += ' 원본 색상이 비슷한 이웃을 선·면으로 연결하고, 영상의 색상이 이어지는 넓은 평면도 채웁니다.';
 }
 function selectFrame(index) {
   currentIndex = Math.max(0, Math.min(index, run.cameras.length - 1));
@@ -346,9 +517,16 @@ function applyRun(value) {
   document.querySelector('.notes').hidden = false;
   document.querySelectorAll('.view-buttons button, #explore, #camera-view, #frame-timeline').forEach((b) => { b.disabled = false; });
   document.querySelector('.workspace').classList.toggle('slam-workspace', Boolean(run.slam));
+  if (preserve && surfaceGroup) root.remove(surfaceGroup);
+  else {
+    clearSurfacePatches(); surfaceGroup = null; surfaceCache = null;
+    surfaceQueued = null; surfaceDesired++; surfaceAck = -1;
+  }
   dispose();
+  clearTimeout(surfaceTimer); surfaceTimer = null;
   root = new THREE.Group();
   scene.add(root);
+  if (surfaceGroup) root.add(surfaceGroup);
   cloud = new THREE.Points(new THREE.BufferGeometry(), new THREE.PointsMaterial({vertexColors: true,
     size: Number($('point-size').value), sizeAttenuation: false}));
   root.add(cloud);
@@ -410,7 +588,7 @@ function applyRun(value) {
     $('frames').parentElement.querySelector('span').textContent = '선택된 키프레임';
     $('registration').textContent = `${run.slam.keyframes}개 키프레임 · 전체 프레임의 추적 상태는 위 영상에서 확인`;
     document.querySelector('.notes h2').innerHTML = '같은 점을 이어,<br>이동과 공간을 추적합니다.';
-    $('scale-note').nextElementSibling.textContent = 'ORB-SLAM3의 카메라 경로와 실제 대응점으로 만든 희소 지도입니다. 점 사이를 임의의 면으로 채우지 않습니다. 사물의 표면과 영상 질감을 복원하는 단계는 별도로 연결해야 합니다.';
+    $('scale-note').nextElementSibling.textContent = 'ORB-SLAM3의 카메라 경로와 실제 대응점으로 만든 희소 지도입니다. 이웃 점은 색상과 국소 방향으로 선·면을 만들고, 넓은 평면은 원본 점의 지지와 촬영 영상의 색상 연결을 함께 확인해 채웁니다. 관측 근거가 적은 후보는 옅게 표시합니다. 점 사이의 면은 추정한 영역이며 실제 사물의 접합·두께를 확인한 결과는 아닙니다.';
     document.querySelector('.notes .muted').textContent = '카메라 수신과 저장 기록 재생을 지원합니다. 단안 스케일·카메라 보정·실기체 지연은 별도 확인이 필요합니다.';
     document.querySelector('footer > span').textContent = 'ORB-SLAM3 · MONOCULAR TRACKING';
     $('elapsed').nextElementSibling.textContent = '영상 재생·추적 경과 시간';
@@ -515,6 +693,7 @@ async function drawReplay() {
     $('timestamp').textContent = '초기화 대기';
     $('frame-name').textContent = '첫 유효 지도 이전';
     $('viewport').dataset.revision = '0';
+    updateSurfacePreview();
     $('download').hidden = true;
     document.querySelector('.capture').hidden = true;
     showEmpty('첫 유효 지도 이전', '지도 생성 시간 슬라이더를 움직이거나 재생해 점이 생성되는 과정을 확인하세요.');
@@ -626,11 +805,20 @@ async function poll() {
     }
     if (run && (state.status === 'offline' || (state.revision === revision && (!state.session_id || state.session_id === run.input_run_id)))) return;
     const query = state.session_id ? `?session=${encodeURIComponent(state.session_id)}&revision=${String(state.revision).padStart(6, '0')}` : '';
-    const response = await source.read(`run${query}`, context);
+    const useDelta = run?.pose_source === 'orb_slam3' && run.source === state.source && run.input_run_id === state.session_id && run.revision < state.revision;
+    const deltaQuery = useDelta ? `${query}&since_revision=${String(run.revision).padStart(6, '0')}` : query;
+    const response = await source.read(`run${deltaQuery}`, context);
     if (!response) return;
     if (response.status === 503) { $('run-name').textContent = '영상 수신 중 · 충분한 시차와 관측점을 기다립니다.'; return; }
     if (!response.ok) throw new Error(`지도 읽기 실패 ${response.status}`);
-    const value = response.value;
+    let value;
+    try { value = applySceneDelta(run, response.value); }
+    catch {
+      const full = await source.read(`run${query}`, context);
+      if (!full) return;
+      if (!full.ok) throw new Error(`Map read failed ${full.status}`);
+      value = full.value;
+    }
     if (value.source !== state.source || (state.session_id && value.input_run_id !== state.session_id)) return;
     if (!replay.following || (state.backend === 'orb_slam3_monocular' && state.session_id !== replay.session)) return;
     applyRun(value);
@@ -672,6 +860,17 @@ $('hologram-interval-recommend').addEventListener('click', () => setPointInterva
 $('hologram-confidence').addEventListener('input', (e) => setConfidence(e.target.valueAsNumber));
 $('hologram-confidence-number').addEventListener('input', (e) => setConfidence(e.target.valueAsNumber));
 $('hologram-confidence-number').addEventListener('change', (e) => { e.target.value = confidenceThreshold; });
+$('surface-style').addEventListener('change', (e) => { surfaceStyle = e.target.value; schedulePointDisplay(); });
+$('surface-wide').addEventListener('change', (e) => { surfaceWide = e.target.checked; schedulePointDisplay(); });
+$('surface-connection').addEventListener('input', (e) => {
+  surfaceConnection = e.target.valueAsNumber;
+  $('surface-connection-value').textContent = `${surfaceConnection.toFixed(2)}×`;
+  schedulePointDisplay();
+});
+for (const [id, update] of [
+  ['surface-color', value => { surfaceColorThreshold = value; $('surface-color-value').textContent = `${value} ΔE`; }],
+  ['surface-angle', value => { surfaceNormalAngle = value; $('surface-angle-value').textContent = `${value}°`; }],
+]) $(id).addEventListener('input', e => { update(e.target.valueAsNumber); schedulePointDisplay(); });
 $('show-path').addEventListener('change', (e) => { if (route) route.visible = selected.visible = e.target.checked; });
 $('show-cameras').addEventListener('change', (e) => { if (frustums) frustums.visible = e.target.checked; });
 $('show-grid').addEventListener('change', (e) => { if (grid) grid.visible = e.target.checked; });

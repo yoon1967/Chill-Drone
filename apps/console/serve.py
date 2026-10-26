@@ -20,6 +20,29 @@ sys.path.insert(0, str(APP.parents[1]))
 from modules.mapping.localization.observations import native_observations
 
 
+def scene_delta(previous, current):
+    """ORB IDs are stable only within a session/map. Other producers keep full snapshots."""
+    if (previous.get("pose_source") != "orb_slam3" or current.get("pose_source") != "orb_slam3"
+            or any(previous.get(k) != current.get(k) for k in ("input_run_id", "segment_id", "schema_version"))
+            or previous.get("revision", 0) >= current.get("revision", 0)):
+        return None
+    old_evidence, evidence = previous.get("point_observations"), current.get("point_observations")
+    if (not old_evidence or not evidence or old_evidence.get("schema_version") != "point-observations/1.0"
+            or evidence.get("schema_version") != "point-observations/1.0"):
+        return None
+    old_rows = {p[0]: p for p in previous["points"]}
+    rows = {p[0]: p for p in current["points"]}
+    old_frames, frames = old_evidence["frame_index_by_point"], evidence["frame_index_by_point"]
+    return {"schema_version": "phone-map-delta/1.0", "base_revision": previous["revision"],
+        "revision": current["revision"], "session_id": current["input_run_id"], "segment_id": current["segment_id"],
+        "scene": {k: v for k, v in current.items() if k not in {"points", "point_observations"}},
+        "points_upsert": [p for p in current["points"] if old_rows.get(p[0]) != p],
+        "points_removed": [key for key in old_rows if key not in rows], "point_order": [p[0] for p in current["points"]],
+        "observation_metadata": {k: v for k, v in evidence.items() if k != "frame_index_by_point"},
+        "observation_upserts": {k: v for k, v in frames.items() if old_frames.get(k) != v},
+        "observation_removed": [k for k in old_frames if k not in frames]}
+
+
 def load_json(path):
     # Windows can briefly deny a reader while an atomic publisher replaces the file.
     for attempt in range(4):
@@ -162,6 +185,9 @@ class ViewerHandler(BaseHTTPRequestHandler):
 
     def json_response(self, value, status=200):
         payload = json.dumps(value, ensure_ascii=False, allow_nan=False).encode("utf-8")
+        self.json_payload(payload, status)
+
+    def json_payload(self, payload, status=200):
         self.send_response(status)
         self.send_header("Content-Type", "application/json; charset=utf-8")
         self.send_header("Content-Length", str(len(payload)))
@@ -361,9 +387,28 @@ class ViewerHandler(BaseHTTPRequestHandler):
                 return
             if collection:
                 value["planar_objects"] = collection
+            since = parse_qs(url.query).get("since_revision", [None])[0]
+            if since is not None:
+                if not re.fullmatch(r"\d{6}", since):
+                    self.send_error(404)
+                    return
+                if self.session:
+                    try:
+                        base, _ = self.snapshot(since)
+                        previous = json.loads((base / "scene.json").read_text(encoding="utf-8"))
+                        delta = scene_delta(previous, value)
+                        if delta is not None:
+                            delta_payload = json.dumps(delta, ensure_ascii=False, allow_nan=False).encode("utf-8")
+                            full_payload = json.dumps(value, ensure_ascii=False, allow_nan=False).encode("utf-8")
+                            self.json_payload(delta_payload if len(delta_payload) < len(full_payload) else full_payload)
+                            return
+                    except (OSError, ValueError, KeyError, TypeError):
+                        pass  # Missing/pruned/unsupported bases always fall back to a complete snapshot.
             self.json_response(value)
             return
-        static = {"/": APP / "index.html", "/app.js": APP / "app.js", "/objects.js": APP / "objects.js", "/capture.js": APP / "capture.js", "/map-source.js": APP / "map-source.js", "/point-grid.js": APP / "point-grid.js", "/style.css": APP / "style.css",
+        static = {"/": APP / "index.html", "/app.js": APP / "app.js", "/objects.js": APP / "objects.js", "/capture.js": APP / "capture.js", "/point-grid.js": APP / "point-grid.js", "/point-surfaces.js": APP / "point-surfaces.js", "/style.css": APP / "style.css",
+                  "/point-surface-worker.js": APP / "point-surface-worker.js", "/map-delta.js": APP / "map-delta.js",
+                  "/map-source.js": APP / "map-source.js", "/wide-surfaces.js": APP / "wide-surfaces.js",
                   "/vendor/three.module.js": APP / "node_modules/three/build/three.module.js",
                   "/vendor/three.core.js": APP / "node_modules/three/build/three.core.js",
                   "/vendor/OrbitControls.js": APP / "node_modules/three/examples/jsm/controls/OrbitControls.js"}
