@@ -189,8 +189,8 @@ function selectFrame(index) {
   currentIndex = Math.max(0, Math.min(index, run.cameras.length - 1));
   const c = run.cameras[currentIndex];
   $('frame-timeline').value = currentIndex;
-  $('frame').src = `/api/frame/${encodeURIComponent(c.frame_id)}${run.revision ? '?revision=' + String(run.revision).padStart(6, '0') +
-    (run.slam ? '&session=' + encodeURIComponent(run.input_run_id) : '') : ''}`;
+  const query = run.stream ? `?revision=${String(run.revision).padStart(6, '0')}&session=${encodeURIComponent(run.stream.session_id)}` : '';
+  $('frame').src = `/api/${run.source}/frame/${encodeURIComponent(c.frame_id)}${query}`;
   $('frame-name').textContent = c.frame_id;
   $('timestamp').textContent = `${timeOf(c).toFixed(1)}s${c.source_pts_s == null ? ' · 수신 기준' : ''}`;
   selected.position.fromArray(c.position);
@@ -315,8 +315,11 @@ function applyRun(value) {
     if (mode !== 'points' && objectLayer.objects.length) objectLayer.focusAll();
     else setView('perspective');
   }
-  $('download').href = run.stream ? '/api/run' : '/api/points.ply';
-  document.querySelectorAll('footer a').forEach((a) => { a.hidden = Boolean(run.stream); });
+  $('download').href = run.stream ? `/api/live/run?revision=${String(run.revision).padStart(6, '0')}&session=${encodeURIComponent(run.stream.session_id)}` : '/api/saved/points.ply';
+  document.querySelectorAll('footer a').forEach((a) => {
+    a.hidden = Boolean(run.stream);
+    a.setAttribute('href', a.getAttribute('href').replace(/^\/api\/(?:saved\/)?/, '/api/saved/'));
+  });
 }
 
 function replayDuration() { return replay.entries.at(-1)?.timestamp_s || 0; }
@@ -353,7 +356,8 @@ async function refreshTimeline(state) {
     playing = false;
   }
   if (state.map_available && replay.manifestRevision !== state.revision) {
-    const response = await fetch('/api/timeline');
+    const response = await fetch(`/api/live/timeline?session=${encodeURIComponent(session)}`);
+    if (response.status === 409) return;
     if (!response.ok) throw new Error('지도 재생 이력을 읽지 못했습니다.');
     const timeline = await response.json();
     if (timeline.session_id === replay.session) {
@@ -392,7 +396,7 @@ async function drawReplay() {
   try {
     let value = replay.cache.get(entry.revision);
     if (!value) {
-      const response = await fetch(`/api/run?revision=${String(entry.revision).padStart(6, '0')}&session=${encodeURIComponent(replay.session)}`);
+      const response = await fetch(`/api/live/run?revision=${String(entry.revision).padStart(6, '0')}&session=${encodeURIComponent(replay.session)}`);
       if (!response.ok) throw new Error('저장된 지도 버전을 불러오지 못했습니다.');
       value = await response.json();
     }
@@ -440,7 +444,7 @@ function showState(state) {
       '선택한 지도 버전의 촬영 키프레임입니다. 점군·경로는 그 시점에 실제로 저장된 지도 전체로 교체합니다.';
     if (replay.following && state.frame_id && state.frame_id !== previewFrame) {
       previewFrame = state.frame_id;
-      $('slam-preview').src = `/api/slam-preview?frame=${encodeURIComponent(previewFrame)}&session=${encodeURIComponent(state.session_id)}`;
+      $('slam-preview').src = `/api/live/slam-preview?frame=${encodeURIComponent(previewFrame)}&session=${encodeURIComponent(state.session_id)}`;
     }
     const pendingMap = !state.map_available && run && state.session_id !== run.input_run_id ?
       ' · 새 세션 초기화, 이전 지도 표시' : state.map_available && state.map_id !== state.segment_id ? ' · 새 좌표계 준비, 마지막 지도 유지' : '';
@@ -469,10 +473,13 @@ async function poll() {
     showState(state);
     if (!replay.following) return;
     if (run && (state.status === 'offline' || (state.revision === revision && (!state.session_id || state.session_id === run.input_run_id)))) return;
-    const response = await fetch('/api/run');
+    const query = state.session_id ? `?session=${encodeURIComponent(state.session_id)}&revision=${String(state.revision).padStart(6, '0')}` : '';
+    const response = await fetch(`/api/${state.source === 'saved' ? 'saved' : 'live'}/run${query}`);
+    if (response.status === 409) return;
     if (response.status === 503) { $('run-name').textContent = '영상 수신 중 · 충분한 시차와 관측점을 기다립니다.'; return; }
     if (!response.ok) throw new Error(`지도 읽기 실패 ${response.status}`);
     const value = await response.json();
+    if (value.source !== state.source || (state.session_id && value.input_run_id !== state.session_id)) return;
     if (!replay.following || (state.session_id && state.session_id !== replay.session)) return;
     applyRun(value);
     revision = run.revision ?? 0;

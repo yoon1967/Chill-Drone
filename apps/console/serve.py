@@ -3,7 +3,7 @@ from __future__ import annotations
 
 import argparse
 import hashlib
-from functools import partial
+from functools import lru_cache, partial
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 import json
 import mimetypes
@@ -11,12 +11,24 @@ from pathlib import Path
 import re
 import sys
 import threading
+import time
 from types import SimpleNamespace
 from urllib.parse import parse_qs, unquote, urlsplit
 
 APP = Path(__file__).resolve().parent
 sys.path.insert(0, str(APP.parents[1]))
 from modules.mapping.localization.observations import native_observations
+
+
+def load_json(path):
+    # Windows can briefly deny a reader while an atomic publisher replaces the file.
+    for attempt in range(4):
+        try:
+            return json.loads(path.read_text(encoding="utf-8"))
+        except PermissionError:
+            if attempt == 3:
+                raise
+            time.sleep(.01)
 
 
 def prepare_demo_camera(source, *, camera=None, calibration_result=None, session=None):
@@ -95,17 +107,58 @@ class ViewerServer(ThreadingHTTPServer):
     request_queue_size = 32
 
 
+@lru_cache(maxsize=8)
+def result_metadata(path, modified_ns, size):
+    """Cache only public coordinate metadata, keyed by the actual scene version."""
+    scene = load_json(path)
+    return {key: scene[key] for key in ("coordinate_system", "scale", "segment_id", "input_run_id") if key in scene}
+
+
 class ViewerHandler(BaseHTTPRequestHandler):
     def __init__(self, *args, result=None, session=None, objects=None, live=None, timeline=None, observations=None, demo=None, demo_camera=None, **kwargs):
-        self.result = Path(result).resolve() if result else None
-        self.session = Path(session).resolve() if session else None
-        self.objects = Path(objects).resolve() if objects else None
+        self.saved_result = Path(result).resolve() if result else None
+        self.recorded_session = Path(session).resolve() if session else None
+        self.saved_objects = Path(objects).resolve() if objects else None
         self.live, self.timeline, self.demo = live, timeline, demo
         self.demo_camera = demo_camera
         self.observations = observations
-        if live and live.current:
-            self.session = live.current.path
+        # Capture one session per request, even when another request starts a new session.
+        self.current = live.current if live else None
+        self.select_source()
         super().__init__(*args, **kwargs)
+
+    def select_source(self, source=None):
+        self.source = source or ("live" if self.current or self.recorded_session or not self.saved_result else "saved")
+        self.session = (self.current.path if self.current else self.recorded_session) if self.source == "live" else None
+        self.result = self.saved_result if self.source == "saved" else None
+        self.objects = self.saved_objects if self.source == "saved" else None
+
+    def source_state(self, result, state):
+        value = dict(state or {})
+        if self.source == "saved":
+            value.update(status="offline", session_status=None, session_id=None, revision=0, map_available=False)
+        elif not self.session:
+            value.update(status="idle", session_status="idle", session_id=None, revision=0, map_available=False)
+        else:
+            value["session_id"] = self.session.name
+            if self.current:
+                value.update(self.current.stats())
+            value.setdefault("session_status", value.get("status", "starting"))
+        value.update(schema_version="mapping-source-state/1.0", source=self.source,
+                     coordinate_system=None, scale=None, map_available=False)
+        value.setdefault("segment_id", None)
+        if (result and (result / "scene.json").is_file() and (result / "status.json").is_file()
+                and load_json(result / "status.json").get("status") in {"complete", "partial"}):
+            path = result / "scene.json"
+            stat = path.stat()
+            metadata = result_metadata(path, stat.st_mtime_ns, stat.st_size)
+            value.update(metadata)
+            value["map_available"] = True
+        elif self.source == "live" and value.get("backend") == "orb_slam3_monocular":
+            value.update(scale={"status": "arbitrary", "unit": "arbitrary"}, coordinate_system={
+                "native": "ORB-SLAM3 world; camera x-right y-down z-forward",
+                "display_rotation": [[1., 0., 0.], [0., -1., 0.], [0., 0., -1.]]})
+        return value
 
     def json_response(self, value, status=200):
         payload = json.dumps(value, ensure_ascii=False, allow_nan=False).encode("utf-8")
@@ -116,12 +169,13 @@ class ViewerHandler(BaseHTTPRequestHandler):
         self.end_headers()
         self.wfile.write(payload)
 
-    def snapshot(self, revision=None):
+    def snapshot(self, revision=None, state=None):
         if not self.session:
             return self.result, None
         if not (self.session / "state.json").is_file():
             return None, {"status": "starting", "revision": 0, "map_available": False, "frame_drops": 0}
-        state = json.loads((self.session / "state.json").read_text(encoding="utf-8"))
+        if state is None:
+            state = load_json(self.session / "state.json")
         state.pop("surface", None)  # Retired point-connectivity mesh statistics in older sessions.
         name = f"revisions/{revision}" if revision else state.get("revision_path", "")
         if not re.fullmatch(r"revisions/\d{6}", name):
@@ -159,8 +213,9 @@ class ViewerHandler(BaseHTTPRequestHandler):
                 session = self.live.require(query.get("session", [""])[0])
                 self.json_response(session.offer(data, float(self.headers["X-Frame-Timestamp"]), int(self.headers["X-Frame-Sequence"])), 202)
             elif url.path == "/api/live/stop":
-                self.live.require(json.loads(data)["session_id"]).stop()
-                self.json_response({"status": "stopping"}, 202)
+                session = self.live.require(json.loads(data)["session_id"])
+                session.stop()
+                self.json_response({**session.stats(), "status": "stopping"}, 202)
             else:
                 self.send_error(404)
         except (ValueError, KeyError, TypeError) as error:
@@ -172,7 +227,7 @@ class ViewerHandler(BaseHTTPRequestHandler):
 
     def log_message(self, format, *args):
         # Frame/status polling is operational traffic; avoid an unbounded terminal log.
-        if args and re.search(r"/api/(?:state|run|timeline|live/frame|slam-preview|frame/)", str(args[0])):
+        if args and re.search(r"/api/(?:(?:saved|live)/)?(?:state|run|timeline|frame|slam-preview)", str(args[0])):
             return
         super().log_message(format, *args)
 
@@ -242,10 +297,16 @@ class ViewerHandler(BaseHTTPRequestHandler):
             return
         if path == "/api/live":
             self.json_response({"enabled": self.live is not None, "demo_available": self.demo is not None,
-                "demo_camera": self.demo_camera, "current": self.live.current.stats() if self.live and self.live.current else None})
+                "demo_camera": self.demo_camera, "current": self.current.stats() if self.current else None})
             return
+        if path.startswith("/api/saved/"):
+            self.select_source("saved")
+            path = "/api/" + path.removeprefix("/api/saved/")
+        elif path.startswith("/api/live/"):
+            self.select_source("live")
+            path = "/api/" + path.removeprefix("/api/live/")
         try:
-            requested = parse_qs(url.query).get("revision", [None])[0] if path == "/api/run" else None
+            requested = parse_qs(url.query).get("revision", [None])[0]
             requested_session = parse_qs(url.query).get("session", [None])[0]
             if requested_session and (not self.session or requested_session != self.session.name):
                 self.json_response({"error": "session_changed"}, 409)
@@ -253,19 +314,24 @@ class ViewerHandler(BaseHTTPRequestHandler):
             if requested and not re.fullmatch(r"\d{6}", requested):
                 self.send_error(404)
                 return
-            result, state = self.snapshot(requested)
-        except (OSError, ValueError):
-            self.json_response({"status": "unavailable"}, 503)
+            if requested and self.source == "saved":
+                self.json_response({"error": "saved_map_has_no_revisions"}, 400)
+                return
+            result, state = self.snapshot()
+            current_result = result
+            if requested:
+                result, _ = self.snapshot(requested, state)
+            state = self.source_state(current_result, state)
+        except (OSError, ValueError) as error:
+            self.log_error("%s source read failed: %s", self.source, error)
+            self.json_response({"status": "unavailable", "source": self.source, "error": "source_unavailable"}, 503)
             return
         if path == "/api/state":
-            if state and self.session:
-                state["session_id"] = self.session.name
-            if self.live and self.live.current:
-                state.update(self.live.current.stats())
-            self.json_response(state or {"status": "offline", "map_available": True, "revision": 0})
+            self.json_response(state)
             return
         if path == "/api/timeline":
-            self.json_response(self.timeline.read(self.session, state or {}))
+            self.json_response({**self.timeline.read(self.session, state), "source": self.source,
+                                "session_id": self.session.name if self.session else None})
             return
         if path == "/api/run":
             if result is None or not (result / "status.json").is_file() or json.loads(
@@ -274,11 +340,13 @@ class ViewerHandler(BaseHTTPRequestHandler):
                 return
             value = json.loads((result / "scene.json").read_text(encoding="utf-8"))
             value.pop("surface", None)  # Read old results without exposing the retired mesh.
+            value.pop("stream", None)
+            value["source"] = self.source
             if not value.get("point_observations") and self.observations:
                 evidence = self.observations.read(self.session, value)
                 if evidence:
                     value["point_observations"] = evidence
-            if state:
+            if self.source == "live":
                 value["stream"] = state
             try:
                 collection = self.object_collection(result, value)
@@ -306,15 +374,9 @@ class ViewerHandler(BaseHTTPRequestHandler):
             target = result / exports[path]
         elif path.startswith("/api/object-texture/"):
             name = path.removeprefix("/api/object-texture/")
-            requested_revision = parse_qs(url.query).get("revision", [None])[0]
             if not re.fullmatch(r"object-\d{4,8}\.jpg", name):
                 self.send_error(404)
                 return
-            if self.session and requested_revision:
-                if not re.fullmatch(r"\d{6}", requested_revision):
-                    self.send_error(404)
-                    return
-                result, _ = self.snapshot(requested_revision)
             if result is None:
                 self.send_error(404)
                 return
@@ -334,12 +396,6 @@ class ViewerHandler(BaseHTTPRequestHandler):
                 return
         elif path.startswith("/api/frame/"):
             name = path.removeprefix("/api/frame/")
-            requested_revision = parse_qs(url.query).get("revision", [None])[0]
-            if self.session and requested_revision:
-                if not re.fullmatch(r"\d{6}", requested_revision):
-                    self.send_error(404)
-                    return
-                result, _ = self.snapshot(requested_revision)
             if result is None:
                 self.send_error(404)
                 return
@@ -374,9 +430,8 @@ class ViewerHandler(BaseHTTPRequestHandler):
 
 def main():
     parser = argparse.ArgumentParser(description=__doc__)
-    source = parser.add_mutually_exclusive_group(required=True)
-    source.add_argument("--result", type=Path)
-    source.add_argument("--session", type=Path)
+    parser.add_argument("--result", type=Path, help="Saved reconstruction exposed through /api/saved")
+    parser.add_argument("--session", type=Path, help="Initial online session exposed through /api/live")
     parser.add_argument("--objects", type=Path, help="Optional planar object bundle for an offline result")
     parser.add_argument("--port", type=int, default=8790)
     parser.add_argument("--enable-camera", action="store_true", help="Enable local browser camera -> Docker ORB-SLAM3")
@@ -387,8 +442,10 @@ def main():
     calibration.add_argument("--demo-calibration-result", type=Path, help="Reuse only intrinsics from this video's saved reconstruction")
     args = parser.parse_args()
     result = args.result.resolve() if args.result else None
-    if args.session and args.objects:
-        parser.error("Online sessions use revision-bound objects")
+    if not (args.result or args.session or args.enable_camera):
+        parser.error("Select --result, --session, or --enable-camera")
+    if args.objects and not args.result:
+        parser.error("--objects requires a saved --result")
     if result and (not (result / "status.json").is_file() or json.loads(
             (result / "status.json").read_text(encoding="utf-8")).get("status") not in {"complete", "partial"}):
         parser.error("Select a complete or partial reconstruction result")

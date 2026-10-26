@@ -18,3 +18,16 @@ Python 3.12와 `modules/mapping/localization/requirements-online.txt` 의존성�
 실제 영상이나 Docker를 요구하지 않는다. 서버 준비와 실행 명령, 출력 보고서는
 `modules/mapping/localization/ORB_SLAM3.md`의 **저장 결과에서 녹화 영상 전송 재현**을 따른다.
 입출력 지도는 `contracts/mapping/ORB_SLAM3_V1.md` 계약을 사용한다.
+
+## 저장 결과·실시간 세션 분리
+
+`test_map_sources.py`는 합성 지도와 모의 SLAM 실행을 사용하고 실제 HTTP 서버·세션 관리자·
+프레임 입력 검사를 검증한다. Docker는 필요 없다. 두 입력의 동시 조회, 단위·프레임·질감·
+내려받기 분리, 중단·재시작 시 저장 파일 해시 보존, 이전 ID의 조회·전송·중단 거부를 확인한다.
+한 요청 도중 새 세션이 시작되는 경우와 기존 온라인 기록의 재사용도 포함한다.
+
+```powershell
+.\.venv\Scripts\python.exe -B -m unittest discover -s tests/integration -p 'test_*.py' -v
+```
+
+생산자·소비자 응답 필드는 `contracts/mapping/VIEWER_SOURCES_V1.md`를 따른다.

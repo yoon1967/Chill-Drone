@@ -104,7 +104,7 @@ class RecordedDemoTests(unittest.TestCase):
             def do_GET(self):
                 if self.path == "/api/live":
                     self.respond(dict(enabled=True, demo_available=True, demo_camera=camera))
-                elif self.path == "/api/state":
+                elif self.path.startswith("/api/live/state?"):
                     if self.stopping:
                         type(self).revision += 1
                     self.respond(dict(session_id="synthetic", status="complete" if self.revision >= 3 else "receiving",
