@@ -14,7 +14,7 @@ import unittest
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
 from fake_tello import FakeTello  # noqa: E402
-from tello_link import TelloLink, classify, parse_state  # noqa: E402
+from tello_link import TelloLink, classify, parse_ext_tof, parse_state  # noqa: E402
 
 PACKET = ("mid:-1;x:-100;y:-100;z:-100;mpry:0,0,0;pitch:2;roll:-3;yaw:90;vgx:0;vgy:0;vgz:0;"
           "templ:60;temph:63;tof:120;h:35;bat:87;baro:12.34;time:5;agx:-2.00;agy:1.00;agz:-998.00;\r\n")
@@ -57,6 +57,29 @@ class ClassifyTest(unittest.TestCase):
         self.assertEqual(classify("ap myssid mypass"), "config")
         self.assertEqual(classify("speed 50"), "config")
         self.assertEqual(classify("speed?"), "query")
+
+    def test_ext_categories(self):
+        self.assertEqual(classify("EXT tof?"), "query")
+        self.assertEqual(classify("EXT  version?"), "query")
+        self.assertEqual(classify("EXT led 255 0 0"), "ext")
+        self.assertEqual(classify("EXT mled s r heart"), "ext")
+        self.assertEqual(classify("EXT mled sg rrbb"), "config")  # 부팅 애니메이션은 기체에 저장된다
+        self.assertEqual(classify("EXT mled sc"), "config")
+        self.assertEqual(classify("EXT unknown"), "config")
+        self.assertEqual(classify("motoron"), "flight")
+
+    def test_parse_ext_tof(self):
+        self.assertAlmostEqual(parse_ext_tof("tof 481")["front_tof_m"], 0.481)
+        for raw in ("tof 8190", "tof 8191", "tof 8192"):  # 실기체는 8190·8191, 문서는 8192
+            out = parse_ext_tof(raw)
+            self.assertFalse(out["valid"], raw)
+            self.assertIsNone(out["front_tof_m"])
+            self.assertEqual(out["reason"], "out_of_range")
+        self.assertTrue(parse_ext_tof("tof 1139")["valid"])
+        self.assertEqual(parse_ext_tof("unknown command: tof")["reason"], "unknown_command")
+        self.assertEqual(parse_ext_tof("error")["reason"], "error_response")
+        self.assertEqual(parse_ext_tof(None)["reason"], "no_response")
+        self.assertEqual(parse_ext_tof("ok")["reason"], "bad_format")
 
 
 class LinkWithFakeTest(unittest.TestCase):
