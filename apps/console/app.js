@@ -152,9 +152,9 @@ function liveStatus(state) {
     lifecycle === 'complete' ? '추적 종료' : lifecycle === 'stopping' ? '추적 종료 중' : trackingNames[state.tracking_state] || '초기화 중';
   $('tracking-detail').textContent = state.session_id ? `정상 추적 ${number(state.tracked_frames || 0)}장 · 초기화 ${number(state.initializing_frames || 0)}장 · 추적 상실 ${number(state.lost_tracking_frames || 0)}장` : '아직 받은 영상이 없습니다.';
   const available = state.map_available;
-  $('map-state').textContent = available ? !replay.following ? '기록 재생' : lifecycle === 'failed' ? '마지막 지도 유지' : lifecycle === 'complete' ? '최종 지도' : lifecycle === 'stopping' ? '지도 마무리 중' : '지도 갱신 중' : lifecycle === 'failed' ? '생성 실패' : state.session_id ? '초기화 대기' : '생성 전';
+  $('map-state').textContent = available ? !replay.following ? '기록 재생' : lifecycle === 'failed' ? '마지막 지도 유지' : lifecycle === 'complete' ? '최종 지도' : lifecycle === 'stopping' ? '지도 마무리 중' : '지도 갱신 중' : lifecycle === 'failed' ? '생성 실패' : lifecycle === 'complete' ? '생성 전 종료' : state.session_id ? '초기화 대기' : '생성 전';
   $('map-detail').textContent = available ? `최신 지도 ${state.revision}회 갱신 · ${run?.source === 'live' ? `${$('points').textContent}점 표시` : '점군 불러오는 중'}${!replay.following ? ` · 기록 버전 ${replay.applied ?? 0}` : ''} · ${state.scale?.unit === 'm' ? '미터 단위' : '임의 단위'}` :
-    lifecycle === 'failed' ? '유효한 3D 지도가 생성되지 않았습니다. 입력과 카메라 보정값을 확인한 뒤 다시 시작하세요.' : '카메라가 움직이며 충분한 시차와 관측점이 모이면 점이 표시됩니다.';
+    lifecycle === 'failed' ? '유효한 3D 지도가 생성되지 않았습니다. 입력과 카메라 보정값을 확인한 뒤 다시 시작하세요.' : lifecycle === 'complete' ? '영상 입력은 종료됐지만 유효한 지도를 초기화하지 못했습니다. 다음 시험에서는 같은 공간을 보며 카메라 위치를 옮겨 주세요.' : '카메라가 움직이며 충분한 시차와 관측점이 모이면 점이 표시됩니다.';
   $('session-detail').textContent = state.session_id ? `세션 ${state.session_id}${state.last_error ? ' · 처리 오류 발생' : ''}` : '현재 연결된 실시간 세션이 없습니다.';
 }
 
@@ -799,8 +799,9 @@ async function poll() {
     $('error').hidden = true;
     if (!replay.following) return;
     if (!state.map_available) {
-      if (!run) showEmpty(state.source === 'saved' ? '저장된 지도가 없습니다' : state.status === 'failed' ? '3D 지도를 만들지 못했습니다' : state.session_id ? '3D 지도를 준비하고 있습니다' : '영상 입력을 기다리고 있습니다',
-        state.source === 'saved' ? '저장 결과를 연결한 서버에서 이 탭을 열어 주세요.' : state.status === 'failed' ? '입력 상태를 확인한 뒤 다시 시작하세요.' : state.session_id ? '영상 수신과 지도 초기화는 별도 단계입니다. 충분한 시차와 특징점이 모이면 표시됩니다.' : '위에서 입력을 선택하고 시작하세요. 카메라 권한은 시작할 때 요청합니다.');
+      const ended = (state.session_status || state.status) === 'complete';
+      if (!run) showEmpty(state.source === 'saved' ? '저장된 지도가 없습니다' : state.status === 'failed' ? '3D 지도를 만들지 못했습니다' : ended ? '지도 초기화 전에 입력이 종료됐습니다' : state.session_id ? '3D 지도를 준비하고 있습니다' : '영상 입력을 기다리고 있습니다',
+        state.source === 'saved' ? '저장 결과를 연결한 서버에서 이 탭을 열어 주세요.' : state.status === 'failed' ? '입력 상태를 확인한 뒤 다시 시작하세요.' : ended ? '영상 연결과 3D 생성은 별도입니다. 같은 공간을 보며 카메라 위치를 옮겨 다시 시험하세요.' : state.session_id ? '영상 수신과 지도 초기화는 별도 단계입니다. 충분한 시차와 특징점이 모이면 표시됩니다.' : '위에서 입력을 선택하고 시작하세요. 카메라 권한은 시작할 때 요청합니다.');
       return;
     }
     if (run && (state.status === 'offline' || (state.revision === revision && (!state.session_id || state.session_id === run.input_run_id)))) return;
