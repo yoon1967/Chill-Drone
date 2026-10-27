@@ -55,11 +55,16 @@ Tello는 지상에서 켜 둔 채로 두면 과열로 꺼진다. 기체 온도�
 
 | 분류 | 예 | 기본 |
 | --- | --- | --- |
-| query | `battery?`, `sdk?`, `sn?`, `wifi?`, `tof?` | 허용 |
+| query | `battery?`, `sdk?`, `sn?`, `wifi?`, `tof?`, `EXT tof?`, `EXT version?` | 허용 |
 | session | `command`, `streamon`, `streamoff` | 허용 |
 | stop | `land`, `emergency`, `stop` | 항상 허용 |
-| flight | `takeoff`, `forward 50`, `rc ...`, `go ...` | `allow_flight=True`일 때만 |
-| config | `ap ...`, `wifi ...`, `speed 50`, `mon` | `allow_config=True`일 때만 |
+| ext | `EXT led ...`, `EXT mled ...`(확장 키트 표시) | 허용 |
+| flight | `takeoff`, `forward 50`, `rc ...`, `go ...`, `motoron` | `allow_flight=True`일 때만 |
+| config | `ap ...`, `wifi ...`, `speed 50`, `mon`, `EXT mled sg/sc`, 그 밖의 `EXT` | `allow_config=True`일 때만 |
+
+**확장 키트(RoboMaster TT):** 장착하면 Wi-Fi 이름이 `RMTT-xxxxxx`로 바뀌고 주소·포트는 같다. [점검 시작]이 `EXT version?`·`EXT tof?`도 묻고 "확장 키트 (선택)" 단계에 컨트롤러 버전과 전방 거리를 보여 준다.
+전방 거리는 `parse_ext_tof()`가 `front_tof_m`(m)으로 바꾸고, 8190 이상(범위 밖, 실측 8190·8191)·`unknown command`·오류는 무효로 남긴다.
+실측 요약: 0.6m까지 ±4mm, 1.2m까지 잡힘, **센서 갱신 약 5Hz(0.2초)**라 조회는 5~10Hz면 충분하다. 자세한 값과 명령 목록은 [입출력 문서 10장](../../../docs/drone/TELLO_EDU_IO.md#10-robomaster-tt-확장-키트)에 있다.
 
 차단된 명령은 드론으로 보내지 않고, `blocked=true`로 기록만 남긴다.
 `emergency`는 모터를 즉시 멈춘다(공중이면 추락). `land`와 다르다.

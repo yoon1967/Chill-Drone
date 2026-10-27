@@ -43,6 +43,8 @@ class FakeTello:
         self.h_cm = 0.0
         self.bat = 87
         self.temp_override: int | None = None
+        self.ext_kit = False             # True면 확장 키트가 달린 것처럼 EXT 명령에 응답한다(값은 지어낸 것)
+        self.front_tof_mm = 481
         self.motion_delay = 1.0          # 이륙·착륙에 걸리는 시간(응답이 늦게 온다)
         self._rc = (0, 0, 0, 0)
         self._last_cmd_mono = time.monotonic()
@@ -96,9 +98,24 @@ class FakeTello:
                 # 실제처럼 동작이 끝난 뒤 응답한다. 그동안 다른 명령(emergency)은 계속 받는다.
                 threading.Thread(target=self._move, args=(cmd, addr), daemon=True).start()
                 continue
-            reply = REPLIES.get(cmd, "ok")
+            if cmd.lower().startswith("ext "):
+                reply = self._ext_reply(cmd) if self.ext_kit else "error"
+            else:
+                reply = REPLIES.get(cmd, "ok")
             time.sleep(self.reply_delay)
             self._sock.sendto(reply.encode(), addr)
+
+    def _ext_reply(self, cmd: str) -> str:
+        low = cmd.lower()
+        if low == "ext version?":
+            return "esp32vFAKE.0.0.0"
+        if low == "ext tof?":
+            return f"tof {self.front_tof_mm}"
+        if low.startswith("ext mled"):
+            return "mled ok"
+        if low.startswith("ext led"):
+            return "led ok"
+        return "error"
 
     def _move(self, cmd: str, addr) -> None:
         if cmd == "takeoff":

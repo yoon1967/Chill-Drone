@@ -29,6 +29,10 @@ QUERY_COMMANDS = {
     "battery?", "speed?", "time?", "wifi?", "sdk?", "sn?",
     "height?", "temp?", "attitude?", "baro?", "acceleration?", "tof?",
 }
+# RoboMaster TT 확장 키트(오픈소스 컨트롤러, 공장 펌웨어)에 묻는 조회 명령
+EXT_QUERY_COMMANDS = {"ext tof?", "ext version?"}
+# SDK 3.0 문서는 범위 밖을 8192라고 적었지만, 실기체(esp32v1.0.0.12)는 8190·8191을 보냈다(2026-10-27 실측).
+EXT_TOF_OUT_OF_RANGE_MM = 8190
 SESSION_COMMANDS = {"command", "streamon", "streamoff"}
 STOP_COMMANDS = {"land", "emergency", "stop"}
 # 기체에 남는 설정. 잘못 보내면 전원 버튼 5초 초기화가 필요할 수 있다.
@@ -48,11 +52,17 @@ def now_iso(t: float | None = None) -> str:
 
 
 def classify(cmd: str) -> str:
-    """명령을 query / session / stop / config / flight 중 하나로 분류한다."""
-    text = cmd.strip().lower()
+    """명령을 query / session / stop / ext / config / flight 중 하나로 분류한다."""
+    text = " ".join(cmd.strip().lower().split())
     head = text.split()[0] if text else ""
-    if text in QUERY_COMMANDS:
+    if text in QUERY_COMMANDS or text in EXT_QUERY_COMMANDS:
         return "query"
+    if head == "ext":
+        # 확장 키트(오픈소스 컨트롤러) 명령. 표시용 LED·매트릭스만 허용하고 나머지는 설정으로 막는다.
+        parts = text.split()
+        if len(parts) >= 2 and parts[1] in ("led", "mled") and parts[2:3] not in (["sg"], ["sc"]):
+            return "ext"
+        return "config"
     if text in SESSION_COMMANDS:
         return "session"
     if text in STOP_COMMANDS:
@@ -60,6 +70,29 @@ def classify(cmd: str) -> str:
     if head in CONFIG_COMMANDS:
         return "config"
     return "flight"
+
+
+def parse_ext_tof(response: str | None) -> dict:
+    """`EXT tof?` 응답(`tof 481`, mm)을 전방 거리로 바꾼다. 범위 밖·오류는 0이 아니라 무효로 둔다."""
+    if response is None:
+        return {"front_tof_m": None, "valid": False, "reason": "no_response", "raw": None}
+    parts = response.strip().split()
+    if len(parts) != 2 or parts[0].lower() != "tof":
+        low = response.lower()
+        if low.startswith("unknown command"):
+            reason = "unknown_command"  # 실기체에서 드물게(240회 중 2회) 이렇게 답했다
+        elif low.startswith("error"):
+            reason = "error_response"
+        else:
+            reason = "bad_format"
+        return {"front_tof_m": None, "valid": False, "reason": reason, "raw": response}
+    try:
+        mm = int(float(parts[1]))
+    except ValueError:
+        return {"front_tof_m": None, "valid": False, "reason": "bad_format", "raw": response}
+    if mm >= EXT_TOF_OUT_OF_RANGE_MM:
+        return {"front_tof_m": None, "valid": False, "reason": "out_of_range", "raw": response}
+    return {"front_tof_m": mm / 1000.0, "valid": True, "reason": None, "raw": response}
 
 
 @dataclass
@@ -337,10 +370,10 @@ class TelloLink:
         with self._cmd_lock:
             self._drain()
             sent = time.time()
-            t0 = time.monotonic()
+            t0 = time.perf_counter()  # Windows에서 monotonic은 약 15.6ms 단위라 왕복 시간 측정에 쓰지 않는다
             self._cmd_sock.sendto(cmd.encode("utf-8"), (self.host, self.cmd_port))
             response, reason = self._recv_response(timeout)
-            rtt = (time.monotonic() - t0) * 1000.0
+            rtt = (time.perf_counter() - t0) * 1000.0
 
         if response is None:
             result = CommandResult(cmd, category, now_iso(sent), None, False, False, reason, None, source=source)

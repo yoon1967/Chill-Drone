@@ -28,12 +28,13 @@ HERE = os.path.dirname(os.path.abspath(__file__))
 sys.path.insert(0, HERE)
 
 from flight_control import FlightController  # noqa: E402
-from tello_link import DEFAULT_HOST, TelloLink, classify, now_iso  # noqa: E402
+from tello_link import DEFAULT_HOST, TelloLink, classify, now_iso, parse_ext_tof  # noqa: E402
 from tello_video import TelloVideo  # noqa: E402
 
 REPO_ROOT = os.path.abspath(os.path.join(HERE, "..", "..", ".."))
 DEFAULT_LOG_ROOT = os.path.join(REPO_ROOT, "data", "outputs", "tello")
 CHECK_QUERIES = ["battery?", "sdk?", "sn?", "wifi?"]
+EXT_QUERIES = ["EXT version?", "EXT tof?"]  # 확장 키트가 있을 때만 응답한다
 
 BATTERY_WARN_PCT = 20
 # Tello는 지상에서 켜 둔 채로 두면 과열로 꺼진다. 임계값은 실측 전 가정값이다.
@@ -86,6 +87,7 @@ class Checker:
         self.stream_on = False
         self.last_check: dict | None = None
         self.info: dict = {}
+        self.ext: dict | None = None  # 확장 키트 조회 결과
         self._net_cache: tuple[float, dict] | None = None
         self._lock = threading.Lock()
 
@@ -107,9 +109,23 @@ class Checker:
                     results.append(r)
                     if r["ok"]:
                         self.info[q] = r["response"]
+                for q in EXT_QUERIES:
+                    r = self.link.send(q, timeout=2, source="check").to_dict()
+                    results.append(r)
+                    self.record_ext(q, r)
             self.last_check = {"at": now_iso(), "results": results}
             self.link.event("check_run", {"ok": [r["ok"] for r in results]})
             return self.last_check
+
+    def record_ext(self, cmd: str, r: dict) -> None:
+        ext = dict(self.ext or {})
+        if cmd.lower() == "ext version?":
+            ext["version"] = r["response"] if r["ok"] else None
+            ext["version_reason"] = None if r["ok"] else (r["reason"] or "error_response")
+        else:
+            ext["tof"] = parse_ext_tof(r["response"])
+            ext["tof_at"] = r["sent_at"]
+        self.ext = ext
 
     def video_on(self) -> dict:
         self.video.start()
@@ -227,6 +243,20 @@ class Checker:
                 steps.append(_step("video", "영상 (UDP 11111)", "warn", detail, "프레임이 느립니다. Wi-Fi 간섭이나 거리를 확인하세요."))
             else:
                 steps.append(_step("video", "영상 (UDP 11111)", "ok", detail))
+        # 5. 확장 키트 (선택)
+        if self.ext is None:
+            steps.append(_step("ext", "확장 키트 (선택)", "idle", "아직 조회하지 않음"))
+        elif not self.ext.get("version"):
+            steps.append(_step("ext", "확장 키트 (선택)", "idle",
+                               f"응답 없음 ({self.ext.get('version_reason')})",
+                               "키트가 없으면 정상입니다. 달았다면 연결 상태와 컨트롤러 공장 펌웨어를 확인하세요."))
+        else:
+            tof = self.ext.get("tof") or {}
+            tof_text = (f"전방 ToF {tof['front_tof_m']:.3f} m" if tof.get("valid")
+                        else f"전방 ToF 무효({tof.get('reason')}, {tof.get('raw')})")
+            steps.append(_step("ext", "확장 키트 (선택)", "ok" if tof.get("valid") else "warn",
+                               f"컨트롤러 {self.ext['version']} · {tof_text}",
+                               None if tof.get("valid") else "앞 1.2m 안에 벽이나 물체가 있어야 값이 나옵니다."))
         return steps
 
     def warnings(self, state: dict | None) -> list[str]:
@@ -260,6 +290,7 @@ class Checker:
             "video": vstats,
             "stream_on": self.stream_on,
             "info": self.info,
+            "ext": self.ext,
             "history": [h for h in self.link.history if not h["cmd"].startswith("rc ")][-30:],
             "flight": self.flight.status() if self.flight else None,
         }
@@ -318,6 +349,8 @@ def build_app(args) -> FastAPI:
         r = checker.link.send(cmd, timeout=3, source="manual").to_dict()
         if r["ok"] and cmd in ("battery?", "sdk?", "sn?", "wifi?"):
             checker.info[cmd] = r["response"]
+        if cmd.lower() in ("ext version?", "ext tof?"):
+            checker.record_ext(cmd, r)
         if r["blocked"]:
             raise HTTPException(403, {"message": "점검 화면에서는 비행·설정 명령을 보내지 않습니다", "result": r})
         return r
