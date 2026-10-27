@@ -45,6 +45,8 @@ class FakeTello:
         self.temp_override: int | None = None
         self.ext_kit = False             # True면 확장 키트가 달린 것처럼 EXT 명령에 응답한다(값은 지어낸 것)
         self.front_tof_mm = 481
+        self.h_override: int | None = None     # 상태의 h만 바꾼다(실기체에서 h가 0~10cm로 나온 경우 흉내)
+        self.tof_override: int | None = None   # 상태의 하방 tof만 바꾼다(cm, 무효값 시험용)
         self.motion_delay = 1.0          # 이륙·착륙에 걸리는 시간(응답이 늦게 온다)
         self._rc = (0, 0, 0, 0)
         self._last_cmd_mono = time.monotonic()
@@ -155,6 +157,10 @@ class FakeTello:
             temp = self.temp_override if self.temp_override is not None else 58 + min(int(t / 20), 25)
             h = int(self.h_cm)
             tof = h + 10 if h > 0 else 10
+            if self.tof_override is not None:
+                tof = self.tof_override
+            if self.h_override is not None:
+                h = self.h_override
             packet = (
                 f"mid:-1;x:-100;y:-100;z:-100;mpry:0,0,0;pitch:0;roll:1;yaw:{yaw};"
                 f"vgx:0;vgy:0;vgz:0;templ:{temp};temph:{temp + 3};tof:{tof};h:{h};bat:{self.bat};"

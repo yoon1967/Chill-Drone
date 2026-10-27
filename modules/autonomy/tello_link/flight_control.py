@@ -14,7 +14,8 @@ from dataclasses import dataclass
 from tello_link import TelloLink, now_iso
 
 RC_LIMIT = 30              # 처음 비행 상한 (±100 중 30)
-HEIGHT_LIMIT_M = 1.5       # 이 높이 이상이면 상승 입력을 무시한다
+HEIGHT_LIMIT_M = 1.5       # 이 높이 이상이면 상승 입력을 무시한다(하방 tof 기준, 아래 _height_check)
+AIRBORNE_M = 0.2           # takeoff 응답이 없을 때 이보다 높으면 떠 있다고 본다
 RC_RATE_HZ = 20
 DEADMAN_S = 0.3            # 입력이 이 시간 동안 없으면 제자리
 STATE_STALE_S = 1.0        # 비행 중 상태가 이보다 오래 끊기면 자동 착륙
@@ -112,8 +113,10 @@ class FlightController:
             self.set_input(0, 0, 0, 0, source="takeoff")
         else:
             # 응답이 없어도 실제로는 떠 있을 수 있다. 높이로 한 번 더 판단한다.
-            h = ((self.link.latest_state() or {}).get("si") or {}).get("height_m")
-            if isinstance(h, (int, float)) and h > 0.2:
+            # h는 떠 있어도 0~10cm로 나온 적이 있어(허병우 10/27) 하방 tof와 둘 중 하나라도 높으면 떠 있다고 본다.
+            si = (self.link.latest_state() or {}).get("si") or {}
+            heights = [si.get("height_m"), si.get("tof_m") if si.get("tof_valid") else None]
+            if any(isinstance(v, (int, float)) and v > AIRBORNE_M for v in heights):
                 self.flying = True
         return {"ok": r.ok, "flying": self.flying, "result": r.to_dict()}
 
@@ -155,11 +158,27 @@ class FlightController:
         if time.monotonic() - stamp > DEADMAN_S:
             return (0, 0, 0, 0), "deadman"
         lr, fb, ud, yaw = vals
-        h = ((self.link.latest_state() or {}).get("si") or {}).get("height_m")
-        if ud > 0 and isinstance(h, (int, float)) and h >= self.height_limit_m:
-            ud = 0
-            source = source + "+height_limit"
+        if ud > 0:
+            blocked = self._height_check()
+            if blocked:
+                ud = 0
+                source = source + "+" + blocked
         return (lr, fb, ud, yaw), source
+
+    def _height_check(self) -> str | None:
+        """상승을 막아야 하면 이유를 돌려준다.
+
+        기준은 하방 tof(바닥까지 거리)다. `h`는 실기체에서 0.78m에 떠 있는데 0~10cm로 나온 적이 있어
+        혼자 믿지 않는다. 하방 tof가 무효면 높이를 모르는 것으로 보고 상승을 막는다(하강은 허용).
+        `h`가 상한 이상이어도 막는다. 둘 중 높은 쪽을 따르는 보수적 판단이다.
+        """
+        si = (self.link.latest_state() or {}).get("si") or {}
+        if not si.get("tof_valid") or not isinstance(si.get("tof_m"), (int, float)):
+            return "height_unknown"
+        h = si.get("height_m")
+        if si["tof_m"] >= self.height_limit_m or (isinstance(h, (int, float)) and h >= self.height_limit_m):
+            return "height_limit"
+        return None
 
     def _safety_reason(self) -> str | None:
         state = self.link.latest_state()
@@ -203,6 +222,7 @@ class FlightController:
             "preflight": [c.__dict__ for c in checks],
             "rc_limit": self.rc_limit,
             "height_limit_m": self.height_limit_m,
+            "height_source": "down_tof",
             "last_rc": list(self.last_rc),
             "input_source": self._input_source,
             "last_auto_land": self.last_auto_land,
