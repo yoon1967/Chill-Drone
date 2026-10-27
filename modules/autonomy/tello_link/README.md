@@ -156,6 +156,18 @@ link.close()                      # metrics.json 기록
 - **rc 타임아웃 정지:** 수동 조작은 `FlightController`(데드맨 0.3초)가 맡는다. -207 드라이버 노드는 `FlightController.set_input()`을 그대로 쓰거나, 같은 규칙(입력이 끊기면 `rc 0 0 0 0`)을 노드 안에 둔다.
 - **비상 정지:** `TelloLink.emergency_now()`는 다른 명령의 응답을 기다리는 중에도 잠금 없이 바로 보낸다.
 
+## 게이트웨이 조종 입력 변환 (서버 연결 전)
+
+감독 화면·폰·자율 비행의 입력을 Tello rc로 바꾸는 부품이다. 계약은 `contracts/api/AUTONOMY_BRIDGE_V0_1.md` 3·5장을 따른다.
+
+| 파일 | 하는 일 |
+| --- | --- |
+| `rc_mixer.py` | 자율 `cmd_vel`(m/s, rad/s, 기체 기준) → rc. 수평은 같은 비율로 줄여 대각선 방향을 지킨다. 사람 입력(-1~1)은 데드존 0.15를 빼고 끝까지 밀면 rc 30. 가감속 제한은 커질 때만 초당 rc 150(0 → 30이 0.2초), 줄이거나 멈출 때는 바로 |
+| `tof_fresh.py` | 전방 ToF 새 값 판정. 바뀌었거나 같은 값이 0.2초 이상 이어질 때만 `seq`를 올린다(자율의 "두 번 연속" 필터용) |
+
+- `K_LIN` 100 rc/(m/s), `K_YAW` 57 rc/(rad/s)는 가정값이다. rc 보정 실험(-274)으로 확정한다.
+- 시험: `python -B -m unittest discover -s modules/autonomy/tello_link/tests -p "test_rc_mixer.py"`
+
 ## 회차 로그
 
 `log_root/<run_id>/`에 남는다. 기본 위치 `data/outputs/tello/`는 Git에서 제외된다.
