@@ -106,6 +106,32 @@ class FlightControlTest(unittest.TestCase):
         self.ctrl.set_input(0, 0, -1, 0, source="test")  # 하강은 허용
         self.assertTrue(wait_until(lambda: self.rc_sent()[-1] == "rc 0 0 -30 0", timeout=1))
 
+    def climb_blocked(self):
+        for _ in range(5):
+            self.ctrl.set_input(0, 0, 1, 0, source="test")
+            time.sleep(0.05)
+        return self.rc_sent()[-1] == "rc 0 0 0 0"
+
+    def test_height_limit_uses_down_tof_when_h_is_wrong(self):
+        # 실기체에서 0.78m에 떠 있는데 h가 0~10cm로 나온 경우(허병우 10/27)
+        self.takeoff()
+        self.fake.h_override = 5
+        self.fake.tof_override = 160
+        time.sleep(0.3)
+        self.assertTrue(self.climb_blocked())
+        self.ctrl.set_input(0, 0, -1, 0, source="test")
+        self.assertTrue(wait_until(lambda: self.rc_sent()[-1] == "rc 0 0 -30 0", timeout=1))
+
+    def test_invalid_down_tof_blocks_climb(self):
+        self.takeoff()
+        self.fake.tof_override = 6553  # 반사 없음
+        time.sleep(0.3)
+        self.assertTrue(self.climb_blocked())
+        self.fake.tof_override = 80    # 다시 유효해지면 상승 허용
+        time.sleep(0.3)
+        self.ctrl.set_input(0, 0, 1, 0, source="test")
+        self.assertTrue(wait_until(lambda: self.rc_sent()[-1] == "rc 0 0 30 0", timeout=1))
+
     def test_state_loss_triggers_auto_land(self):
         self.takeoff()
         self.fake.send_state = False
