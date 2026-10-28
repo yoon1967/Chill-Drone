@@ -92,22 +92,27 @@ class TelloVideo:
                 self.decode_errors += 1
 
     def jpeg(self, quality: int = 75) -> bytes | None:
+        snapshot = self.jpeg_snapshot(quality)
+        return snapshot[0] if snapshot else None
+
+    def jpeg_snapshot(self, quality: int = 75) -> tuple[bytes, float, float] | None:
+        """Return JPEG plus stable receive timestamps for de-duplication and alignment."""
         # PyAV는 같은 프레임을 여러 스레드에서 동시에 변환하면 프로세스가 죽는다(재현 확인).
         # 변환은 한 번에 하나만 하고, 같은 프레임이면 캐시를 돌려준다.
         with self._jpeg_lock:
             with self._lock:
-                frame, stamp = self._frame, self._frame_mono
+                frame, stamp, wall = self._frame, self._frame_mono, self._frame_wall
                 cache = self._jpeg_cache
             if frame is None:
                 return None
             if cache and cache[0] == stamp:
-                return cache[1]
+                return cache[1], stamp, wall
             buf = io.BytesIO()
             frame.to_image().save(buf, format="JPEG", quality=quality)
             data = buf.getvalue()
             with self._lock:
                 self._jpeg_cache = (stamp, data)
-            return data
+            return data, stamp, wall
 
     def stats(self) -> dict:
         now = time.monotonic()

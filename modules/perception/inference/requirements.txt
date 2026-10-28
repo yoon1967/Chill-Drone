@@ -1,0 +1,3 @@
+-r ../../autonomy/tello_link/requirements.txt
+opencv-python>=4.10
+ultralytics>=8.4.0

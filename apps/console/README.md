@@ -95,6 +95,37 @@ docker build -t ssafy-orbslam3:local -f modules/mapping/localization/orbslam3/Do
 저장소·실제 자료 디렉터리 열람, `.env`, 원본 DB, 로컬 절대 경로 JSON은 제공하지 않는다.
 실제 촬영과 복원 결과는 Git·Sites·EC2에 업로드하지 않는다.
 
+## Tello / RoboMaster TT 사람 탐지
+
+드론 Wi-Fi에 PC를 연결하고 영상 수신 의존성을 설치한 뒤 `--enable-tello`를 추가한다.
+
+```powershell
+.\.venv\Scripts\python.exe -m pip install -r modules/perception/inference/requirements.txt
+.\.venv\Scripts\python.exe apps/console/serve.py --tello-only --port 8790
+```
+
+사람 탐지 화면에서 안전 조종 패널도 함께 사용하려면 `--tello-flight`를 명시한다.
+
+```powershell
+.\.venv\Scripts\python.exe apps/console/serve.py --tello-only --tello-flight --port 8790
+```
+
+드론 연결 후 안전 확인을 체크하고 이륙한다. `W/S`는 앞·뒤, `A/D`는 좌·우,
+방향키 위·아래는 상승·하강, 왼쪽·오른쪽은 회전이며 `L`은 착륙이다.
+`Esc` 비상 정지는 모터를 즉시 멈추므로 충돌 위험일 때만 사용한다.
+
+기존 지도와 드론 영상을 함께 보려면 `--tello-only` 대신
+`--result output/phone_mapping/<완료된 결과> --enable-tello`를 사용한다.
+
+화면의 영상 입력에서 **Tello / RoboMaster TT**를 선택하고 **드론 연결 · 탐지 시작**을 누른다.
+서버가 SDK `command`, `streamon`을 보내고 UDP 11111의 H.264 영상을 디코딩한다. 기본
+`yolo26n-seg.pt`는 최초 실행 시 Ultralytics가 내려받으며 Git에는 저장하지 않는다. 별도 가중치는
+`--tello-model C:\\models\\person-seg.pt`처럼 로컬 경로로 지정한다. YOLO는 person 클래스만
+추론하며 인스턴스 마스크에서 사람 외곽선을 그린 영상을 `/api/tello/video.mjpg`로 제공한다. 종료 버튼은
+`streamoff`를 보내고 영상·명령 소켓을 닫는다. 점검 서버와 동시에 실행하면 UDP 11111 포트가
+충돌하므로 둘 중 하나만 실행한다. Windows 공용 네트워크 방화벽에서 Python의 UDP 8890·11111
+수신도 허용해야 한다.
+
 입출력은 [복원 결과 계약](../../contracts/mapping/PHONE_SFM_RESULT_V1.md)을 참고한다.
 팀 작업 절차는 저장소 루트의 `docs/team/START_HERE.md`를 따른다.
 
