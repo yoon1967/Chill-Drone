@@ -11,7 +11,10 @@ import threading
 import time
 from dataclasses import dataclass
 
-from tello_link import TelloLink, now_iso
+try:
+    from .tello_link import TelloLink, now_iso
+except ImportError:  # 직접 실행하는 check_server.py와의 호환
+    from tello_link import TelloLink, now_iso
 
 RC_LIMIT = 30              # 처음 비행 상한 (±100 중 30)
 HEIGHT_LIMIT_M = 1.5       # 이 높이 이상이면 상승 입력을 무시한다(하방 tof 기준, 아래 _height_check)
