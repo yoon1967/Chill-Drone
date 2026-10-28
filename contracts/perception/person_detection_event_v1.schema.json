@@ -1,0 +1,23 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "person_detection_event_v1.schema.json",
+  "title": "Person detection event 1.0",
+  "type": "object",
+  "additionalProperties": false,
+  "required": ["schema_version", "event_id", "input_id", "frame_id", "detected_at_utc", "timestamp_source", "image", "model", "detections"],
+  "properties": {
+    "schema_version": {"const": "person-detection-event/1.0"},
+    "event_id": {"type": "string", "format": "uuid"},
+    "input_id": {"type": "string", "minLength": 1},
+    "frame_id": {"type": "string", "minLength": 1},
+    "detected_at_utc": {"type": "string", "format": "date-time"},
+    "timestamp_source": {"const": "server_receive"},
+    "image": {"type": "object", "additionalProperties": false, "required": ["width_px", "height_px"], "properties": {"width_px": {"type": "integer", "minimum": 1}, "height_px": {"type": "integer", "minimum": 1}}},
+    "model": {"type": "object", "additionalProperties": false, "required": ["name", "version", "weights_sha256"], "properties": {"name": {"type": "string", "minLength": 1}, "version": {"type": ["string", "null"]}, "weights_sha256": {"type": ["string", "null"], "pattern": "^[a-f0-9]{64}$"}}},
+    "detections": {"type": "array", "items": {"type": "object", "additionalProperties": false, "required": ["detection_id", "class_name", "confidence", "bbox_xyxy_px", "polygons_px"], "properties": {
+      "detection_id": {"type": "string", "minLength": 1}, "class_name": {"const": "person"}, "confidence": {"type": "number", "minimum": 0, "maximum": 1},
+      "bbox_xyxy_px": {"type": "array", "minItems": 4, "maxItems": 4, "items": {"type": "number"}},
+      "polygons_px": {"type": "array", "minItems": 1, "items": {"type": "array", "minItems": 3, "items": {"type": "array", "minItems": 2, "maxItems": 2, "items": {"type": "number"}}}}
+    }}}
+  }
+}
