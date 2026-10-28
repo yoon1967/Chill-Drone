@@ -10,7 +10,7 @@ import urllib.request
 import cv2
 import numpy as np
 
-from modules.perception.inference.tello_person_stream import TelloPersonStream
+from modules.perception.inference.tello_person_stream import TelloPersonStream, _mask_polygons
 from apps.console.serve import ViewerHandler
 
 
@@ -57,6 +57,17 @@ class FakeLink:
         pass
 
 
+class FakeMaskTensor:
+    def __init__(self, value):
+        self.value = value
+
+    def cpu(self):
+        return self
+
+    def numpy(self):
+        return self.value
+
+
 class FakeVideo:
     def __init__(self):
         frame = np.zeros((120, 160, 3), dtype=np.uint8)
@@ -78,6 +89,14 @@ class FakeVideo:
 
 
 class TelloPersonStreamTests(unittest.TestCase):
+    def test_preserves_disconnected_mask_polygons(self):
+        mask = np.zeros((20, 20), dtype=np.float32)
+        mask[2:7, 2:7] = 1
+        mask[12:18, 12:18] = 1
+        masks = SimpleNamespace(data=[FakeMaskTensor(mask)], xy=[np.array([[2, 2], [6, 2], [6, 6]])])
+        polygons = _mask_polygons(masks, 0, 20, 20)
+        self.assertEqual(len(polygons), 2)
+
     def test_defaults_to_person_segmentation_model(self):
         self.assertEqual(TelloPersonStream().model_name, "yolo26n-seg.pt")
 
@@ -95,6 +114,11 @@ class TelloPersonStreamTests(unittest.TestCase):
         self.assertEqual(stats["detections"][0]["xyxy"], [10.0, 20.0, 80.0, 100.0])
         self.assertEqual(stats["detections"][0]["polygons"][0][0], [10.0, 20.0])
         self.assertEqual(stats["task"], "segment")
+        event = stats["detection_event"]
+        self.assertEqual(event["schema_version"], "person-detection-event/1.0")
+        self.assertEqual(event["image"], {"width_px": 160, "height_px": 120})
+        self.assertEqual(event["detections"][0]["class_name"], "person")
+        self.assertEqual(event["detections"][0]["polygons_px"][0][0], [10.0, 20.0])
         self.assertEqual(stamp, 1.0)
         self.assertTrue(frame.startswith(b"\xff\xd8"))
 
