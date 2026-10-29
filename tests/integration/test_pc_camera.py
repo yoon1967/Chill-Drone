@@ -1,13 +1,44 @@
 """Real camera configuration boundary; no physical camera or Docker required."""
 from copy import deepcopy
 import io
+import subprocess
 from pathlib import Path
 import tempfile
 import threading
 import unittest
 from unittest.mock import Mock, patch
 
-from modules.mapping.localization.orbslam3_live import LiveManager, LiveSession, live_camera
+from modules.mapping.localization.orbslam3_live import LiveManager, LiveSession, live_camera, require_slam_image
+
+
+class SLAMImagePreflightTests(unittest.TestCase):
+    def test_failed_inspect_is_retried_only_when_local_image_is_listed(self):
+        with patch('modules.mapping.localization.orbslam3_live.subprocess.check_output',
+                   side_effect=[subprocess.CalledProcessError(1, 'inspect'), 'sha256:local\n', 'sha256:local\n']) as docker:
+            self.assertEqual(require_slam_image(), 'sha256:local')
+            self.assertEqual(docker.call_args_list[0], docker.call_args_list[2])
+            self.assertEqual(docker.call_args_list[1].args[0][1:3], ['image', 'ls'])
+            self.assertTrue(all(call.kwargs['timeout'] == 4 for call in docker.call_args_list))
+
+    def test_missing_image_preserves_the_current_session(self):
+        manager = LiveManager('.')
+        previous = manager.current = Mock(done=True)
+        with patch('modules.mapping.localization.orbslam3_live.subprocess.check_output',
+                   side_effect=[subprocess.CalledProcessError(1, 'inspect'), '']):
+            with self.assertRaisesRegex(RuntimeError, '^slam_image_missing$'):
+                manager.start(dict(width=640, height=480, fov=60))
+        self.assertIs(manager.current, previous)
+
+    def test_unavailable_engine_and_timeout_are_distinguished_from_missing_image(self):
+        for failure in [FileNotFoundError(), subprocess.TimeoutExpired('docker', 4)]:
+            with self.subTest(failure=failure), patch(
+                    'modules.mapping.localization.orbslam3_live.subprocess.check_output', side_effect=failure):
+                with self.assertRaisesRegex(RuntimeError, '^slam_docker_unavailable$'):
+                    require_slam_image()
+        with patch('modules.mapping.localization.orbslam3_live.subprocess.check_output',
+                   side_effect=[subprocess.CalledProcessError(1, 'inspect'), subprocess.CalledProcessError(1, 'ls')]):
+            with self.assertRaisesRegex(RuntimeError, '^slam_docker_unavailable$'):
+                require_slam_image()
 
 
 class PCCameraConfigurationTests(unittest.TestCase):
@@ -74,6 +105,36 @@ class PCCameraConfigurationTests(unittest.TestCase):
                 self.assertEqual(session.publisher.state["session_status"], expected)
                 self.assertEqual(session.publisher.state["map_available"], bool(revision))
                 self.assertEqual(session.error is None, expected == "complete")
+
+    def test_exception_stop_keeps_log_open_for_trailing_tracker_output(self):
+        with tempfile.TemporaryDirectory() as directory:
+            session = object.__new__(LiveSession)
+            session.path = Path(directory)
+            (session.path / 'ready.json').write_text('{}')
+            session.id, session.image = 'synthetic', 'synthetic'
+            session.condition = threading.Condition()
+            session.pending = None
+            session.closing = session.done = session.ready = False
+            session.error, session.reason = None, 'user_stop'
+            session.received = session.dropped = session.submitted = 0
+            session.last_sequence = session.last_pts = session.ack = -1
+            session.publisher = Mock(revision=0, state={})
+            session.publisher.update.side_effect = RuntimeError('synthetic input failure')
+            exiting = threading.Event()
+            process = Mock(stdin=io.BytesIO(), returncode=0)
+            process.poll.side_effect = lambda: 0 if exiting.is_set() else None
+            def lines():
+                exiting.wait(2)
+                yield b'tracker shutdown tail\n'
+                yield b''
+            process.stdout.readline.side_effect = lines()
+            with patch('modules.mapping.localization.orbslam3_live.subprocess.Popen', return_value=process), \
+                    patch('modules.mapping.localization.orbslam3_live.subprocess.run', side_effect=lambda *a, **k: exiting.set()), \
+                    patch('threading.excepthook') as thread_error:
+                session._run()
+            thread_error.assert_not_called()
+            self.assertEqual((session.path / 'orb.log').read_bytes(), b'tracker shutdown tail\n')
+            self.assertEqual(session.publisher.state['status'], 'failed')
 
 
 if __name__ == "__main__":

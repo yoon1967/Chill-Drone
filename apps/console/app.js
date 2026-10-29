@@ -2,11 +2,12 @@ import * as THREE from 'three';
 import { OrbitControls } from '/vendor/OrbitControls.js';
 import { PlanarObjects } from '/objects.js';
 import { connectCapture } from '/capture.js';
-import { MapSource } from '/map-source.js';
+import { MapSource, monitorConnections } from '/map-source.js';
 import { updatePointGrid, pointSpacingProfile, pointGridCells, displayPointCells } from '/point-grid.js';
 import { applySceneDelta } from '/map-delta.js';
 import { FrameLatency } from '/frame-latency.js';
 const $ = (id) => document.getElementById(id);
+const connections = monitorConnections();
 const number = (n) => Number(n).toLocaleString('ko-KR');
 const timeOf = (c) => c.source_pts_s ?? c.timestamp_s;
 let run, root, cloud, route, frustums, grid, selected;
@@ -1003,6 +1004,7 @@ connectCapture({
   },
   onFrameTiming(mark) { frameLatency.record(mark); },
   onStatus(status) {
+    connections.capture(status);
     captureState = status;
     $('live-tab-indicator').textContent = status.state === 'receiving' ? '수신 중' : ['requesting', 'connecting', 'stopping'].includes(status.state) ? '연결 중' : '';
     if (source.source === 'live') liveStatus(lastLiveState);

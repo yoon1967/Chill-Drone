@@ -83,6 +83,32 @@ revision은 6자리 숫자만 허용하며 저장 지도에 revision을 지정�
 
 ## 실행과 이전 경로
 
+### Tello 카메라 입력 (추가)
+
+`GET /api/live`에 `tello_map_enabled`와 `tello_map_mode=direct|gateway|null`을 추가한다.
+기존 브라우저 start/frame/stop 및 saved/live 조회 계약은 유지한다.
+
+| 경로 | 입력·응답 |
+| --- | --- |
+| `POST /api/live/tello/start` | JSON `{fov, camera?}`. 기존 보정 검증을 거쳐 960×720·24fps의 새 SLAM 세션을 만들고 201로 반환한다. 연결·초기화 완료는 state로 확인한다. |
+| `POST /api/live/tello/heartbeat` | JSON `{session_id}`. 현재 Tello 입력의 15초 수명을 갱신한다. 다른 ID는 409. 종료된 입력을 재개하지 않는다. |
+| `GET /api/live/tello-preview.jpg?session=ID` | 해당 입력의 2초 이내 최신 원본 JPEG. 다른 세션은 409, 최신 프레임 없으면 404. |
+| `POST /api/live/stop` | 기존과 같은 session_id로 종료한다. |
+
+state/settings에는 `input=tello_camera`, `input_timestamp_basis`, `input_origin`을 기록한다.
+직접 수신의 시각 기준은 `pc_decode_receive_monotonic`, 게이트웨이는
+`mapping_bridge_receive_monotonic`이다. 실제 센서 촬영 시각이 아니다. 순번은 어댑터가 읽어
+제출한 입력의 순서이며 UDP 디코딩 전 손실량은 포함하지 않는다.
+원본 4:3 비율을 유지하고 다른 크기의 JPEG를 거부한다. input_origin은
+`tello_sdk_camera`, `gateway_reported_fake`, `gateway_reported_tello`, `gateway_unspecified`로 출처를 구분한다.
+
+Tello 세션의 frame 업로드는 서버 어댑터만 소유한다. 브라우저가 기존 frame API에 같은 ID를
+사용해 덮어쓰려 하면 409다. 직접 Tello 사람 탐지 입력과 지도 입력의 동시 시작도 거부한다.
+직접 모드는 수신기를 소유하고 camera session 명령만 보낸다. gateway 모드는 설정된 loopback
+origin에 GET만 보내며 source 변경·오래된 상태·영상 종료를 감지하면 세션을 마친다.
+영상 중단은 실패 또는 입력 종료 상태로 표시하고 마지막 유효 지도를 계속 조회할 수 있다.
+새 시작은 새 ID·좌표계이며 이전 heartbeat/stop/preview가 새 입력에 적용되지 않는다.
+
 `--result SAVED --session RECORDED`를 함께 지정해 저장 결과와 기존 온라인 기록을 제공할 수
 있다. `--enable-camera`는 새 입력을 허용한다. `--objects`는 `--result`에만 결합되며 실시간
 scene에는 그 결과에 결합된 객체만 사용한다. 두 출력 디렉터리를 합치거나 파일을 수정하지 않는다.

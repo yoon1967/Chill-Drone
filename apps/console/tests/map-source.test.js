@@ -51,3 +51,8 @@ test('permission, unavailable device and busy device have actionable messages', 
   assert.match(captureError({name: 'NotFoundError'}).message, /찾지 못/);
   assert.match(captureError({name: 'NotReadableError'}).message, /다른 앱/);
 });
+
+test('SLAM startup failures explain the required local preparation', () => {
+  assert.match(captureError(new Error('slam_image_missing')).message, /docker build.*ssafy-orbslam3:local/);
+  assert.match(captureError(new Error('slam_docker_unavailable')).message, /Docker Desktop.*Linux/);
+});

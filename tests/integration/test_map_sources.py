@@ -44,7 +44,8 @@ def write_result(path, value, frame):
 
 class SyntheticSession(LiveSession):
     """Replace Docker execution only; use real offer validation and lifecycle stats."""
-    def __init__(self, root, camera, image_id):
+    def __init__(self, root, camera, image_id, *, input_kind="browser_camera", timestamp_basis="browser_media_time"):
+        self.input_kind, self.timestamp_basis = input_kind, timestamp_basis
         self.id = "live_" + uuid.uuid4().hex[:16]
         self.path = root / self.id
         self.path.mkdir(parents=True)
