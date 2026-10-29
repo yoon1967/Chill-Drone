@@ -24,7 +24,7 @@ export function captureConfiguration(width, height, fps, fov, camera = null) {
   return config;
 }
 
-export async function connectCapture({onStart = () => {}, onStatus = () => {}, onReady = () => {}} = {}) {
+export async function connectCapture({onStart = () => {}, onStatus = () => {}, onReady = () => {}, onFrameTiming = () => {}} = {}) {
   const $ = (id) => document.getElementById(id);
   const [info, tello] = await Promise.all([
     fetch('/api/live').then((response) => response.json()),
@@ -175,6 +175,7 @@ export async function connectCapture({onStart = () => {}, onStatus = () => {}, o
     run.callback = video.requestVideoFrameCallback ? video.requestVideoFrameCallback((now, data) => frame(run, data)) : setTimeout(() => frame(run, {mediaTime: video.currentTime}), 1000 / 30);
   }
   async function frame(run, data) {
+    const capturedAtMs = performance.now();
     schedule(run);
     if (!owns(run) || !run.active || video.readyState < 2 || !Number.isFinite(data.mediaTime) || data.mediaTime <= run.lastMedia) return;
     run.lastMedia = data.mediaTime;
@@ -186,13 +187,16 @@ export async function connectCapture({onStart = () => {}, onStatus = () => {}, o
     try {
       if (run.base === null) run.base = data.mediaTime;
       const pts = data.mediaTime - run.base;
+      onFrameTiming({session: run.session, pts, capturedAtMs});
       context.drawImage(video, 0, 0, canvas.width, canvas.height);
       const jpeg = await new Promise((resolve) => canvas.toBlob(resolve, 'image/jpeg', .85));
       if (!owns(run)) return;
       if (!jpeg) throw new Error('영상 프레임 인코딩 실패');
+      onFrameTiming({session: run.session, pts, encodedAtMs: performance.now()});
       const state = await post('/api/live/frame?session=' + encodeURIComponent(run.session), jpeg,
         {'Content-Type': 'image/jpeg', 'X-Frame-Timestamp': String(pts), 'X-Frame-Sequence': String(sequence)});
       if (!owns(run)) return;
+      onFrameTiming({session: run.session, pts, ackAtMs: performance.now()});
       run.sent++;
       message('수신 중 · 전송 ' + run.sent + '장 · 전송 대기 중 생략 ' + run.skipped + '장 · 처리 대기 교체/입력 누락 ' + state.frame_drops + '장 · 대기 ' + state.queue_depth + '/1', 'receiving', run);
       Object.assign($('camera-status').dataset, {sent: run.sent, skipped: run.skipped, dropped: state.frame_drops, session: run.session});

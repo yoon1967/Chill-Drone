@@ -111,6 +111,9 @@
           <img id="slam-preview" alt="현재 영상에서 같은 지도 점을 이어서 추적한 결과">
           <p class="muted" id="slam-preview-note">노란 점은 직전 처리 프레임과 같은 지도 점, 초록 점은 이번 프레임에서 새로 연결된 지도 점입니다. 숫자는 지도 점 ID입니다.</p>
           <p id="slam-timing" role="status"></p>
+          <p id="frame-latency" role="status">입력 → 지도 표시 지연 · 측정 대기</p>
+          <small>이 화면의 입력 시점부터 지도 렌더 후 다음 화면 주기까지 · 확정 키프레임 기준 · 모니터 실측 아님</small>
+          <button id="latency-export" disabled>지연 기록 저장</button>
         </section>
         <section class="object-panel" aria-label="발견된 평면 객체">
           <div class="section-title"><h2>발견된 평면 객체</h2><button id="object-overview">전체 면 ↗</button><strong id="object-count">—</strong></div>
