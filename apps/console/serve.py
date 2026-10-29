@@ -301,9 +301,20 @@ class ViewerHandler(BaseHTTPRequestHandler):
                     self.json_response({"error": "input_is_owned_by_tello_adapter"}, 409)
                     return
                 self.json_response(session.offer(data, float(self.headers["X-Frame-Timestamp"]), int(self.headers["X-Frame-Sequence"])), 202)
+            elif url.path == "/api/live/event":
+                body = json.loads(data)
+                session = self.live.require(body['session_id'])
+                session.record_event(body['event'], body.get('message', ''))
+                self.json_response({'recorded': True}, 202)
             elif url.path == "/api/live/stop":
-                session = self.live.require(json.loads(data)["session_id"])
-                session.stop()
+                body = json.loads(data)
+                reason = body.get('reason', 'user_stop')
+                if reason not in {'user_stop', 'page_hidden', 'client_error', 'browser_media_ended', 'start_cancelled'}:
+                    raise ValueError('invalid_stop_reason')
+                session = self.live.require(body["session_id"])
+                if body.get('error'):
+                    session.record_event('client_error', body['error'])
+                session.stop(reason)
                 self.json_response({**session.stats(), "status": "stopping"}, 202)
             else:
                 self.send_error(404)

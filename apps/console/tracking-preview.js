@@ -9,7 +9,8 @@ export function trackingDescription(state) {
     stale ? '영상 대기 · 마지막 처리 프레임' : names[state.tracking_state] || '초기화 중';
   const delay = Number.isFinite(state.receive_to_track_ms) ? `${state.receive_to_track_ms.toFixed(0)}ms` : '측정 대기';
   const timestamp = Number.isFinite(state.last_map_timestamp_s) ? `${state.last_map_timestamp_s.toFixed(2)}초` : '대기';
-  return {label, stale, detail: `처리 프레임 ${timestamp} · 지도 점 ${tracking.tracked_features || 0}개 · 직전과 동일 ${tracking.reused_features || 0}개 · 추적 ${Number(state.tracking_ms || 0).toFixed(1)}ms · 수신→추적 ${delay}${Number.isFinite(age) ? ` · 마지막 처리 ${age.toFixed(1)}초 전` : ''}`};
+  const detected = Number.isFinite(tracking.detected_features) ? ` · 검출 ${tracking.detected_features}개 · 지도점 후보 ${tracking.map_candidates || 0}개` : '';
+  return {label, stale, detail: `처리 프레임 ${timestamp} · 지도 점 ${tracking.tracked_features || 0}개 · 직전과 동일 ${tracking.reused_features || 0}개${detected} · 추적 ${Number(state.tracking_ms || 0).toFixed(1)}ms · 수신→추적 ${delay}${Number.isFinite(age) ? ` · 마지막 처리 ${age.toFixed(1)}초 전` : ''}`};
 }
 
 export function connectTrackingPreview({source, following, element = (id) => document.getElementById(id), schedule = setTimeout} = {}) {

@@ -9,6 +9,7 @@ add_executable(orb_video bridge.cpp)
 target_compile_options(orb_video PRIVATE -march=native)
 target_link_options(orb_video PRIVATE -rdynamic)
 add_executable(sim3_geometry_test sim3_geometry_test.cpp)
+add_executable(statistics_test statistics_test.cpp)
 target_link_libraries(sim3_geometry_test PRIVATE Eigen3::Eigen)
 target_include_directories(orb_video PRIVATE /opt/ORB_SLAM3 /opt/ORB_SLAM3/include
     /opt/ORB_SLAM3/include/CameraModels /opt/ORB_SLAM3/Thirdparty/Sophus

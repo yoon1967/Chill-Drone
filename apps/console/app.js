@@ -763,7 +763,7 @@ function showState(state) {
     $('incremental-state').hidden = true;
   }
   if (state.backend === 'orb_slam3_monocular') {
-    pollDelay = 250;
+    pollDelay = 750;
     $('slam-panel').hidden = false;
     const description = trackingDescription(state);
     $('slam-timing').textContent = replay.following ? description.detail : '기록 재생 · 선택한 지도 버전의 촬영 키프레임';

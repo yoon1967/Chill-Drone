@@ -50,7 +50,13 @@ export async function connectCapture({onStart = () => {}, onStatus = () => {}, o
   const terminal = (state) => ['idle', 'complete', 'failed', 'stopped_or_disconnected'].includes(state.session_status || state.status);
   const message = (text, state, run = current) => {
     $('camera-status').textContent = text;
-    onStatus({state, message: text, session: run?.session, kind: run?.kind, error: run?.lastError});
+    try { onStatus({state, message: text, session: run?.session, kind: run?.kind, error: run?.lastError}); }
+    catch (error) {
+      if (run && run.lastUiError !== error.message) {
+        run.lastUiError = error.message;
+        event(run, 'client_error', 'status_render: ' + error.message);
+      }
+    }
   };
   function controls() {
     const occupied = serverState.session_id && !terminal(serverState);
@@ -66,16 +72,21 @@ export async function connectCapture({onStart = () => {}, onStatus = () => {}, o
       : '노트북 Wi-Fi를 Tello / RoboMaster TT에 연결하세요. 원본 카메라로 3D 지도를 생성하며 비행 조작은 하지 않습니다.';
     if (info.tello_camera) $('tello-map-note').textContent += ' · 기존 실측 보정값 기본 적용';
   }
-  const post = async (url, body, headers = {}) => {
-    const response = await fetch(url, {method: 'POST', headers: {'X-Mapping-Client': '1', ...headers}, body, signal: AbortSignal.timeout(15000)});
+  const post = async (url, body, headers = {}, timeout = 15000) => {
+    const response = await fetch(url, {method: 'POST', headers: {'X-Mapping-Client': '1', ...headers}, body, signal: AbortSignal.timeout(timeout)});
     const value = await response.json();
     if (!response.ok) throw new Error(value.error || '영상 연결 실패 ' + response.status);
     return value;
   };
   const owns = (run) => current === run && !run.cancelled;
+  function event(run, kind, detail = '') {
+    if (!run?.session) return;
+    void post('/api/live/event', JSON.stringify({session_id: run.session, event: kind,
+      message: String(detail).slice(0, 1024)}), {}, 2000).catch(() => {});
+  }
   async function heartbeat(run) {
     if (run.kind !== 'tello-map' || Date.now() < (run.nextHeartbeat || 0)) return;
-    await post('/api/live/tello/heartbeat', JSON.stringify({session_id: run.session}), {'Content-Type': 'application/json'});
+    await post('/api/live/tello/heartbeat', JSON.stringify({session_id: run.session}), {'Content-Type': 'application/json'}, 2000);
     run.nextHeartbeat = Date.now() + 2000;
   }
   async function telloState(run, path) {
@@ -85,13 +96,18 @@ export async function connectCapture({onStart = () => {}, onStatus = () => {}, o
         signal: AbortSignal.any([run.controller.signal, AbortSignal.timeout(4000)])});
       if (response.status >= 500) throw new Error('server_temporarily_unavailable');
       const state = await response.json();
+      if (run.networkSince != null) event(run, 'status_recovered');
       run.networkSince = null;
       return {response, state};
     } catch (error) {
       if (!owns(run)) return null;
       if (error.message === 'camera_session_mismatch') throw error;
-      run.networkSince ??= Date.now();
-      if (Date.now() - run.networkSince > 45000) throw new Error('tello_server_reconnect_timeout');
+      if (run.networkSince == null) {
+        run.networkSince = Date.now();
+        event(run, 'status_retry', error.message);
+      }
+      // A failed browser status read is not proof that video input has stopped.
+      // The server owns input/lease deadlines and reports their actual cause.
       message('서버 연결 재시도 중 · 마지막 지도를 유지합니다.', 'reconnecting', run);
       await new Promise((resolve) => setTimeout(resolve, 250));
       return null;
@@ -161,7 +177,7 @@ export async function connectCapture({onStart = () => {}, onStatus = () => {}, o
       video.removeAttribute('src'); video.load(); current = null;
     }
   }
-  async function stopSession(run) {
+  async function stopSession(run, reason = 'start_cancelled') {
     if (!run.session || run.stopSent) return;
     run.stopSent = true;
     if (run.kind === 'tello') {
@@ -170,14 +186,15 @@ export async function connectCapture({onStart = () => {}, onStatus = () => {}, o
     }
     serverState = {session_id: run.session, session_status: 'stopping'};
     controls();
-    await post('/api/live/stop', JSON.stringify({session_id: run.session}));
+    await post('/api/live/stop', JSON.stringify({session_id: run.session, reason,
+      ...(run.lastError ? {error: String(run.lastError).slice(0, 1024)} : {})}));
   }
-  async function stop(run = current, reason = null, state = 'stopped') {
+  async function stop(run = current, reason = null, state = 'stopped', cause = 'user_stop') {
     if (!run || run.cancelled) return;
     reason ??= run.session ? '수신을 종료했습니다. 마지막 지도와 생성 기록을 저장합니다.' : '영상 연결을 취소했습니다.';
     release(run); controls();
     message('영상 수신을 종료하는 중입니다.', 'stopping', run);
-    try { await stopSession(run); }
+    try { await stopSession(run, cause); }
     catch (error) { reason += ' (' + error.message + ')'; }
     if (!current) message(reason, state, run);
     controls();
@@ -232,7 +249,9 @@ export async function connectCapture({onStart = () => {}, onStatus = () => {}, o
       run.sent++;
       message('수신 중 · 전송 ' + run.sent + '장 · 전송 대기 중 생략 ' + run.skipped + '장 · 처리 대기 교체/입력 누락 ' + state.frame_drops + '장 · 대기 ' + state.queue_depth + '/1', 'receiving', run);
       Object.assign($('camera-status').dataset, {sent: run.sent, skipped: run.skipped, dropped: state.frame_drops, session: run.session});
-    } catch (error) { if (owns(run)) await stop(run, '영상 수신 중단: ' + error.message, 'disconnected'); }
+    } catch (error) {
+      if (owns(run)) { run.lastError = error.message; await stop(run, '영상 수신 중단: ' + error.message, 'disconnected', 'client_error'); }
+    }
     finally { run.sending = false; }
   }
   $('camera-start').addEventListener('click', async () => {
@@ -281,7 +300,7 @@ export async function connectCapture({onStart = () => {}, onStatus = () => {}, o
         run.media = media; video.srcObject = media;
         const track = media.getVideoTracks()[0];
         if (!track || track.readyState === 'ended') throw new Error('카메라 영상 트랙이 종료되었습니다. 다시 연결하세요.');
-        track.addEventListener('ended', () => { if (owns(run)) return stop(run, '카메라 연결이 끊겨 수신을 종료했습니다.', 'disconnected'); }, {once: true});
+        track.addEventListener('ended', () => { if (owns(run)) return stop(run, '카메라 연결이 끊겨 수신을 종료했습니다.', 'disconnected', 'browser_media_ended'); }, {once: true});
         void refreshDevices();
       }
       if (!drone) await metadata(run);
@@ -344,7 +363,7 @@ export async function connectCapture({onStart = () => {}, onStatus = () => {}, o
       run.active = true; schedule(run);
       message('영상 수신 중 · 카메라 위치를 천천히 옮기면 지도를 초기화합니다.', 'receiving', run);
     } catch (error) {
-      if (owns(run)) { run.lastError = error.message; const failure = captureError(error); await stop(run, failure.message, failure.state); }
+      if (owns(run)) { run.lastError = error.message; const failure = captureError(error); await stop(run, failure.message, failure.state, 'client_error'); }
     }
     finally { controls(); }
   });
@@ -368,7 +387,7 @@ export async function connectCapture({onStart = () => {}, onStatus = () => {}, o
   window.addEventListener('blur', () => { held.clear(); sendRc(); });
   $('camera-refresh').addEventListener('click', refreshDevices);
   navigator.mediaDevices?.addEventListener?.('devicechange', refreshDevices);
-  video.addEventListener('ended', () => { if (current?.active) return stop(current, '시연 영상이 끝났습니다. 생성된 점군과 기록을 저장합니다.'); });
+  video.addEventListener('ended', () => { if (current?.active && current.kind === 'demo') return stop(current, '시연 영상이 끝났습니다. 생성된 점군과 기록을 저장합니다.', 'stopped', 'browser_media_ended'); });
   const sourceChanged = () => {
     $('camera-start').textContent = $('input-source').value === 'tello-map' ? '드론 연결 · 지도 시작' : $('input-source').value === 'demo' ? '스트리밍 시연 시작' : $('input-source').value === 'tello' ? '드론 연결 · 탐지 시작' : '카메라 연결 · 시작';
     if (!current && $('input-source').value === 'tello-map') {
@@ -385,10 +404,12 @@ export async function connectCapture({onStart = () => {}, onStatus = () => {}, o
     if (run.session && !run.stopSent) {
       run.stopSent = true;
       const url = run.kind === 'tello' ? '/api/tello/stop' : '/api/live/stop';
-      const body = run.kind === 'tello' ? '{}' : JSON.stringify({session_id: run.session});
+      const body = run.kind === 'tello' ? '{}' : JSON.stringify({session_id: run.session, reason: 'page_hidden'});
       fetch(url, {method: 'POST', headers: {'X-Mapping-Client': '1'}, body, keepalive: true}).catch(() => {});
     }
   });
+  window.addEventListener('error', (error) => event(current, 'client_error', error.message));
+  window.addEventListener('unhandledrejection', (error) => event(current, 'client_error', error.reason?.message || String(error.reason)));
   message('입력 전 · 시작 버튼을 눌러 영상을 연결하세요. 카메라 권한은 시작할 때 요청합니다.', 'idle');
   controls();
   sourceChanged();

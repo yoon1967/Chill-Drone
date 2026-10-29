@@ -1,4 +1,4 @@
-FROM ubuntu:22.04 AS dependencies
+FROM ubuntu:22.04@sha256:e0f80c829509ef4df9e76bd8944eb7b8ec25cbb379b112a7f9448b2c77a77c9b AS dependencies
 ARG DEBIAN_FRONTEND=noninteractive
 RUN apt-get update && apt-get install -y --no-install-recommends \
     build-essential cmake git ca-certificates libopencv-dev libeigen3-dev \
@@ -39,9 +39,9 @@ RUN --mount=type=cache,id=ssafy-orb4452-build,target=/opt/ORB_SLAM3/build \
        || { tail -60 /tmp/guard-build.log; exit 1; }
 
 FROM guarded AS runtime
-COPY CMakeLists.txt bridge.cpp safe_sim3.hpp sim3_geometry_test.cpp /opt/bridge/
+COPY CMakeLists.txt bridge.cpp safe_sim3.hpp rolling_statistics.hpp sim3_geometry_test.cpp statistics_test.cpp /opt/bridge/
 RUN cmake -S /opt/bridge -B /opt/bridge/build -DCMAKE_BUILD_TYPE=Release \
     && cmake --build /opt/bridge/build -j2 \
-    && /opt/bridge/build/sim3_geometry_test
+    && /opt/bridge/build/sim3_geometry_test && /opt/bridge/build/statistics_test
 WORKDIR /output
 ENTRYPOINT ["/opt/bridge/build/orb_video"]
