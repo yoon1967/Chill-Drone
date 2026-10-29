@@ -62,6 +62,16 @@ class ReconstructionTests(unittest.TestCase):
             return sfm.reconstruct(self.root / name, input_dir=self.images.parent,
                                    features_dir=self.database.parent, **kwargs)
 
+    def test_supplied_intrinsics_disable_bundle_adjustment_refinement(self):
+        self.run['fixed_intrinsics'] = True
+        with patch.object(sfm, 'prepare_video_features', return_value=(self.run, self.database, self.images, self.frames, {'status': 'passed'})), \
+             patch.object(sfm.pycolmap, 'incremental_mapping', return_value={0: self.model}) as mapping, contextlib.redirect_stdout(io.StringIO()):
+            sfm.reconstruct(self.root / 'fixed', input_dir=self.images.parent, features_dir=self.database.parent)
+        options = mapping.call_args.args[3]
+        self.assertFalse(options.ba_refine_focal_length)
+        self.assertFalse(options.ba_refine_principal_point)
+        self.assertFalse(options.ba_refine_extra_params)
+
     def test_arbitrary_scale_geometry_pose_and_exports(self):
         scene = self.run_result()
         self.assertEqual(scene['scale']['unit'], 'arbitrary')

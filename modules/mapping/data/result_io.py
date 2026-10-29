@@ -46,7 +46,7 @@ def validate_saved_result(result_dir):
             (points[:, 4:7] == points[:, 4:7].astype(int)).all(), "Invalid RGB values")
     require((points[:, 7] >= 0).all() and (points[:, 8] >= 2).all(), "Invalid point error/track length")
     quality, scale = scene["quality"], scene["scale"]
-    require(read_json(root / "poses.json") == {k: v for k, v in scene.items() if k not in ("points", "point_fields")}, "Poses/scene differ")
+    require(read_json(root / "poses.json") == {k: v for k, v in scene.items() if k not in ("points", "point_fields", "point_observations")}, "Poses/scene differ")
     require(read_json(root / "quality.json") == quality and read_json(root / "scale.json") == scale, "Quality/scale exports differ")
     require(quality["points3D"] == len(points) and quality["registered_frames"] == len(cameras), "Scene counts differ")
     require(0 < len(cameras) <= quality["submitted_frames"] <= quality["input_frames"], "Invalid frame counts")

@@ -16,10 +16,9 @@ if not "%MAPPING_EXIT%"=="0" pause
 popd
 exit /b %MAPPING_EXIT%
 # === PYTHON ===
-"""Double-click for live mapping; drop a video to reconstruct and view its result."""
+"""Double-click for live mapping; drop saved data or input to inspect it in the console."""
 import argparse
 import hashlib
-from datetime import datetime, timezone
 import importlib.util
 import json
 import os
@@ -30,7 +29,6 @@ import sys
 import time
 from urllib.error import URLError
 from urllib.request import ProxyHandler, build_opener
-import uuid
 import webbrowser
 
 ROOT = Path(os.environ['MAPPING_LAUNCHER']).resolve().parent.parent
@@ -109,41 +107,20 @@ def main():
         print('[ERROR] Install the local web dependencies first:\n  pnpm --dir apps/console install --frozen-lockfile')
         return 1
     required = ['cv2', 'numpy', 'PIL', 'av']
-    if source and source.is_file():
-        required += ['pycolmap', 'scipy', 'matplotlib']
     missing = [name for name in required if importlib.util.find_spec(name) is None]
     if missing:
         print('[ERROR] Missing Python dependencies: ' + ', '.join(missing))
         print('  .venv\\Scripts\\python.exe -m pip install -r modules/mapping/data/requirements-pipeline.txt')
         print('  .venv\\Scripts\\python.exe -m pip install -r modules/mapping/localization/requirements-online.txt av Pillow')
         return 1
-
     result = None
     if args.input:
-        if source.is_dir():
-            result = saved_result(source)
-            if result is None:
-                print('[ERROR] Select a complete or partial saved reconstruction folder.')
-                return 1
-        elif source.is_file():
-            run_id = 'video_' + datetime.now(timezone.utc).strftime('%Y%m%dT%H%M%SZ_') + uuid.uuid4().hex[:8]
-            output = ROOT / 'output/phone_mapping' / run_id
-            print('Video -> frames -> SIFT/matching -> 3D reconstruction -> validation/PNG', flush=True)
-            code = subprocess.call([sys.executable, '-B', str(ROOT / 'modules/mapping/data/run_video_pipeline.py'),
-                                    '--video', str(source), '--output', str(output), '--run-id', run_id], cwd=ROOT)
-            result = saved_result(output)
-            if code not in (0, 3) or result is None:
-                print(f'[ERROR] Pipeline failed. Preserved logs: {output / "logs"}')
-                return code if code else 1
-            if code == 3:
-                print('[PARTIAL] Only some frames were reconstructed. See coverage in the viewer.')
-        else:
-            print('[ERROR] The video or result folder does not exist.')
+        if not source.exists():
+            print('[ERROR] The input file or folder does not exist.')
             return 1
     else:
         if not ensure_slam_image():
             return 1
-        # Reuse an existing saved map alongside live mapping, without changing it.
         candidates = [saved_result(folder) for folder in (ROOT / 'output/phone_mapping').glob('*') if folder.is_dir()]
         result = max((path for path in candidates if path),
                      key=lambda path: (path / 'scene.json').stat().st_mtime, default=None)
@@ -161,7 +138,10 @@ def main():
     if port != args.port:
         print(f'Port {args.port} is busy. Using {port}; existing servers stay running.')
     command = [sys.executable, '-B', str(ROOT / 'apps/console/serve.py'), '--enable-camera', '--port', str(port)]
-    command += ['--tello-gateway', args.gateway] if args.gateway else ['--enable-tello-map']
+    if args.input:
+        command += ['--import-source', str(source)]
+    else:
+        command += ['--tello-gateway', args.gateway] if args.gateway else ['--enable-tello-map']
     if result:
         command += ['--result', str(result)]
     url = f'http://127.0.0.1:{port}/'

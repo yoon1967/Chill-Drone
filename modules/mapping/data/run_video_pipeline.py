@@ -127,7 +127,7 @@ def collect_result(output, run_id):
 
 
 def run_pipeline(video, output=None, *, run_id=None, sample_fps=2, max_width=0, jpeg_quality=95,
-                 pair_window=4, threads=4, max_features=4000):
+                 pair_window=4, threads=4, max_features=4000, frame_fps=2, camera=None):
     """Return the final manifest. Runtime failures are recorded; unsafe/existing outputs raise."""
     started = time.perf_counter()
     created = datetime.now(timezone.utc).isoformat()
@@ -186,7 +186,7 @@ def run_pipeline(video, output=None, *, run_id=None, sample_fps=2, max_width=0, 
         write_json(output / "local_source.json", {"video": str(video)})
         save()
         event("run_started", run_id=run_id)
-        if not video.is_file():
+        if not video.is_file() and not video.is_dir():
             raise FileNotFoundError("Input must be an existing local video file")
         worker_commands = commands(video, output, run_id, settings)
         timings["preflight_seconds"] = time.perf_counter() - started
@@ -198,7 +198,12 @@ def run_pipeline(video, output=None, *, run_id=None, sample_fps=2, max_width=0, 
             save()
             event("stage_started", stage=name)
             print(json.dumps({"run_id": run_id, "stage": name, "status": "running"}), flush=True)
-            current["returncode"] = run_command(worker_commands[name], output / current["log"])
+            if name == 'input' and video.is_dir():
+                from modules.mapping.data.frame_input import prepare_frames
+                prepare_frames(video, output / 'input', run_id, frame_fps)
+                current['returncode'] = 0
+            else:
+                current["returncode"] = run_command(worker_commands[name], output / current["log"])
             child_status_path = output / name / "status.json"
             if child_status_path.is_file():
                 current["worker_status"] = read_json(child_status_path)
@@ -213,6 +218,12 @@ def run_pipeline(video, output=None, *, run_id=None, sample_fps=2, max_width=0, 
             timings["worker_timings"][name] = read_json(output / name / "timing.json")
             if name == "input":
                 source = read_json(output / "input/manifest.json")
+                if camera is not None:
+                    size = {(f['width'], f['height']) for f in source['frames']}
+                    if size != {(camera['width'], camera['height'])}:
+                        raise PipelineError('Calibration must match processed image dimensions')
+                    source['camera'] = camera
+                    write_json(output / 'input/manifest.json', source)
                 if source["run_id"] != run_id:
                     raise PipelineError("Frame input belongs to another run")
                 manifest["source"] = source["source"]

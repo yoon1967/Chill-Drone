@@ -57,7 +57,7 @@ def load_feature_input(input_dir):
                     "frame_id", "source_pts", "source_time_base", "source_pts_s", "timestamp_s",
                     "timestamp_source", "decoded_frame_index", "reason")):
                 raise ValueError("Selected frame and source PTS decision disagree")
-        capture = {"camera": {"intrinsics": "not_provided; estimate during reconstruction"}, "video": original["source"]}
+        capture = {"camera": original.get('camera', {"intrinsics": "not_provided; estimate during reconstruction"}), "video": original["source"]}
         coordinate_space = "processed_image"
     elif schema is None and "runId" in original:
         schema = "legacy-phone-first-test"

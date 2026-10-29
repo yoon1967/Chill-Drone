@@ -17,9 +17,14 @@ export class MapSource {
   context() { return {source: this.source, generation: this.generation, signal: this.controller.signal}; }
   isCurrent(context) { return context.generation === this.generation; }
 
+  url(path, context = this.context()) {
+    const url = `/api/${context.source}/${path}`;
+    return this.asset && context.source === 'saved' ? `${url}${url.includes('?') ? '&' : '?'}asset=${encodeURIComponent(this.asset)}` : url;
+  }
+
   async read(path, context) {
     try {
-      const response = await this.fetcher(`/api/${context.source}/${path}`, {signal: AbortSignal.any([context.signal, AbortSignal.timeout(10000)])});
+      const response = await this.fetcher(this.url(path, context), {signal: AbortSignal.any([context.signal, AbortSignal.timeout(10000)])});
       if (!this.isCurrent(context) || response.status === 409) return null;
       const value = await response.json();
       if (!this.isCurrent(context)) return null;

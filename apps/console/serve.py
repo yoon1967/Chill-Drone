@@ -20,6 +20,7 @@ APP = Path(__file__).resolve().parent
 sys.path.insert(0, str(APP.parents[1]))
 from modules.mapping.localization.observations import native_observations
 from modules.mapping.data.live_recording import archive_files
+from modules.mapping.data.session_import import ImportManager, inside
 
 
 def scene_delta(previous, current):
@@ -142,7 +143,9 @@ def result_metadata(path, modified_ns, size):
 class ViewerHandler(BaseHTTPRequestHandler):
     tello_input_lock = threading.Lock()
     def __init__(self, *args, result=None, session=None, objects=None, live=None, tello=None, tello_map=None,
-                 timeline=None, observations=None, demo=None, demo_camera=None, **kwargs):
+                 timeline=None, observations=None, demo=None, demo_camera=None, imports=None, **kwargs):
+        self.imports = imports
+        self.imported = None
         self.saved_result = Path(result).resolve() if result else None
         self.recorded_session = Path(session).resolve() if session else None
         self.saved_objects = Path(objects).resolve() if objects else None
@@ -157,19 +160,20 @@ class ViewerHandler(BaseHTTPRequestHandler):
 
     def select_source(self, source=None):
         self.source = source or ("live" if self.current or self.recorded_session or not self.saved_result else "saved")
-        self.session = (self.current.path if self.current else self.recorded_session) if self.source == "live" else None
-        self.result = self.saved_result if self.source == "saved" else None
-        self.objects = self.saved_objects if self.source == "saved" else None
+        self.session = ((self.current.path if self.current else self.recorded_session) if self.source == 'live' else
+                        self.imported.root if self.imported and self.imported.is_session else None)
+        self.result = (self.imported.result() if self.imported else self.saved_result) if self.source == 'saved' else None
+        self.objects = self.saved_objects if self.source == "saved" and not self.imported else None
 
     def source_state(self, result, state):
         value = dict(state or {})
-        if self.source == "saved":
+        if self.source == "saved" and not self.session:
             value.update(status="offline", session_status=None, session_id=None, revision=0, map_available=False)
         elif not self.session:
             value.update(status="idle", session_status="idle", session_id=None, revision=0, map_available=False)
         else:
-            value["session_id"] = self.session.name
-            if self.current:
+            value["session_id"] = self.imported.state['session_id'] if self.imported else self.session.name
+            if self.current and self.source == 'live':
                 value.update(self.current.stats())
             elif (self.session / 'session.json').is_file():
                 try:
@@ -213,6 +217,8 @@ class ViewerHandler(BaseHTTPRequestHandler):
             pass  # Switching tabs cancels in-flight JSON/image requests in the browser.
 
     def snapshot(self, revision=None, state=None):
+        if self.source == 'saved' and self.imported:
+            return self.imported.result(revision), dict(self.imported.state)
         if not self.session:
             return self.result, None
         if not (self.session / "state.json").is_file():
@@ -235,6 +241,9 @@ class ViewerHandler(BaseHTTPRequestHandler):
         if (host not in {f"127.0.0.1:{self.server.server_port}", f"localhost:{self.server.server_port}"}
                 or origin not in {None, "http://" + host} or self.headers.get("X-Mapping-Client") != "1"):
             self.send_error(403)
+            return
+        if urlsplit(self.path).path.startswith('/api/import/'):
+            self.import_request()
             return
         try:
             length = int(self.headers.get("Content-Length", "0"))
@@ -357,7 +366,7 @@ class ViewerHandler(BaseHTTPRequestHandler):
                 self.send_error(416)
                 return
         self.send_response(206 if range_header else 200)
-        self.send_header("Content-Type", "video/mp4")
+        self.send_header("Content-Type", mimetypes.guess_type(self.demo.name)[0] or 'application/octet-stream')
         self.send_header("Accept-Ranges", "bytes")
         self.send_header("Content-Length", str(end - start + 1))
         self.send_header("Cache-Control", "no-store")
@@ -393,6 +402,58 @@ class ViewerHandler(BaseHTTPRequestHandler):
                 raise ValueError("invalid_object_texture")
         return collection
 
+    def import_request(self):
+        if not self.imports:
+            self.json_response({'error': 'imports_not_enabled'}, 404)
+            return
+        url = urlsplit(self.path)
+        query = parse_qs(url.query)
+        action = url.path.removeprefix('/api/import/')
+        key = query.get('id', [''])[0]
+        try:
+            if self.command == 'GET':
+                if action == 'library':
+                    self.json_response({'items': self.imports.library(), 'initial': getattr(self.imports, 'initial', None)})
+                elif action == 'status':
+                    self.json_response(self.imports.status(key))
+                elif action == 'media':
+                    record = self.imports.resolve(key)
+                    index = int(query.get('part', ['0'])[0])
+                    if not 0 <= index < len(record.media):
+                        raise ValueError('unknown_recording')
+                    self.demo = inside(record.root, record.media[index]['path'])
+                    self.source_video()
+                else:
+                    self.send_error(404)
+                return
+            if action == 'upload':
+                self.imports.upload(key, query.get('path', [''])[0], self.rfile, int(self.headers.get('Content-Length', '-1')))
+                self.json_response({'status': 'uploaded'})
+                return
+            length = int(self.headers.get('Content-Length', '0'))
+            if not 0 <= length <= 65536:
+                raise ValueError('invalid_request_size')
+            body = json.loads(self.rfile.read(length) or b'{}')
+            if action == 'create':
+                value = self.imports.create(body.get('name', '불러온 자료'))
+            elif action == 'inspect':
+                value = self.imports.inspect(key)
+            elif action == 'local':
+                value = self.imports.open_local(body.get('local_id', ''))
+            elif action == 'start':
+                if self.current and self.current.stats().get('session_status') not in {'complete', 'failed', 'stopped_or_disconnected'}:
+                    raise ValueError('stop_live_mapping_before_reconstruction')
+                value = self.imports.start(key, body)
+            elif action == 'cancel':
+                value = self.imports.cancel(key)
+            else:
+                self.send_error(404)
+                return
+            self.json_response(value, 202)
+        except (OSError, ValueError, KeyError, TypeError, zipfile.BadZipFile) as error:
+            self.close_connection = True
+            self.json_response({'error': str(error)[:400]}, 400)
+
     def do_GET(self):
         host = self.headers.get("Host", "").split(":", 1)[0]
         if host not in {"127.0.0.1", "localhost"}:
@@ -400,6 +461,16 @@ class ViewerHandler(BaseHTTPRequestHandler):
             return
         url = urlsplit(self.path)
         path = unquote(url.path)
+        if path.startswith('/api/import/'):
+            self.import_request()
+            return
+        asset = parse_qs(url.query).get('asset', [None])[0]
+        if asset and self.imports and path.startswith('/api/saved/'):
+            try:
+                self.imported = self.imports.resolve(asset)
+            except (OSError, ValueError, KeyError, TypeError) as error:
+                self.json_response({'error': str(error)}, 404)
+                return
         if path in {'/api/live/session', '/api/live/session-download'}:
             session = self.current.path if self.current else self.recorded_session
             if session is None:
@@ -552,13 +623,14 @@ class ViewerHandler(BaseHTTPRequestHandler):
         try:
             requested = parse_qs(url.query).get("revision", [None])[0]
             requested_session = parse_qs(url.query).get("session", [None])[0]
-            if requested_session and (not self.session or requested_session != self.session.name):
+            identity = self.imported.state.get('session_id') if self.imported else self.session.name if self.session else None
+            if requested_session and requested_session != identity:
                 self.json_response({"error": "session_changed"}, 409)
                 return
             if requested and not re.fullmatch(r"\d{6}", requested):
                 self.send_error(404)
                 return
-            if requested and self.source == "saved":
+            if requested and self.source == "saved" and not self.session:
                 self.json_response({"error": "saved_map_has_no_revisions"}, 400)
                 return
             result, state = self.snapshot()
@@ -574,6 +646,10 @@ class ViewerHandler(BaseHTTPRequestHandler):
             self.json_response(state)
             return
         if path == "/api/timeline":
+            if self.source == 'saved' and self.imported:
+                self.json_response({'schema_version': 'orb-map-timeline/1.0', 'entries': self.imported.entries,
+                    'source': 'saved', 'session_id': self.imported.state.get('session_id')})
+                return
             self.json_response({**self.timeline.read(self.session, state), "source": self.source,
                                 "session_id": self.session.name if self.session else None})
             return
@@ -586,11 +662,11 @@ class ViewerHandler(BaseHTTPRequestHandler):
             value.pop("surface", None)  # Read old results without exposing the retired mesh.
             value.pop("stream", None)
             value["source"] = self.source
-            if not value.get("point_observations") and self.observations:
+            if not value.get("point_observations") and self.observations and not self.imported:
                 evidence = self.observations.read(self.session, value)
                 if evidence:
                     value["point_observations"] = evidence
-            if self.source == "live":
+            if self.source == "live" or (self.imported and self.imported.is_session):
                 value["stream"] = state
             try:
                 collection = self.object_collection(result, value)
@@ -618,7 +694,7 @@ class ViewerHandler(BaseHTTPRequestHandler):
                         pass  # Missing/pruned/unsupported bases always fall back to a complete snapshot.
             self.json_response(value)
             return
-        static = {"/": APP / "index.html", "/app.js": APP / "app.js", "/objects.js": APP / "objects.js", "/capture.js": APP / "capture.js", "/recording-view.js": APP / "recording-view.js", "/point-grid.js": APP / "point-grid.js", "/point-surfaces.js": APP / "point-surfaces.js", "/style.css": APP / "style.css",
+        static = {"/": APP / "index.html", "/app.js": APP / "app.js", "/import-view.js": APP / 'import-view.js', "/objects.js": APP / "objects.js", "/capture.js": APP / "capture.js", "/recording-view.js": APP / "recording-view.js", "/point-grid.js": APP / "point-grid.js", "/point-surfaces.js": APP / "point-surfaces.js", "/style.css": APP / "style.css",
                   "/point-surface-worker.js": APP / "point-surface-worker.js", "/map-delta.js": APP / "map-delta.js",
                   "/map-source.js": APP / "map-source.js", "/wide-surfaces.js": APP / "wide-surfaces.js",
                   "/frame-latency.js": APP / "frame-latency.js",
@@ -673,7 +749,10 @@ class ViewerHandler(BaseHTTPRequestHandler):
             if name not in assets["frames"] or Path(name).name != name:
                 self.send_error(404)
                 return
-            root = Path(assets["images_root"]).resolve()
+            root = self.imported.image_root(result) if self.imported and self.source == 'saved' else Path(assets["images_root"]).resolve()
+            if root is None:
+                self.send_error(404)
+                return
             target = (root / name).resolve()
             if target.parent != root:
                 self.send_error(404)
@@ -681,6 +760,12 @@ class ViewerHandler(BaseHTTPRequestHandler):
         if target is None or not target.is_file():
             self.send_error(404)
             return
+        if self.imported and path.startswith('/api/'):
+            try:
+                target = inside(self.imported.root, target.relative_to(self.imported.root).as_posix())
+            except ValueError:
+                self.send_error(404)
+                return
         payload = target.read_bytes()
         self.send_response(200)
         content_type = "text/javascript" if target.suffix == ".js" else mimetypes.guess_type(target.name)[0]
@@ -699,6 +784,7 @@ def main():
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--result", type=Path, help="Saved reconstruction exposed through /api/saved")
     parser.add_argument("--session", type=Path, help="Initial online session exposed through /api/live")
+    parser.add_argument('--import-source', type=Path, help='Explicit local ZIP, session, video or frames to inspect in the saved tab')
     parser.add_argument("--tello-only", action="store_true", help="Open the console for Tello person detection without a map")
     parser.add_argument("--objects", type=Path, help="Optional planar object bundle for an offline result")
     parser.add_argument("--port", type=int, default=8790)
@@ -718,7 +804,7 @@ def main():
     calibration.add_argument("--demo-calibration-result", type=Path, help="Reuse only intrinsics from this video's saved reconstruction")
     args = parser.parse_args()
     result = args.result.resolve() if args.result else None
-    if not (args.result or args.session or args.enable_camera or args.tello_only or args.enable_tello_map or args.tello_gateway):
+    if not (args.result or args.session or args.import_source or args.enable_camera or args.tello_only or args.enable_tello_map or args.tello_gateway):
         parser.error("Select --result, --session, --enable-camera, --enable-tello-map, or --tello-only")
     if args.objects and not args.result:
         parser.error("--objects requires a saved --result")
@@ -755,7 +841,12 @@ def main():
                 calibration_result=args.demo_calibration_result, session=args.session)
         except (OSError, ValueError, KeyError, TypeError) as error:
             parser.error(str(error))
-    server = ViewerServer(("127.0.0.1", args.port), partial(ViewerHandler, result=result,
+    imports = ImportManager(args.live_root)
+    if args.import_source:
+        initial = imports.add_local(args.import_source)
+        imports.initial = initial
+        print(f'Import selected: {initial}', flush=True)
+    server = ViewerServer(("127.0.0.1", args.port), partial(ViewerHandler, result=result, imports=imports,
         session=args.session, objects=args.objects, live=live, tello=tello, tello_map=tello_map, timeline=Timeline(), observations=ObservationCache(),
         demo=demo, demo_camera=demo_camera))
     print(f"Phone mapping viewer: http://127.0.0.1:{args.port}/", flush=True)
@@ -765,6 +856,7 @@ def main():
         pass
     finally:
         server.server_close()
+        imports.shutdown()
         if tello_map:
             tello_map.shutdown()
         if live:
