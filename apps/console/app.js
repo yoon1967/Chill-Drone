@@ -3,7 +3,7 @@ import { OrbitControls } from '/vendor/OrbitControls.js';
 import { PlanarObjects } from '/objects.js';
 import { connectCapture } from '/capture.js';
 import { MapSource, monitorConnections } from '/map-source.js';
-import { updatePointGrid, pointSpacingProfile, pointGridCells, displayPointCells } from '/point-grid.js';
+import { PointDisplay, PointBuffer } from '/point-display.js';
 import { applySceneDelta } from '/map-delta.js';
 import { renderRecording } from '/recording-view.js';
 import { FrameLatency } from '/frame-latency.js';
@@ -26,9 +26,9 @@ const savedCopy = {
   detail: $('scale-note').nextElementSibling.textContent,
   note: document.querySelector('.notes .muted').textContent,
 };
-let hologramInterval = 0, intervalFrame = null, originalPositions = new Float64Array();
+let hologramInterval = 0, intervalFrame = null, pointDisplay = null;
 let hologramControlsOpen = mode === 'hologram';
-let confidenceThreshold = 3, gridCells = null, filteredPoints = [];
+let confidenceThreshold = 3, gridCells = null;
 let surfaceGroup = null, surfaceCache = null, surfaceStyle = 'faces', surfaceConnection = 2.5;
 let surfaceTimer = null;
 let surfaceWorker = null, surfaceInFlight = null, surfaceQueued = null, surfaceDesired = 0;
@@ -37,6 +37,9 @@ const surfacePatches = new Map();
 let surfaceColorThreshold = 30, surfaceNormalAngle = 55;
 let surfaceWide = true;
 let spacingProfile = {step: .0001, max: .05, recommended: .003, median: 0};
+let spacingWorker = null, spacingBusy = false, spacingPending = false, spacingTimer = null;
+let spacingVersion = -1, spacingLast = -Infinity, surfaceInputVersion = -1;
+let cameraSignature = null;
 const decimal = (n) => Number(n).toLocaleString('ko-KR', {maximumFractionDigits: 12});
 const renderTimes = [];
 let lastRenderReport = 0;
@@ -77,6 +80,9 @@ function clearMap(title = '지도를 불러오는 중', detail = '잠시 기다�
   clearTimeout(surfaceTimer); surfaceTimer = null;
   surfaceWorker?.terminate(); surfaceWorker = null;
   surfaceInFlight = surfaceQueued = null; surfaceDesired++; surfaceAck = 0;
+  surfaceInputVersion = -1;
+  resetSpacing(true);
+  pointDisplay?.dispose(); pointDisplay = null;
   dispose();
   root = cloud = route = selected = frustums = grid = run = null;
   objectLayer.apply(null, null);
@@ -172,26 +178,9 @@ function liveStatus(state) {
   $('session-detail').textContent = state.session_id ? `세션 ${state.session_id}${state.last_error ? ' · 처리 오류 발생' : ''}` : '현재 연결된 실시간 세션이 없습니다.';
 }
 
-function line(points, color, opacity = 1) {
-  return new THREE.Line(new THREE.BufferGeometry().setFromPoints(points),
-    new THREE.LineBasicMaterial({color, transparent: opacity < 1, opacity}));
-}
 function rotation(c) {
   const a = c.world_from_camera_rotation;
   return new THREE.Matrix3().set(...a[0], ...a[1], ...a[2]);
-}
-function geometry(positions, colors) {
-  const g = new THREE.BufferGeometry();
-  g.setAttribute('position', new THREE.Float32BufferAttribute(positions.flat(), 3));
-  if (colors) {
-    const linear = [];
-    for (const rgb of colors) {
-      const c = new THREE.Color().setRGB(...rgb.map((n) => n / 255), THREE.SRGBColorSpace);
-      linear.push(c.r, c.g, c.b);
-    }
-    g.setAttribute('color', new THREE.Float32BufferAttribute(linear, 3));
-  }
-  return g;
 }
 function dispose() {
   if (!root) return;
@@ -204,26 +193,45 @@ function dispose() {
 }
 function showCloud() {
   if (!run) return;
-  const points = run.points.filter((p) => p[7] <= Number($('error-limit').value));
-  filteredPoints = points;
+  const started = performance.now();
+  const stats = pointDisplay.update(run, {errorLimit: Number($('error-limit').value), colorMode: $('color-mode').value});
   gridCells = null;
-  const colors = points.map((p) => {
-    const colorMode = $('color-mode').value;
-    if (colorMode === 'rgb') return p.slice(4, 7);
-    const h = colorMode === 'error' ? Math.min(p[7] / 3, 1) :
-      (p[2] - run.quality.bounds.min[1]) / Math.max(run.quality.bounds.max[1] - run.quality.bounds.min[1], .001);
-    const c = new THREE.Color().setHSL((1 - h) * .58, .7, .6);
-    return [c.r * 255, c.g * 255, c.b * 255];
-  });
-  cloud.geometry.dispose();
-  const positions = points.map((p) => p.slice(1, 4));
-  originalPositions = new Float64Array(positions.flat());
-  cloud.geometry = geometry(positions, colors);
-  cloud.geometry.getAttribute('position').setUsage(THREE.DynamicDrawUsage);
   applyPointInterval();
+  Object.assign($('viewport').dataset, {pointUpdateMs: performance.now() - started,
+    pointUpdateVisited: stats.visited, pointUpdateChanged: stats.changed, pointBufferCapacity: pointDisplay.raw.capacity});
+  requestSpacing();
 }
-function configureSpacing() {
-  spacingProfile = pointSpacingProfile(run.points);
+function resetSpacing(clearProfile = false) {
+  spacingWorker?.terminate(); spacingWorker = null;
+  clearTimeout(spacingTimer); spacingTimer = null;
+  spacingBusy = spacingPending = false; spacingVersion = -1; spacingLast = -Infinity;
+  if (clearProfile) spacingProfile = {step: .0001, max: .05, recommended: .003, median: 0};
+}
+function requestSpacing() {
+  spacingPending = true;
+  if (spacingBusy || spacingTimer || !pointDisplay) return;
+  const delay = Math.max(0, 2000 - (performance.now() - spacingLast));
+  if (delay) { spacingTimer = setTimeout(() => { spacingTimer = null; requestSpacing(); }, delay); return; }
+  const owner = pointDisplay;
+  if (!spacingWorker) {
+    spacingWorker = new Worker('/point-spacing-worker.js', {type: 'module'});
+    spacingWorker.onmessage = ({data}) => {
+      spacingBusy = false;
+      if (pointDisplay !== owner) return;
+      if (data.error) { resetSpacing(); return; }
+      configureSpacing(data.profile);
+      $('viewport').dataset.spacingAnalysisMs = data.analysisMs;
+      updateSurfacePreview();
+      if (spacingPending) requestSpacing();
+    };
+    spacingWorker.onerror = () => resetSpacing();
+  }
+  const update = pointDisplay.workerUpdate(spacingVersion);
+  spacingVersion = update.version; spacingBusy = true; spacingPending = false; spacingLast = performance.now();
+  spacingWorker.postMessage({update});
+}
+function configureSpacing(profile) {
+  spacingProfile = profile;
   // A selected fine interval remains valid when replay advances to a coarser map.
   if (hologramInterval > 0) spacingProfile.step = Math.min(spacingProfile.step,
     10 ** Math.floor(Math.log10(hologramInterval)) / 10);
@@ -244,12 +252,12 @@ function updateIntervalLabel() {
   $('hologram-interval-reset').disabled = hologramInterval === 0;
 }
 function applyPointInterval() {
-  if (!cloud) return;
+  if (!cloud || !pointDisplay) return;
   const interval = mode === 'hologram' ? hologramInterval : 0;
-  let count;
+  cloud.geometry = pointDisplay.display(interval, confidenceThreshold, mode === 'hologram');
+  const count = cloud.geometry.drawRange.count;
   if (mode === 'hologram') {
-    gridCells ??= pointGridCells(filteredPoints, interval, run.point_observations, run.cameras.length);
-    count = displayPointCells(cloud.geometry, gridCells, confidenceThreshold);
+    gridCells = pointDisplay.gridSummary();
     const max = Math.max(gridCells.maxSupport, confidenceThreshold);
     for (const id of ['hologram-confidence', 'hologram-confidence-number']) {
       $(id).max = max; $(id).value = confidenceThreshold;
@@ -259,15 +267,13 @@ function applyPointInterval() {
     $('hologram-confidence-basis').textContent = gridCells.lowerBound ?
       '이전 자료: 프레임 연결 정보 없음 · 개별 트랙 관측 수의 하한 사용, 격자 합산 불가' :
       `${gridCells.basis === 'keyframes' ? '선택된 키프레임' : '등록된 프레임'} 기준 · 같은 프레임은 한 번만 계산`;
-    $('hologram-confidence-summary').textContent = `${number(count)} / ${number(gridCells.cells.length)}곳 표시 · 원본 ${number(gridCells.sourceCount)}점` +
+    $('hologram-confidence-summary').textContent = `${number(count)} / ${number(gridCells.cellCount)}곳 표시 · 원본 ${number(gridCells.sourceCount)}점` +
       (count ? '' : ' · 조건을 만족하는 점이 없습니다');
-  } else {
-    updatePointGrid(cloud.geometry, originalPositions, 0);
-    count = filteredPoints.length;
   }
   $('points').textContent = number(root?.visible === false ? 0 : count);
   Object.assign($('viewport').dataset, {pointInterval: interval, confidenceThreshold: mode === 'hologram' ? confidenceThreshold : 1,
-    visiblePoints: count, confidenceBasis: gridCells?.lowerBound ? 'track_lower_bound' : gridCells?.basis || ''});
+    visiblePoints: count, confidenceBasis: gridCells?.lowerBound ? 'track_lower_bound' : gridCells?.basis || '',
+    pointGeometryId: cloud.geometry.id, pointAttributeId: cloud.geometry.getAttribute('position').id});
   updateSurfacePreview();
   replayControls();
 }
@@ -340,6 +346,7 @@ function pumpSurfaceWorker() {
       surfaceInFlight = null;
       if (request && data.id === surfaceDesired) {
         if (data.error) {
+          surfaceInputVersion = -1;
           $('surface-update-summary').textContent = `구조 갱신 실패 · 이전 결과 유지: ${data.error}`;
         } else {
           const result = data.result;
@@ -363,12 +370,14 @@ function pumpSurfaceWorker() {
     };
     surfaceWorker.onerror = () => {
       surfaceInFlight = null;
+      surfaceInputVersion = -1;
       $('surface-update-summary').textContent = '구조 갱신 실패 · 페이지를 새로 고쳐 다시 시도하세요.';
     };
   }
   const request = surfaceQueued;
   surfaceQueued = null; surfaceInFlight = request;
   request.payload.ack = surfaceAck;
+  surfaceInputVersion = request.payload.update.version;
   surfaceWorker.postMessage(request.payload);
 }
 function updateSurfacePreview(immediate = false) {
@@ -384,7 +393,7 @@ function updateSurfacePreview(immediate = false) {
     return;
   }
   const tag = {grid: gridCells, threshold: confidenceThreshold, connection: surfaceConnection,
-    colorThreshold: surfaceColorThreshold, normalAngle: surfaceNormalAngle, wideSurfaces: surfaceWide};
+    colorThreshold: surfaceColorThreshold, normalAngle: surfaceNormalAngle, wideSurfaces: surfaceWide, spacing: spacingProfile.median};
   const matches = cached => cached && Object.keys(tag).every(key => cached[key] === tag[key]);
   if (!matches(surfaceCache)) {
     $('surface-update-summary').textContent = '바뀐 주변을 갱신합니다 · 기존 선·면 유지';
@@ -394,7 +403,7 @@ function updateSurfacePreview(immediate = false) {
         surfaceTimer = setTimeout(() => { surfaceTimer = null; updateSurfacePreview(true); }, 160);
       } else {
         const id = ++surfaceDesired;
-        surfaceQueued = {tag, payload: {id, points: filteredPoints, grid: gridCells, observations: run.point_observations,
+        surfaceQueued = {tag, payload: {id, interval: hologramInterval, update: pointDisplay.workerUpdate(surfaceInputVersion),
           settings: {...tag, grid: undefined, spacing: spacingProfile.median},
           context: {source: run.source, session: run.input_run_id, segment: run.segment_id, poseSource: run.pose_source, revision: run.revision,
             frameKeys: run.cameras.map(c => c.frame_id), cameras: run.cameras,
@@ -517,12 +526,12 @@ function cameraView() {
 function applyRun(value) {
   if (!['phone-sfm-result/1.0', 'phone-sfm-result/1.1', 'phone-sfm-result/1.2'].includes(value.schema_version) || !value.points?.length || !value.cameras?.length)
     throw new Error('지원하는 지도와 카메라 경로가 없습니다.');
-  const preserve = run && run.input_run_id === value.input_run_id && run.segment_id === value.segment_id;
+  const preserve = run && run.source === value.source && run.input_run_id === value.input_run_id &&
+    run.segment_id === value.segment_id && (value.revision ?? 0) >= (run.revision ?? 0);
   const view = !run && views.get(source.source);
   const restore = view && view.session === value.input_run_id && view.segment === value.segment_id;
   const frame = run?.cameras[currentIndex]?.frame_id || (restore ? view.frame : null);
   run = value;
-  configureSpacing();
   $('viewport').dataset.revision = String(run.revision ?? 0);
   $('viewport').dataset.session = run.input_run_id;
   $('viewport').dataset.source = run.source;
@@ -531,57 +540,66 @@ function applyRun(value) {
   document.querySelector('.notes').hidden = false;
   document.querySelectorAll('.view-buttons button, #explore, #camera-view, #frame-timeline').forEach((b) => { b.disabled = false; });
   document.querySelector('.workspace').classList.toggle('slam-workspace', Boolean(run.slam));
-  if (preserve && surfaceGroup) root.remove(surfaceGroup);
-  else {
+  if (!preserve) {
     clearSurfacePatches(); surfaceGroup = null; surfaceCache = null;
-    surfaceQueued = null; surfaceDesired++; surfaceAck = -1;
+    surfaceWorker?.terminate(); surfaceWorker = null;
+    surfaceQueued = surfaceInFlight = null; surfaceDesired++; surfaceAck = 0; surfaceInputVersion = -1;
+    resetSpacing(true);
+    pointDisplay?.dispose();
+    dispose();
+    pointDisplay = new PointDisplay();
+    root = new THREE.Group(); scene.add(root);
+    cloud = new THREE.Points(pointDisplay.raw.geometry, new THREE.PointsMaterial({vertexColors: true,
+      size: Number($('point-size').value), sizeAttenuation: false}));
+    root.add(cloud);
+    cameraSignature = null;
   }
-  dispose();
   clearTimeout(surfaceTimer); surfaceTimer = null;
-  root = new THREE.Group();
-  scene.add(root);
-  if (surfaceGroup) root.add(surfaceGroup);
-  cloud = new THREE.Points(new THREE.BufferGeometry(), new THREE.PointsMaterial({vertexColors: true,
-    size: Number($('point-size').value), sizeAttenuation: false}));
-  root.add(cloud);
-  showCloud();
-  const rawBoundsGeometry = geometry(run.points.map((p) => p.slice(1, 4)));
-  const bounds = new THREE.Box3().setFromBufferAttribute(rawBoundsGeometry.getAttribute('position'));
-  rawBoundsGeometry.dispose();
+  const bounds = new THREE.Box3(new THREE.Vector3(...run.quality.bounds.min), new THREE.Vector3(...run.quality.bounds.max));
   fullCenter = bounds.getCenter(new THREE.Vector3());
   fullRadius = Math.max(bounds.getSize(new THREE.Vector3()).length() / 2, .1);
-  const q = [1, 2, 3].map((axis) => run.points.map((p) => p[axis]).sort((a, b) => a - b));
-  const focus = new THREE.Box3(new THREE.Vector3(...q.map((a) => a[Math.floor(a.length * .02)])),
-    new THREE.Vector3(...q.map((a) => a[Math.floor(a.length * .98)])));
-  center = focus.getCenter(new THREE.Vector3());
-  radius = Math.max(focus.getSize(new THREE.Vector3()).length() / 2, .1);
-  const positions = run.cameras.map((c) => new THREE.Vector3(...c.position));
-  direction = positions.reduce((sum, p) => sum.add(p), new THREE.Vector3()).divideScalar(positions.length).sub(center).normalize();
-  direction.y += .15;
-  route = line(positions, 0xc6bb67, .8);
-  root.add(route);
-  frustums = new THREE.Group();
-  const cameraLines = [];
-  for (const c of run.cameras) {
-    const rot = rotation(c), origin = new THREE.Vector3(...c.position), d = radius * .025;
-    const corners = [[-1, -.5625, 1.5], [1, -.5625, 1.5], [1, .5625, 1.5], [-1, .5625, 1.5]]
-      .map((p) => new THREE.Vector3(...p).multiplyScalar(d).applyMatrix3(rot).add(origin));
-    for (let i = 0; i < 4; i++) cameraLines.push(corners[i], corners[(i + 1) % 4], origin, corners[i]);
+  if (!preserve) {
+    // Initial framing is computed once. Subsequent updates preserve the user's
+    // view and use the producer's bounds instead of sorting every point again.
+    const q = [1, 2, 3].map(axis => run.points.map(p => p[axis]).sort((a, b) => a - b));
+    const focus = new THREE.Box3(new THREE.Vector3(...q.map(a => a[Math.floor(a.length * .02)])),
+      new THREE.Vector3(...q.map(a => a[Math.floor(a.length * .98)])));
+    center = focus.getCenter(new THREE.Vector3());
+    radius = Math.max(focus.getSize(new THREE.Vector3()).length() / 2, .1);
+    direction = run.cameras.reduce((sum, c) => sum.add(new THREE.Vector3(...c.position)), new THREE.Vector3())
+      .divideScalar(run.cameras.length).sub(center).normalize();
+    direction.y += .15;
+    route = new THREE.Line(new THREE.BufferGeometry(), new THREE.LineBasicMaterial({color: 0xc6bb67, transparent: true, opacity: .8}));
+    frustums = new THREE.LineSegments(new THREE.BufferGeometry(), new THREE.LineBasicMaterial({color: 0x6c8d89, transparent: true, opacity: .45}));
+    root.add(route, frustums);
+    selected = new THREE.Mesh(new THREE.SphereGeometry(radius * .012, 12, 12), new THREE.MeshBasicMaterial({color: 0xe3ce71}));
+    root.add(selected);
+    const gridSize = Math.max(2, Math.ceil(fullRadius * 3));
+    grid = new THREE.GridHelper(gridSize, run.scale.unit === 'm' ? Math.min(gridSize * 2, 200) : 20, 0x34504e, 0x243b3f);
+    grid.position.set(center.x, bounds.min.y - radius * .025, center.z); root.add(grid);
   }
-  frustums.add(new THREE.LineSegments(new THREE.BufferGeometry().setFromPoints(cameraLines),
-    new THREE.LineBasicMaterial({color: 0x6c8d89, transparent: true, opacity: .45})));
-  root.add(frustums);
-  selected = new THREE.Mesh(new THREE.SphereGeometry(radius * .012, 12, 12), new THREE.MeshBasicMaterial({color: 0xe3ce71}));
-  root.add(selected);
-  const gridSize = Math.max(2, Math.ceil(fullRadius * 3));
-  grid = new THREE.GridHelper(gridSize, run.scale.unit === 'm' ? Math.min(gridSize * 2, 200) : 20, 0x34504e, 0x243b3f);
-  grid.position.set(center.x, bounds.min.y - radius * .025, center.z);
-  root.add(grid);
+  const signature = JSON.stringify(run.cameras.map(c => [c.frame_id, c.position, c.world_from_camera_rotation]));
+  if (signature !== cameraSignature) {
+    const cameraLines = [];
+    for (const c of run.cameras) {
+      const rot = rotation(c), origin = new THREE.Vector3(...c.position), d = radius * .025;
+      const corners = [[-1, -.5625, 1.5], [1, -.5625, 1.5], [1, .5625, 1.5], [-1, .5625, 1.5]]
+        .map(p => new THREE.Vector3(...p).multiplyScalar(d).applyMatrix3(rot).add(origin));
+      for (let i = 0; i < 4; i++) cameraLines.push(corners[i], corners[(i + 1) % 4], origin, corners[i]);
+    }
+    updateCameraBuffer(route, run.cameras.map(c => c.position));
+    updateCameraBuffer(frustums, cameraLines.map(p => p.toArray()));
+    cameraSignature = signature;
+  }
+  const oldObjects = objectLayer.group;
+  oldObjects.traverse(o => { o.geometry?.dispose(); const m = o.material; m?.map?.dispose(); m?.dispose(); });
+  root.remove(oldObjects);
   root.add(objectLayer.apply(run.planar_objects, run));
   document.querySelectorAll('[data-mode]').forEach((b) => {
     b.disabled = b.dataset.mode === 'objects' && !run.planar_objects;
   });
   if (mode === 'objects' && !run.planar_objects) mode = 'points';
+  showCloud();
   setMode(mode);
   const quality = run.quality;
   $('frames').parentElement.querySelector('span').textContent = '등록 프레임';
@@ -638,6 +656,17 @@ function applyRun(value) {
     a.hidden = Boolean(run.stream);
     a.setAttribute('href', a.getAttribute('href').replace(/^\/api\/(?:saved\/)?/, '/api/saved/'));
   });
+}
+
+function updateCameraBuffer(object, positions) {
+  if (!object.userData.buffer) {
+    object.geometry.dispose(); object.userData.buffer = new PointBuffer(); object.geometry = object.userData.buffer.geometry;
+  }
+  const buffer = object.userData.buffer;
+  while (buffer.ids.length > positions.length) buffer.remove(buffer.ids.length - 1);
+  positions.forEach((p, i) => buffer.upsert(i, p, [1, 1, 1]));
+  buffer.compactRanges();
+  object.geometry.computeBoundingSphere();
 }
 
 function replayDuration() { return replay.entries.at(-1)?.timestamp_s || 0; }
@@ -834,6 +863,7 @@ async function poll() {
     if (!replay.following || (state.backend === 'orb_slam3_monocular' && state.session_id !== replay.session)) return;
     const fetchedAt = performance.now();
     applyRun(value);
+    $('viewport').dataset.mapApplyMs = performance.now() - fetchedAt;
     pendingPresentation = {scene: run, fetchMs: fetchedAt - fetchStarted, applyMs: performance.now() - fetchedAt};
     revision = run.revision ?? 0;
     if (state.source === 'live') { replay.applied = revision; replayControls(); liveStatus(state); }
@@ -973,9 +1003,11 @@ function animate(time) {
     const renderMs = performance.now() - renderStarted;
     requestAnimationFrame(() => {
       if (run === pending.scene && root?.visible && replay.following && source.source === 'live' && document.visibilityState === 'visible') {
-        const visibleIds = mode === 'hologram' ? (gridCells?.cells || []).filter(cell => cell.support >= confidenceThreshold).flatMap(cell => cell.sourceIds) :
-          filteredPoints.map(point => point[0]);
-        frameLatency.present(run, performance.now(), {fetchMs: pending.fetchMs, applyMs: pending.applyMs, renderMs}, visibleIds);
+        if (frameLatency.session) {
+          const visibleIds = mode === 'hologram' ? pointDisplay.gridSnapshot().cells.filter(cell => cell.support >= confidenceThreshold).flatMap(cell => cell.sourceIds) :
+            [...pointDisplay.rows.keys()];
+          frameLatency.present(run, performance.now(), {fetchMs: pending.fetchMs, applyMs: pending.applyMs, renderMs}, visibleIds);
+        }
         latencyStatus();
       }
     });

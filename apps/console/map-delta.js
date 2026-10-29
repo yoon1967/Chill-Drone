@@ -1,3 +1,12 @@
+// Keep local change information out of the saved/exported scene format.
+const changes = new WeakMap();
+const tokens = new WeakMap();
+export function sceneToken(scene) {
+  if (!tokens.has(scene)) tokens.set(scene, Symbol());
+  return tokens.get(scene);
+}
+export const sceneChanges = scene => changes.get(scene);
+
 // Reconstruct the exact snapshot, including native point order and current camera-frame indices.
 export function applySceneDelta(previous,payload) {
   if (payload.schema_version!=='phone-map-delta/1.0') return payload;
@@ -14,6 +23,11 @@ export function applySceneDelta(previous,payload) {
   const frames={...previous.point_observations?.frame_index_by_point};
   for (const id of payload.observation_removed) delete frames[id];
   Object.assign(frames,payload.observation_upserts);
-  return {...payload.scene,points:payload.point_order.map(id => rows.get(id)),
+  const scene = {...payload.scene,points:payload.point_order.map(id => rows.get(id)),
     point_observations:{...payload.observation_metadata,frame_index_by_point:frames}};
+  // A strong reference to the previous scene would retain the entire revision
+  // chain throughout a long live session. The token carries identity only.
+  changes.set(scene, {previousToken: sceneToken(previous), upserts: payload.points_upsert, removed: payload.points_removed,
+    observationIds: [...Object.keys(payload.observation_upserts), ...payload.observation_removed]});
+  return scene;
 }

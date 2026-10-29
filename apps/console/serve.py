@@ -622,6 +622,8 @@ class ViewerHandler(BaseHTTPRequestHandler):
                   "/point-surface-worker.js": APP / "point-surface-worker.js", "/map-delta.js": APP / "map-delta.js",
                   "/map-source.js": APP / "map-source.js", "/wide-surfaces.js": APP / "wide-surfaces.js",
                   "/frame-latency.js": APP / "frame-latency.js",
+                  "/point-display.js": APP / "point-display.js", "/point-worker-state.js": APP / "point-worker-state.js",
+                  "/point-spacing-worker.js": APP / "point-spacing-worker.js",
                   "/tracking-preview.js": APP / "tracking-preview.js",
                   "/vendor/three.module.js": APP / "node_modules/three/build/three.module.js",
                   "/vendor/three.core.js": APP / "node_modules/three/build/three.core.js",
