@@ -25,6 +25,31 @@
         <div><dt>3D 지도</dt><dd id="connection-map" data-state="idle">대기</dd></div></dl>
       <p id="connection-note">연결 상태를 확인합니다.</p>
     </section></div>
+    <section id="import-panel" class="import-panel" aria-label="저장 자료 불러오기">
+      <details id="import-details"><summary>저장 자료 불러오기 <span>세션 ZIP · 결과 폴더 · 동영상 · 프레임</span></summary>
+        <p>이 PC에서 처리합니다. 저장 지도는 바로 열고, 영상·프레임은 내용을 확인한 뒤 새로 복원합니다.</p>
+        <div id="import-drop" class="import-drop" tabindex="0" role="group" aria-label="자료 드롭 영역">
+          <strong>파일이나 폴더를 여기에 놓으세요</strong>
+          <div class="import-actions"><label>ZIP·동영상 선택<input id="import-file" type="file" accept=".zip,.mp4,.mov,.avi,.mkv"></label>
+          <label>폴더 선택<input id="import-folder" type="file" webkitdirectory multiple></label></div>
+          <small>세션은 session.json이 있는 최상위 폴더 전체를 선택하세요.</small>
+        </div>
+        <div class="import-actions"><button id="import-refresh" type="button">이 PC의 저장 기록 새로고침</button><select id="import-library" aria-label="이 PC의 저장 기록"><option value="">저장 기록 선택</option></select><button id="import-local" type="button">기록 확인</button></div>
+        <p id="import-status" role="status" aria-live="polite">자료를 선택하세요.</p>
+        <progress id="import-progress" hidden max="100"></progress>
+        <div id="import-summary" hidden><p id="import-info"></p><ul id="import-warnings"></ul>
+          <div id="import-options" hidden>
+            <label id="import-sampling">영상 추출 FPS <input id="import-sample-fps" type="number" value="2" min="0.1" max="30" step="0.1"></label>
+            <label id="import-frame-timing">프레임 촬영 FPS <input id="import-frame-fps" type="number" value="2" min="0.1" max="240" step="0.1"></label>
+            <label>이 입력에 맞는 보정 JSON (선택)<input id="import-camera" type="file" accept=".json"></label>
+            <p id="import-calibration-note">보정 파일이 없으면 카메라 값을 자체 추정합니다. 기존 드론 보정값은 자동으로 적용하지 않습니다.</p>
+            <label><input id="import-confirm" type="checkbox"> 영상의 카메라·해상도 또는 프레임 순서·FPS를 확인했습니다.</label>
+          </div>
+          <div class="import-actions"><button id="import-start" hidden>새 지도 복원 시작</button><a id="import-open" hidden>저장 지도 열기 ↗</a><button id="import-cancel" hidden>불러오기·복원 취소</button></div>
+        </div>
+      </details>
+      <div id="import-selected" hidden><strong id="import-selected-name"></strong><p id="import-selected-warnings"></p><select id="import-media" aria-label="저장 녹화 구간"></select><video id="import-video" controls playsinline hidden></video><a id="import-media-download" hidden download>녹화 파일 내려받기</a><p id="import-media-note" hidden>영상은 독립 재생합니다. 지도 시간 슬라이더는 저장된 지도 버전을 표시하며 영상과 자동 동기화하지 않습니다.</p></div>
+    </section>
     <div id="map-content" role="tabpanel" aria-labelledby="tab-saved">
     <section class="heading"><div><p class="eyebrow">VIDEO → SPATIAL RECONSTRUCTION</p><h1>영상 속 공간을, 입체로.</h1><p id="run-name">복원 결과를 불러오는 중입니다.</p></div>
       <a id="download" class="download" hidden download>지도 내려받기 <span>↗</span></a></section>

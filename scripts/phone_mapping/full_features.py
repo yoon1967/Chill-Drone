@@ -142,6 +142,11 @@ def _process_features(source, OUTPUT, *, export_only, pair_window, threads, max_
     reader = pycolmap.ImageReaderOptions()
     reader.camera_model = "SIMPLE_RADIAL"
     reader.default_focal_length_factor = 1.2
+    supplied_camera = source['capture_information'].get('camera', {})
+    if all(key in supplied_camera for key in ('fx', 'fy', 'cx', 'cy')):
+        reader.camera_model = 'OPENCV'
+        reader.camera_params = ','.join(str(supplied_camera[key]) for key in ('fx', 'fy', 'cx', 'cy')) + ',' + ','.join(
+            str(v) for v in supplied_camera.get('distortion', [0., 0., 0., 0.]))
     settings = {"extraction": extraction.todict(), "matching": matching.todict(),
                 "verification": verification.todict(), "reader": reader.todict(),
                 "camera_mode": "SINGLE", "device": "cpu", "pair_window_selected_frames": pair_window}
@@ -272,7 +277,7 @@ def _process_features(source, OUTPUT, *, export_only, pair_window, threads, max_
                 "coordinate_convention": "COLMAP native; stored image pixels with dimensions in frames_manifest.json; x right, y down; first pixel center (0.5,0.5); no manual offset",
                 "keypoint_id": "zero-based row index into DB keypoints/descriptors for that image",
                 "image_root_relative_to_full": relative_reference(image_dir, OUTPUT),
-                "camera_initialization": "One shared SIMPLE_RADIAL; uncalibrated heuristic f=1.2*max(width,height), centered principal point, k=0. Not measured calibration; refine during reconstruction.",
+                "camera_initialization": ("User supplied OPENCV intrinsics; fixed during reconstruction." if reader.camera_model == 'OPENCV' else "One shared SIMPLE_RADIAL; uncalibrated heuristic f=1.2*max(width,height), centered principal point, k=0. Not measured calibration; refine during reconstruction."),
                 "database_sha256": database_hash,
                 "input_transforms": {f["frameId"]: {k: f[k] for k in ("coded_width", "coded_height", "rotation_applied_ccw_degrees", "coded_to_processed_pixel_centers") if k in f} for f in selected},
                 "camera_records": camera_records,

@@ -291,7 +291,7 @@ def prepare_video_features(input_dir, features_dir, report_path):
     require(sha256(database) == metadata.get("database_sha256"), "Producer database checksum differs")
     verification = validate_features(input_dir, features, report_path=report_path)
     frames = read_json(features / "frames_manifest.json")["frames"]
-    run = {"input_mode": "video_features", "root": source["root"],
+    run = {"input_mode": "video_features", "root": source["root"], 'fixed_intrinsics': bool(source['manifest'].get('camera')),
            "manifest": {"input_run_id": source["run_id"]},
            "external": {"artifacts": {"database": {"sha256": metadata["database_sha256"]}}},
            "provenance": {"input_mode": "video_features", "input_manifest_sha256": source["manifest_sha256"],
@@ -349,6 +349,10 @@ def reconstruct(output, *, input_dir=None, features_dir=None, run_dir=None, asse
         options.mapper.random_seed = 42
         options.triangulation.random_seed = 42
         options.ba_use_gpu = False
+        if run.get('fixed_intrinsics'):
+            options.ba_refine_focal_length = False
+            options.ba_refine_principal_point = False
+            options.ba_refine_extra_params = False
         options.image_names = names
         write_json(output / "settings.json", options.todict())
         models = pycolmap.incremental_mapping(output / "database.db", images_root, output / "sparse", options)
