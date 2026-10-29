@@ -64,6 +64,7 @@ export async function connectCapture({onStart = () => {}, onStatus = () => {}, o
     $('tello-map-note').textContent = info.tello_map_mode === 'gateway'
       ? '조종 사이트에서 드론 영상을 먼저 켜세요. 같은 원본 영상으로 3D 지도를 생성합니다.'
       : '노트북 Wi-Fi를 Tello / RoboMaster TT에 연결하세요. 원본 카메라로 3D 지도를 생성하며 비행 조작은 하지 않습니다.';
+    if (info.tello_camera) $('tello-map-note').textContent += ' · 기존 실측 보정값 기본 적용';
   }
   const post = async (url, body, headers = {}) => {
     const response = await fetch(url, {method: 'POST', headers: {'X-Mapping-Client': '1', ...headers}, body, signal: AbortSignal.timeout(15000)});
@@ -76,6 +77,25 @@ export async function connectCapture({onStart = () => {}, onStatus = () => {}, o
     if (run.kind !== 'tello-map' || Date.now() < (run.nextHeartbeat || 0)) return;
     await post('/api/live/tello/heartbeat', JSON.stringify({session_id: run.session}), {'Content-Type': 'application/json'});
     run.nextHeartbeat = Date.now() + 2000;
+  }
+  async function telloState(run, path) {
+    try {
+      await heartbeat(run);
+      const response = await fetch(path + '?session=' + encodeURIComponent(run.session), {
+        signal: AbortSignal.any([run.controller.signal, AbortSignal.timeout(4000)])});
+      if (response.status >= 500) throw new Error('server_temporarily_unavailable');
+      const state = await response.json();
+      run.networkSince = null;
+      return {response, state};
+    } catch (error) {
+      if (!owns(run)) return null;
+      if (error.message === 'camera_session_mismatch') throw error;
+      run.networkSince ??= Date.now();
+      if (Date.now() - run.networkSince > 45000) throw new Error('tello_server_reconnect_timeout');
+      message('서버 연결 재시도 중 · 마지막 지도를 유지합니다.', 'reconnecting', run);
+      await new Promise((resolve) => setTimeout(resolve, 250));
+      return null;
+    }
   }
   const held = new Set();
   const axes = {a: [0, -1], d: [0, 1], s: [1, -1], w: [1, 1], arrowdown: [2, -1], arrowup: [2, 1], arrowleft: [3, -1], arrowright: [3, 1]};
@@ -243,7 +263,7 @@ export async function connectCapture({onStart = () => {}, onStatus = () => {}, o
       }
       const file = $('camera-calibration').files[0];
       if (!demo && file && file.size > 65536) throw new Error('보정 JSON은 64KB 이하 파일을 사용하세요.');
-      let camera = demo ? info.demo_camera : null;
+      let camera = demo ? info.demo_camera : kind === 'tello-map' ? info.tello_camera || null : null;
       if (!demo && file) {
         try { camera = JSON.parse(await file.text()); }
         catch { throw new Error('보정 JSON을 읽지 못했습니다. 올바른 JSON 파일인지 확인하세요.'); }
@@ -284,10 +304,13 @@ export async function connectCapture({onStart = () => {}, onStatus = () => {}, o
       } finally { creating = false; controls(); }
       const deadline = Date.now() + 65000;
       while (owns(run)) {
-        await heartbeat(run);
+        if (Date.now() > deadline) throw new Error('SLAM 시작 시간 초과');
+        if (!drone) await heartbeat(run);
         if (!owns(run)) return;
-        const response = await fetch('/api/live/state?session=' + encodeURIComponent(run.session), {signal: AbortSignal.any([run.controller.signal, AbortSignal.timeout(10000)])});
-        const state = await response.json();
+        const received = drone ? await telloState(run, '/api/live/state') : null;
+        if (drone && !received) continue;
+        const response = drone ? received.response : await fetch('/api/live/state?session=' + encodeURIComponent(run.session), {signal: AbortSignal.any([run.controller.signal, AbortSignal.timeout(10000)])});
+        const state = drone ? received.state : await response.json();
         if (!owns(run)) return;
         if (!response.ok) throw new Error(state.error || '영상 세션 상태를 읽지 못했습니다.');
         if (state.status === 'failed' || state.session_status === 'failed') throw new Error(state.last_error || 'SLAM 시작 실패');
@@ -300,10 +323,9 @@ export async function connectCapture({onStart = () => {}, onStatus = () => {}, o
       if (drone) {
         run.active = true; mapPreview.hidden = false;
         while (owns(run)) {
-          await heartbeat(run);
-          if (!owns(run)) return;
-          const response = await fetch('/api/live/state?session=' + encodeURIComponent(run.session), {signal: AbortSignal.any([run.controller.signal, AbortSignal.timeout(10000)])});
-          const state = await response.json();
+          const received = await telloState(run, '/api/live/tracking');
+          if (!received) continue;
+          const {response, state} = received;
           if (!owns(run)) return;
           if (!response.ok || state.session_status === 'failed' || state.status === 'failed') throw new Error(state.last_error || state.error || 'Tello 영상 처리가 종료됐습니다.');
           if (terminal(state) || state.session_status === 'stopping') { update(state); return; }
@@ -311,8 +333,9 @@ export async function connectCapture({onStart = () => {}, onStatus = () => {}, o
             run.previewSequence = state.last_input_sequence;
             mapPreview.src = '/api/live/tello-preview.jpg?session=' + encodeURIComponent(run.session) + '&sequence=' + state.last_input_sequence;
           }
-          message((state.input_origin === 'gateway_reported_fake' ? '검증용 게이트웨이 영상 · ' : 'Tello 수신 중 · ') + '입력 ' + (state.transport_received || 0) + '장 · SLAM 제출 ' + (state.transport_submitted || 0) + '장 · 대기 ' + (state.queue_depth || 0) + '/1', 'receiving', run);
-          await new Promise((resolve) => setTimeout(resolve, 500));
+          message(state.input_state === 'reconnecting' ? '영상 재연결 중 · 같은 지도에서 재위치를 찾습니다.' :
+            (state.input_origin === 'gateway_reported_fake' ? '검증용 게이트웨이 영상 · ' : 'Tello 수신 중 · ') + '입력 ' + (state.transport_received || 0) + '장 · SLAM 제출 ' + (state.transport_submitted || 0) + '장 · 대기 ' + (state.queue_depth || 0) + '/1', state.input_state === 'reconnecting' ? 'reconnecting' : 'receiving', run);
+          await new Promise((resolve) => setTimeout(resolve, 100));
         }
         return;
       }

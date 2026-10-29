@@ -14,6 +14,9 @@
 #include <cstdio>
 #include <fstream>
 #include <functional>
+#include <csignal>
+#include <execinfo.h>
+#include <unistd.h>
 #include <iomanip>
 #include <iostream>
 #include <limits>
@@ -27,6 +30,15 @@
 using json = nlohmann::json;
 using Clock = std::chrono::steady_clock;
 using namespace ORB_SLAM3;
+
+static void fatal_signal(int signal) {
+    const char message[] = "ORB_FATAL_SIGNAL\n";
+    ::write(STDERR_FILENO, message, sizeof(message)-1);
+    void* stack[40];
+    const int count = backtrace(stack, 40);
+    backtrace_symbols_fd(stack, count, STDERR_FILENO);
+    _exit(128 + signal);
+}
 
 static double seconds(Clock::time_point start) {
     return std::chrono::duration<double>(Clock::now()-start).count();
@@ -104,6 +116,8 @@ static bool export_map(System& slam, const std::string& root,
     }
     for(auto* k:keys) {
         if(!k || k->isBad() || k->GetMap()!=map) continue;
+        const auto pose = k->GetPose();
+        if (!pose.matrix().allFinite()) continue;
         const auto source=frames.find(k->mTimeStamp);
         if(source==frames.end()) continue;
         if(!stored.count(source->second.name)) {
@@ -119,7 +133,7 @@ static bool export_map(System& slam, const std::string& root,
         }
         keyframes.push_back({{"id",k->mnId},{"frame_id",source->second.name},
             {"timestamp_s",k->mTimeStamp},{"timestamp_source",source->second.clock},
-            {"T_cw",matrix(k->GetPose())},{"observations",observations}});
+            {"T_cw",matrix(pose)},{"observations",observations}});
     }
     json value={{"schema_version","orb-slam3/1.0"},{"revision",revision},
         {"map_id",map->GetId()},{"map_change_index",map->GetMapChangeIndex()},
@@ -138,6 +152,7 @@ static bool export_map(System& slam, const std::string& root,
 }
 
 int main(int argc,char** argv) {
+    for (int signal : {SIGABRT, SIGSEGV, SIGFPE}) std::signal(signal, fatal_signal);
     if(argc!=6) { std::cerr << "orb_video video camera.yaml output replay_rate max_seconds\n"; return 2; }
     const std::string root=argv[3];
     try {
@@ -218,6 +233,7 @@ int main(int argc,char** argv) {
             // Host transport allows at most one unacknowledged frame in Docker's stdin.
             if(streaming) std::cout << "ORB_ACK " << std::setprecision(17) << pts << std::endl;
             const int state=slam.GetTrackingState();
+            if (state == 2 && !pose.matrix().allFinite()) throw std::runtime_error("tracker_nonfinite_pose");
             const bool good=state==2 && pose.matrix().allFinite();
             if(state<=1) ++initializing; else if(!good) ++lost;
             const auto map_id=slam.GetAtlasForExport()->GetCurrentMap()->GetId();
@@ -259,7 +275,8 @@ int main(int argc,char** argv) {
                 previews.push_back(preview);
                 while(previews.size()>8 && !std::remove(previews.front().c_str())) previews.pop_front();
                 atomic_json(root+"/tracking.json",progress);
-                next_preview=seconds(start)+.2;
+                journal.flush();
+                next_preview=seconds(start)+.1;
             }
         }
         publisher.stop();

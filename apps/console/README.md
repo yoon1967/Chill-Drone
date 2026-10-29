@@ -5,6 +5,19 @@
 
 ## 설치와 실행
 
+Windows에서는 `scripts/start_3d_mapping.cmd`를 더블클릭해 실시간 지도 사이트를 연다.
+Docker Desktop의 Linux 엔진과 아래 Python·웹 의존성을 먼저 준비한다. 실행기는
+현재 체크아웃의 서버·화면·실측 Tello 보정값을 읽고, SLAM 이미지의 소스 해시를 확인한다.
+이미지가 없거나 C++/빌드 소스가 달라졌으면 자동으로 빌드한 뒤 사이트를 연다.
+같은 버전이면 이미지를 재사용하며 기존 서버·컨테이너는 종료하지 않는다.
+첫 빌드에는 수 분이 걸릴 수 있으므로 드론 Wi-Fi로 전환하기 전에 인터넷이 있는 상태에서 실행한다.
+Docker가 꺼져 있거나 빌드가 실패하면 원인과 재실행 방법을 표시한다.
+영상·저장 결과를 CMD에 드롭하는 조회 경로는 Docker 준비 없이 기존 파이프라인을 사용한다.
+
+원격 develop 머지만으로 다른 PC의 파일이 갱신되지는 않는다. 로컬 develop을 업데이트한 뒤
+CMD를 다시 실행한다. 실행 중인 이전 CMD/브라우저 페이지에는 변경이 소급 적용되지 않는다.
+실행기 자체는 브랜치를 바꾸거나 git pull을 수행하지 않는다.
+
 검증 환경: Python 3.12.14, Node.js 24.19.0, pnpm 11.25.0, Three.js 0.180.0, Chromium 기반 브라우저.
 웹 서버는 Python 표준 라이브러리만 사용한다. Three.js는 설치 후 로컬에서 제공하므로
 뷰어를 열 때 CDN·외부 API에 실제 자료를 보내지 않는다.
@@ -60,7 +73,8 @@ docker build -t ssafy-orbslam3:local -f modules/mapping/localization/orbslam3/Do
 계산한 값을 웹캠에 재사용하지 않는다. `width`, `height`, `fx`, `fy`, `cx`, `cy`는 유한한 숫자이며
 `distortion`을 제공하면 `[k1, k2, p1, p2]` 숫자 4개다. 서버는 같은 비율의 전송 크기에 맞춰 내부 파라미터를
 조절한다. 크기·초점거리·주점·왜곡 값이 잘못되면 SLAM 시작 전에 거부한다.
-파일이 없으면 입력한 수평 화각을 사용하며 **화각 추정 · 미보정**을 표시한다. 실측 미터 단위나 치수 정확도를 보장하지 않는다.
+PC 카메라에 파일이 없으면 입력한 수평 화각을 사용하며 **화각 추정 · 미보정**을 표시한다.
+Tello 입력은 아래 실측 기본값을 사용한다. 실측 미터 단위나 치수 정확도를 보장하지 않는다.
 
 정상 입력 후 지도가 초기화되기 전에 중단하면 **생성 전 종료**와 빈 점군을 표시할 수 있다.
 `complete`는 입력 처리가 종료됐다는 뜻이며 `map_available`로 3D 생성 여부를 따로 확인한다.
@@ -69,13 +83,45 @@ docker build -t ssafy-orbslam3:local -f modules/mapping/localization/orbslam3/Do
 
 ## Tello 카메라로 실시간 지도 생성
 
+기본 보정은 `data/mapping/tello/20261028/v1/camera.json`의 TELLO-59FA6D,
+960×720 원본 스트림 실측값이다. 매번 파일을 선택하지 않아도 적용되며 세션의
+`camera.json`, `camera.yaml`, `settings.json`에 적용값이 남는다. 다른 기체·크롭에는
+`--tello-camera <보정 JSON>` 또는 기존 보정 파일 선택으로 교체한다.
+
+일시 입력 중단은 최대 30초 동안 같은 세션에서 복구한다. 직접 수신은 잠깐의
+영상 공백을 기다리고 5초간 새 프레임이 없으면 소켓을 정리한 뒤 재연결한다.
+중계 입력은 HTTP/MJPEG를 다시 열며 중계 서버의 시작·종료·비행 명령을 보내지 않는다.
+복귀한 영상은 같은 증가 시간축으로 제출하며 중단 중의 오래된 프레임을 재사용하지 않는다.
+페이지와 서버 사이 연결은 최대 45초 재시도한다. 사용자 종료와 페이지 이탈은 복구를 취소한다.
+
+0.75초 이상 영상 공백 뒤에는 기존 지도 재위치를 먼저 탐색한다. 추적 상실 뒤
+재위치 탐색 유예는 복귀 프레임부터 15초이며, 그 안에 같은 공간을 찾지 못하면
+새 지도 구간으로 갈 수 있다. 이전 구간의 revision과 `segments.json`은 보존한다.
+서로 정렬되지 않은 좌표계를 한 지도인 것처럼 합치지 않는다. 시간 슬라이더로
+이전 구간을 조회할 수 있다. 영상 복구는 성공해도 기존 지도 재위치가 항상 성공하는 것은 아니다.
+
+추적 영상은 지도 변환과 별도 작업·100ms 조회로 갱신한다. 이미지 URL은 실제
+처리 프레임 ID와 세션을 고정하며, 이미 만료된 프레임을 다른 이미지로 바꿔 응답하지 않는다.
+원본 영상과 처리 영상은 서로 다른 시점을 표시할 수 있으므로 처리 시각,
+수신→추적 시간, 마지막 처리 후 경과 시간으로 최신성을 확인한다.
+이 시간은 드론 촬영 시각부터의 지연이나 입력→지도 표시 지연과 다르다.
+
+수치 오류가 생겨도 마지막 유효 지도는 유지하고 `diagnostics.json`과 `orb.log`에
+진단을 남긴다. 고정 ORB-SLAM3 버전의 Sim3 영 회전 나눗셈을 단위 quaternion
+계산으로 교체하고 퇴화·비유한 샘플은 거부한다. 새 코드를 적용한 서버와 아래
+명령으로 다시 빌드한 Docker 이미지가 필요하다. 기존 실행 중인 서버/컨테이너에 소급 적용되지 않는다.
+
+```powershell
+docker build -t ssafy-orbslam3:local modules/mapping/localization/orbslam3
+```
+
 실시간 지도 탭의 **Tello · 실시간 3D 지도**는 기존 ORB-SLAM3 입력에 원본 카메라 프레임을
 연결한다. **Tello / RoboMaster TT · 사람 탐지**는 별도 탐지 화면이며 지도 생성 입력과 구분한다.
 지도 입력은 YOLO를 실행하거나 탐지 상자·윤곽선이 그려진 영상을 사용하지 않는다.
 
 Windows Git Bash에서 실행한다. 기존 프로젝트 Python·Three.js와 Docker 이미지 외에
-직접 Wi-Fi 연결에는 `av`와 `Pillow`가 필요하다. 설치되어 있지 않으면
-`./.venv/Scripts/python.exe -m pip install av Pillow`로 준비한다.
+직접 Wi-Fi 연결에는 `av`, `Pillow`, `opencv-python`이 필요하다. 설치되어 있지 않으면
+`./.venv/Scripts/python.exe -m pip install av Pillow opencv-python`로 준비한다.
 
 ```bash
 ./.venv/Scripts/python.exe -B apps/console/serve.py --enable-camera --enable-tello-map --port 8790

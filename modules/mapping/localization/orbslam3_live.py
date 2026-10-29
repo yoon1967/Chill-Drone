@@ -2,16 +2,16 @@
 from __future__ import annotations
 
 import math
+import io
 from pathlib import Path
 import subprocess
 import threading
 import time
 import uuid
 
-import cv2
-import numpy as np
+from PIL import Image, UnidentifiedImageError
 
-from .orbslam3 import IMAGE, SessionPublisher, atomic_json, read_json, write_settings
+from .orbslam3 import IMAGE, SessionPublisher, atomic_json, read_json, write_settings, render_preview, camera_matrix, replace_file
 
 
 def require_slam_image():
@@ -101,6 +101,7 @@ class LiveSession:
         self.last_sequence, self.last_pts, self.ack = -1, -1., -1.
         self.last_input = time.monotonic()
         self.received = self.dropped = self.submitted = 0
+        self.inflight = None
         self.path.mkdir(parents=True)
         (self.path / "revisions").mkdir()
         atomic_json(self.path / "camera.json", camera)
@@ -110,6 +111,9 @@ class LiveSession:
             "frame_policy": "latest_one_pending; one_inflight_until_tracker_ACK", "dense_surface": False})
         write_settings(self.path / "camera.yaml", camera, 1800)
         self.publisher = SessionPublisher(self.path, camera)
+        self.publisher.preview_enabled = False
+        self.previews = {}
+        self.preview_progress = {}
         self.publisher.state["calibration_status"] = camera["calibration_status"]
         self.worker = threading.Thread(target=self._run, daemon=True, name=self.id)
         self.worker.start()
@@ -122,6 +126,15 @@ class LiveSession:
                     "session_id": self.id, "session_status": lifecycle,
                     "input": getattr(self, "input_kind", "browser_camera"),
                     "input_origin": getattr(self, "input_origin", "local_camera" if getattr(self, "input_kind", "browser_camera") == "browser_camera" else "not_connected"),
+                    "input_state": getattr(self, "input_state", "receiving" if self.ready else "connecting"),
+                    "input_error": getattr(self, "input_error", None), "reconnects": getattr(self, "reconnects", 0),
+                    "input_age_s": max(0, time.monotonic() - self.last_input) if hasattr(self, 'last_input') else None,
+                    "processed_input_timestamp_s": getattr(self, 'processed_pts', None),
+                    "receive_to_track_ms": getattr(self, 'receive_to_track_ms', None),
+                    "tracker_age_s": max(0, time.monotonic() - self.last_ack_mono) if hasattr(self, 'last_ack_mono') else None,
+                    "numerical_rejections": getattr(self, 'numerical_rejections', 0),
+                    "last_error": self.error,
+                    "preview_error": getattr(self, 'preview_error', None),
                     "input_timestamp_basis": getattr(self, "timestamp_basis", "browser_media_time"), "transport_ready": self.ready,
                     "transport_active": not self.done, "transport_stopping": self.closing,
                     "transport_received": self.received, "transport_submitted": self.submitted,
@@ -135,8 +148,13 @@ class LiveSession:
             raise ValueError("invalid_frame_timestamp_or_sequence")
         if len(jpeg) > 2097152 or not jpeg.startswith(b"\xff\xd8"):
             raise ValueError("invalid_or_oversized_jpeg")
-        frame = cv2.imdecode(np.frombuffer(jpeg, dtype=np.uint8), cv2.IMREAD_COLOR)
-        if frame is None or frame.shape[:2] != (self.camera["height"], self.camera["width"]):
+        # Inspect JPEG headers without decoding pixels a second time on the host.
+        try:
+            with Image.open(io.BytesIO(jpeg)) as image:
+                valid = image.format == 'JPEG' and image.size == (self.camera['width'], self.camera['height'])
+        except (UnidentifiedImageError, OSError, ValueError):
+            valid = False
+        if not valid or not jpeg.endswith(b'\xff\xd9'):
             raise ValueError("frame_dimensions_do_not_match_calibration")
         with self.condition:
             if self.closing or self.done or not self.ready:
@@ -147,13 +165,14 @@ class LiveSession:
             self.last_pts, self.last_sequence = pts, sequence
             self.received += 1
             self.last_input = time.monotonic()
-            self.pending = (jpeg, pts)
+            self.pending = (jpeg, pts, self.last_input)
             self.condition.notify_all()
         return self.stats()
 
     def stop(self, reason="user_stop"):
         with self.condition:
             self.closing, self.reason = True, reason
+            self.pending = None
             self.condition.notify_all()
 
     def _write(self, process):
@@ -161,14 +180,15 @@ class LiveSession:
             while True:
                 with self.condition:
                     self.condition.wait_for(lambda: self.pending is not None or self.closing or process.poll() is not None, timeout=1)
-                    if process.poll() is not None:
+                    if process.poll() is not None or self.closing:
                         break
                     if self.pending is None:
                         if self.closing:
                             break
                         continue
-                    jpeg, pts = self.pending
+                    jpeg, pts, accepted = self.pending
                     self.pending = None
+                    self.inflight = (pts, accepted)
                 packet = memoryview(f"{len(jpeg)} {pts:.17g}\n".encode("ascii") + jpeg)
                 while packet:
                     written = process.stdin.write(packet)
@@ -178,12 +198,12 @@ class LiveSession:
                 process.stdin.flush()
                 with self.condition:
                     self.submitted += 1
-                    acknowledged = self.condition.wait_for(lambda: self.ack >= pts or process.poll() is not None, timeout=15)
+                    acknowledged = self.condition.wait_for(lambda: self.ack >= pts or process.poll() is not None or self.closing or self.error, timeout=15)
                     if not acknowledged:
                         raise RuntimeError("tracker_ack_timeout")
         except (OSError, RuntimeError) as error:
-            self.error = str(error)
-            self.stop("transport_error")
+            self.error = self.error or str(error)
+            self.stop(self.reason if self.closing else "transport_error")
         finally:
             try:
                 process.stdin.close()
@@ -198,14 +218,62 @@ class LiveSession:
                 log.write(line)
                 if line.startswith(b"ORB_ACK "):
                     with self.condition:
-                        self.ack = float(line.split()[1])
+                        try:
+                            self.ack = float(line.split()[1])
+                        except (ValueError, IndexError):
+                            continue
+                        self.last_ack_mono = time.monotonic()
+                        self.processed_pts = self.ack
+                        if getattr(self, 'inflight', None) and self.inflight[0] == self.ack:
+                            self.receive_to_track_ms = (self.last_ack_mono - self.inflight[1]) * 1000
                         self.condition.notify_all()
+                elif b'SSAFY_SIM3_REJECT' in line:
+                    self.numerical_rejections = getattr(self, 'numerical_rejections', 0) + 1
+                elif b'SO3::exp failed' in line or b'Sophus ensure failed' in line or b'tracker_nonfinite_pose' in line:
+                    self.error = 'tracker_numerical_failure'
+                    self.stop('tracker_numerical_failure')
+                elif b'ORB_FATAL_SIGNAL' in line:
+                    self.error = self.error or 'tracker_process_crashed'
+                    self.stop(self.error)
         finally:
             log.close()
 
+    def _preview_loop(self):
+        # Preview work must never wait for geometric confirmation/map conversion.
+        import cv2
+        import numpy as np
+        remap = cv2.initUndistortRectifyMap(camera_matrix(self.camera), np.array(self.camera['distortion']),
+            None, camera_matrix(self.camera), (self.camera['width'], self.camera['height']), cv2.CV_32FC1)
+        last = None
+        while not self.done:
+            progress = read_json(self.path / 'tracking.json')
+            if progress and progress.get('frame_id') and progress['frame_id'] != last:
+                try:
+                    data = render_preview(self.path, progress, self.camera, remap)
+                except (OSError, ValueError, cv2.error) as error:
+                    self.preview_error = type(error).__name__
+                    time.sleep(.1)
+                    continue
+                if data is not None:
+                    last = progress['frame_id']
+                    with self.condition:
+                        self.previews[last] = data
+                        while len(self.previews) > 8:
+                            del self.previews[next(iter(self.previews))]
+                        self.preview_progress = {k: v for k, v in progress.items() if k not in {'features', 'T_cw'}}
+                        self.preview_error = None
+                    # Keep the last valid rendered image for reopening a stopped session.
+                    temporary = self.path / 'preview.tmp.jpg'
+                    try:
+                        temporary.write_bytes(data)
+                        replace_file(temporary, self.path / 'preview.jpg')
+                    except OSError as error:
+                        self.preview_error = 'preview_save_' + type(error).__name__
+            time.sleep(.05)
+
     def _run(self):
         name = "ssafy-orb-" + uuid.uuid4().hex[:12]
-        process = reader = writer = log = None
+        process = reader = writer = log = preview_worker = None
         try:
             command = ["docker", "run", "--rm", "-i", "--name", name, "--network", "none", "--cap-drop", "ALL",
                 "--security-opt", "no-new-privileges", "--cpus", "6", "--memory", "8g",
@@ -224,15 +292,21 @@ class LiveSession:
                 time.sleep(.1)
             self.ready = True
             self.last_input = time.monotonic()
+            if hasattr(self, 'previews'):
+                preview_worker = threading.Thread(target=self._preview_loop, daemon=True, name=self.id + '-preview')
+                preview_worker.start()
             writer = threading.Thread(target=self._write, args=(process,), daemon=True)
             writer.start()
             while process.poll() is None:
-                if not self.closing and time.monotonic() - self.last_input > 10:
+                limit = 40 if getattr(self, 'input_kind', '') == 'tello_camera' else 10
+                if not self.closing and time.monotonic() - self.last_input > limit:
                     self.stop("input_timeout")
                 self.publisher.update(self.stats())
                 if self.error:
                     raise RuntimeError(self.error)
                 time.sleep(.15)
+            with self.condition:
+                self.condition.notify_all()
             writer.join(timeout=2)
             reader.join(timeout=2)
             self.publisher.update(self.stats())
@@ -240,9 +314,9 @@ class LiveSession:
             # stop is a completed empty recording, not a camera/transport failure.
             empty_stop = process.returncode == 3 and self.closing and self.publisher.revision == 0
             if process.returncode and not empty_stop:
-                raise RuntimeError("tracker_failed_or_no_initialized_map; see local orb.log")
+                raise RuntimeError(self.error or "tracker_failed_or_no_initialized_map; see local orb.log")
         except Exception as error:
-            self.error = str(error)
+            self.error = self.error or str(error)
             if process and process.poll() is None:
                 subprocess.run(["docker", "stop", "-t", "3", name], stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL, timeout=15)
                 process.wait(timeout=15)
@@ -254,6 +328,13 @@ class LiveSession:
             elif log:
                 log.close()
             self.done, self.ready = True, False
+            if preview_worker:
+                preview_worker.join(timeout=3)
+            if self.error:
+                atomic_json(self.path / 'diagnostics.json', {'error': self.error,
+                    'stop_reason': self.reason, 'last_submitted_pts': self.last_pts,
+                    'last_ack_pts': getattr(self, 'ack', -1), 'last_valid_revision': self.publisher.revision,
+                    'backend_log': 'orb.log', 'maps_preserved': True})
             self.publisher.state.update(self.stats(), status="failed" if self.error else "complete",
                                         last_error=self.error, input=getattr(self, "input_kind", "browser_camera"))
             atomic_json(self.path / "state.json", self.publisher.state)

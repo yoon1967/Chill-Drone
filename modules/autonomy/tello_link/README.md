@@ -7,7 +7,7 @@ PC에서 Wi-Fi로 Tello EDU에 SDK 명령을 보내고, 상태·영상을 받는
 | 파일 | 역할 | 의존성 |
 | --- | --- | --- |
 | `tello_link.py` | 명령 송수신, 상태 파싱, 명령 차단, 회차 로그 | 표준 라이브러리 |
-| `tello_video.py` | UDP 11111 H.264 수신·디코딩, 최신 1장 유지 | PyAV, Pillow |
+| `tello_video.py` | UDP 11111 H.264 수신·디코딩, 최신 1장 유지 | PyAV, OpenCV |
 | `flight_control.py` | 수동 조작: 이륙 전 점검, 데드맨, 속도·높이 상한, 자동 착륙 | 표준 라이브러리 |
 | `check_server.py` + `static/index.html` | 연결 점검·조작 웹 화면 | FastAPI, uvicorn |
 | `fake_tello.py` | 드론 없이 시험하는 가짜 Tello(UDP) | 영상은 PyAV, numpy |
@@ -258,6 +258,6 @@ pose는 만들지 않는다(`manifest.files.pose = null`).
 
 ## 라이선스
 
-FastAPI(MIT), uvicorn(BSD-3), PyAV(BSD-3), Pillow(MIT-CMU), numpy(BSD-3).
+FastAPI(MIT), uvicorn(BSD-3), PyAV(BSD-3), Pillow(MIT-CMU), OpenCV(Apache-2.0), numpy(BSD-3).
 PyAV 휠에는 FFmpeg 바이너리가 들어 있고, 빌드 구성에 따라 GPL 구성 요소(libx264 등)가 포함될 수 있다.
 이 저장소는 휠을 재배포하지 않고 의존성으로만 선언한다. 바이너리를 묶어 배포할 때는 다시 확인한다.

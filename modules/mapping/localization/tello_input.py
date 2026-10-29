@@ -7,14 +7,26 @@ from __future__ import annotations
 
 import json
 import math
+from pathlib import Path
 import threading
 import time
-from urllib.error import HTTPError
+from urllib.error import HTTPError, URLError
 from urllib.parse import urlsplit
 from urllib.request import HTTPRedirectHandler, ProxyHandler, Request, build_opener
 
 from .orbslam3_live import live_camera
 from .orbslam3 import atomic_json, read_json
+
+DEFAULT_CAMERA = Path(__file__).resolve().parents[3] / 'data/mapping/tello/20261028/v1/camera.json'
+
+
+def retryable(error):
+    if isinstance(error, HTTPError):
+        return error.code in {408, 429, 500, 502, 503, 504}
+    return isinstance(error, (OSError, URLError)) or str(error) in {
+        'tello_video_timeout_check_wifi_and_udp', 'tello_sdk_unavailable_check_wifi',
+        'tello_streamon_failed', 'tello_gateway_video_off_or_stale',
+        'tello_gateway_stream_ended', 'tello_gateway_session_changed'}
 
 
 class InputError(RuntimeError):
@@ -103,6 +115,9 @@ class DirectCamera:
                 yield jpeg, last
             elif time.monotonic() - last_new > 5:
                 raise InputError("tello_video_timeout_check_wifi_and_udp")
+            elif time.monotonic() - last_new > .75:
+                yield None, time.monotonic()
+                time.sleep(.05)
             else:
                 time.sleep(.015)
 
@@ -117,6 +132,8 @@ class DirectCamera:
             finally:
                 if self.link:
                     self.link.close()
+                self.link = self.video = None
+                self.stream_requested = False
 
 
 class GatewayCamera:
@@ -176,16 +193,19 @@ class GatewayCamera:
     def close(self):
         if self.response:
             self.response.close()
+            self.response = None
 
 
 class TelloMapInput:
-    def __init__(self, live, gateway=None, source_factory=None):
+    def __init__(self, live, gateway=None, source_factory=None, *, camera=None, recovery_seconds=30):
         self.live, self.gateway = live, gateway_address(gateway) if gateway else None
         self.source_factory = source_factory or (lambda: GatewayCamera(self.gateway) if self.gateway else DirectCamera())
         self.lock = threading.Lock()
         self.worker = self.session = None
         self.preview = None
         self.lease_until = 0
+        self.camera = json.loads(DEFAULT_CAMERA.read_text(encoding='utf-8')) if camera is None else camera
+        self.recovery_seconds = recovery_seconds
 
     @property
     def busy(self):
@@ -193,7 +213,8 @@ class TelloMapInput:
 
     def start(self, config):
         # The current Tello receiver has one fixed full-frame 960x720 camera mode.
-        config = {**config, "width": 960, "height": 720, "fps": 24}
+        config = {**config, "camera": self.camera if config.get('camera') is None else config['camera'],
+                  "width": 960, "height": 720, "fps": 24}
         live_camera(config)  # reject bad calibration before any SDK or Docker action
         with self.lock:
             if self.worker and self.worker.is_alive():
@@ -202,7 +223,7 @@ class TelloMapInput:
             state = self.live.start(config, input_kind="tello_camera", timestamp_basis=source.time_basis)
             session = self.live.require(state["session_id"])
             self.session, self.preview = session, None
-            self.lease_until = time.monotonic() + 15
+            self.lease_until = time.monotonic() + 45
             self.worker = threading.Thread(target=self._run, args=(session, source), daemon=True,
                                            name="tello-map-input")
             self.worker.start()
@@ -213,7 +234,7 @@ class TelloMapInput:
             if not self.session or self.session.id != session_id:
                 raise InputError("camera_session_mismatch")
             if not self.session.closing and not self.session.done:
-                self.lease_until = time.monotonic() + 15
+                self.lease_until = time.monotonic() + 45
             return {"session_id": session_id}
 
     def _run(self, session, source):
@@ -224,29 +245,66 @@ class TelloMapInput:
                 session.stop("tello_client_timeout")
                 return True
             return False
+        base, sequence, last_stamp, missing_since = None, 0, -math.inf, None
+        session.input_state = 'connecting'
         try:
-            source.open(cancelled)
-            if cancelled():
-                return
-            session.input_origin = getattr(source, "source_label", "test_source")
-            settings = session.path / "settings.json"
-            if settings.is_file():
-                atomic_json(settings, {**read_json(settings), "input_origin": session.input_origin,
-                    "tello_input_mode": "gateway" if self.gateway else "direct"})
-            base, sequence = None, 0
-            for jpeg, stamp in source.frames(cancelled):
-                if cancelled():
-                    break
-                with self.lock:
-                    self.preview = (session.id, jpeg, time.monotonic())
-                if not session.ready:
-                    continue  # receiver keeps latest only while SLAM is starting
-                if base is None:
-                    base = stamp
-                session.offer(jpeg, stamp - base, sequence)
-                sequence += 1
+            while not cancelled():
+                try:
+                    source.open(cancelled)
+                    if cancelled():
+                        break
+                    session.input_origin = getattr(source, "source_label", "test_source")
+                    settings = session.path / "settings.json"
+                    if settings.is_file():
+                        atomic_json(settings, {**read_json(settings), "input_origin": session.input_origin,
+                            "tello_input_mode": "gateway" if self.gateway else "direct"})
+                    for jpeg, stamp in source.frames(cancelled):
+                        if cancelled():
+                            break
+                        if jpeg is None:
+                            if missing_since is None:
+                                missing_since = time.monotonic()
+                            session.input_state = 'reconnecting'
+                            if time.monotonic() - missing_since >= self.recovery_seconds:
+                                raise InputError('tello_reconnect_timeout')
+                            continue
+                        if stamp <= last_stamp:
+                            continue
+                        last_stamp = stamp
+                        with self.lock:
+                            self.preview = (session.id, jpeg, time.monotonic())
+                        if missing_since is not None:
+                            session.reconnects = getattr(session, 'reconnects', 0) + 1
+                        missing_since = None
+                        session.input_state, session.input_error = 'receiving', None
+                        if not session.ready:
+                            continue
+                        if base is None:
+                            base = stamp
+                        session.offer(jpeg, stamp - base, sequence)
+                        sequence += 1
+                    if not cancelled():
+                        raise InputError('tello_gateway_stream_ended')
+                except Exception as error:
+                    if cancelled():
+                        break
+                    if not retryable(error):
+                        raise
+                    if missing_since is None:
+                        missing_since = time.monotonic()
+                    session.input_state, session.input_error = 'reconnecting', str(error)
+                    if time.monotonic() - missing_since >= self.recovery_seconds:
+                        raise InputError('tello_reconnect_timeout') from error
+                finally:
+                    source.close()
+                # Cancelable backoff; never create a second receiver while the old one owns ports.
+                until = time.monotonic() + .25
+                while not cancelled() and time.monotonic() < until:
+                    time.sleep(.025)
+                source = self.source_factory()
         except Exception as error:
             if not cancelled():
+                session.input_state = 'failed'
                 session.error = str(error) if isinstance(error, InputError) else "tello_input_unavailable: " + type(error).__name__
                 session.stop("tello_input_disconnected")
         finally:

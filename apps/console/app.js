@@ -6,6 +6,7 @@ import { MapSource, monitorConnections } from '/map-source.js';
 import { updatePointGrid, pointSpacingProfile, pointGridCells, displayPointCells } from '/point-grid.js';
 import { applySceneDelta } from '/map-delta.js';
 import { FrameLatency } from '/frame-latency.js';
+import { connectTrackingPreview, trackingDescription } from '/tracking-preview.js';
 const $ = (id) => document.getElementById(id);
 const connections = monitorConnections();
 const number = (n) => Number(n).toLocaleString('ko-KR');
@@ -15,7 +16,7 @@ let center, radius = 1, fullCenter, fullRadius = 1, direction;
 let currentIndex = 0, playing = false, previousTime = 0,
   mode = new URLSearchParams(location.search).get('mode') === 'hologram' ? 'hologram' : 'objects';
 let navigating = false, dragging = false, busy = null, revision = null;
-let pollDelay = 2000, previewFrame = null;
+let pollDelay = 2000;
 let pollTimer, captureState = {state: 'idle'}, captureHandle, lastLiveState = {};
 const source = new MapSource(location.hash === '#live' ? 'live' : 'saved');
 const views = new Map();
@@ -122,7 +123,7 @@ function selectSource(next, force = false) {
   source.select(next);
   clearTimeout(pollTimer);
   resetReplay();
-  revision = previewFrame = null;
+  revision = null;
   renderTimes.length = 0;
   pollDelay = next === 'live' ? 500 : 2000;
   mode = views.get(next)?.mode || (new URLSearchParams(location.search).get('mode') === 'hologram' ? 'hologram' : next === 'saved' ? 'objects' : 'points');
@@ -764,23 +765,18 @@ function showState(state) {
   if (state.backend === 'orb_slam3_monocular') {
     pollDelay = 250;
     $('slam-panel').hidden = false;
-    const names = {2: '추적 중', 3: '재위치 탐색', 4: '추적 상실'};
-    $('slam-tracking-state').textContent = names[state.tracking_state] || '초기화 중';
-    const tracking = state.frame_tracking || {};
-    $('slam-timing').textContent = `지도 점 ${tracking.tracked_features || 0}개 · 직전 프레임과 동일 ${tracking.reused_features || 0}개 · 추적 ${Number(state.tracking_ms || 0).toFixed(1)}ms · 재생 지연 ${Number(state.input_lag_seconds || 0).toFixed(2)}초`;
-    $('slam-tracking-state').textContent = replay.following ? state.status === 'complete' ? '추적 종료' : state.status === 'failed' ? '추적 중단' : names[state.tracking_state] || '초기화 중' : '기록 재생';
+    const description = trackingDescription(state);
+    $('slam-timing').textContent = replay.following ? description.detail : '기록 재생 · 선택한 지도 버전의 촬영 키프레임';
+    $('slam-tracking-state').textContent = replay.following ? description.label : '기록 재생';
     $('slam-preview-note').textContent = replay.following ?
       '노란 점: 직전 처리 프레임과 같은 지도 점 · 초록 점: 이번에 연결된 지도 점 · 숫자: 지도 점 ID' :
       '선택한 지도 버전의 촬영 키프레임입니다. 점군·경로는 그 시점에 실제로 저장된 지도 전체로 교체합니다.';
-    if (replay.following && state.frame_id && state.frame_id !== previewFrame) {
-      previewFrame = state.frame_id;
-      $('slam-preview').src = `/api/live/slam-preview?frame=${encodeURIComponent(previewFrame)}&session=${encodeURIComponent(state.session_id)}`;
-    }
     const pendingMap = state.map_available && state.map_id !== state.segment_id ? ' · 새 좌표계 준비, 마지막 지도 유지' : '';
+    const segments = state.segments?.length || new Set(replay.entries.map(entry => entry.map_id)).size;
     $('stream-state').textContent = `${state.status === 'complete' ? '영상 종료' : state.status === 'failed' ? '실행 실패' : '영상 추적'} · 처리 ${state.frames_received || 0}장 · 정상 추적 ${state.tracked_frames || 0}장 · 초기화 ${state.initializing_frames || 0}장 · 추적 상실 ${state.lost_tracking_frames || 0}장 · 지도 ${state.revision || 0}회 갱신${pendingMap}${state.input === 'browser_camera' ? ` · 입력 누락/대기 교체 ${state.frame_drops || 0}장 · 대기 ${state.queue_depth || 0}/1` : ''}`;
     $('incremental-state').hidden = false;
     const calibration = state.calibration_status || run?.slam?.calibration_status || '';
-    $('incremental-state').textContent = `추적 P95 ${Number(state.tracking_p95_ms || 0).toFixed(1)}ms · 재생 지연 P95 ${Number(state.input_lag_p95_seconds || 0).toFixed(2)}초 · 단안 임의 단위${calibration.includes('fov_estimated') ? ' · 화각 추정/미보정' : calibration.includes('self_estimated') ? ' · 카메라 보정값 자체 추정' : ''}`;
+    $('incremental-state').textContent = `추적 P95 ${Number(state.tracking_p95_ms || 0).toFixed(1)}ms · ${segments}개 지도 구간 보존${segments > 1 ? ' · 시간 슬라이더에서 이전 구간 조회' : ''} · 단안 임의 단위${calibration.includes('fov_estimated') ? ' · 화각 추정/미보정' : calibration.includes('self_estimated') ? ' · 카메라 보정값 자체 추정' : ''}`;
     return;
   }
   const incremental = state.objects?.update_mode === 'incremental_keyframe';
@@ -859,7 +855,7 @@ $('play').addEventListener('click', () => {
 $('timeline').addEventListener('input', (e) => { playing = false; seekReplay(Number(e.target.value)); });
 $('replay-reset').addEventListener('click', () => { playing = false; seekReplay(0); });
 $('live-follow').addEventListener('click', () => {
-  playing = false; replay.following = true; replay.generation++; revision = null; previewFrame = null; replayControls();
+  playing = false; replay.following = true; replay.generation++; revision = null; replayControls();
 });
 $('frame-timeline').addEventListener('input', (e) => { if (run) selectFrame(Number(e.target.value)); });
 $('point-size').addEventListener('input', (e) => { if (cloud) cloud.material.size = Number(e.target.value); });
@@ -996,6 +992,7 @@ document.querySelectorAll('[data-source]').forEach((tab) => {
 });
 window.addEventListener('hashchange', () => selectSource(location.hash === '#live' ? 'live' : 'saved'));
 selectSource(source.source, true);
+connectTrackingPreview({source, following: () => replay.following});
 connectCapture({
   onStart(id) {
     frameLatency.start(id); pendingPresentation = null; latencyStatus();

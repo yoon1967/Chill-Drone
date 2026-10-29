@@ -1,12 +1,11 @@
 """Tello 영상(UDP 11111, H.264) 수신. 최신 프레임 1장만 유지한다.
 
-PyAV(av)로 원시 UDP 바이트를 직접 파싱·디코딩한다. JPEG 변환에는 Pillow를 쓴다.
+PyAV(av)로 원시 UDP 바이트를 직접 파싱·디코딩한다. JPEG 변환에는 OpenCV를 쓴다.
 `streamon` 명령은 TelloLink로 따로 보낸다. 이 클래스는 받기만 한다.
 """
 
 from __future__ import annotations
 
-import io
 import socket
 import threading
 import time
@@ -26,7 +25,7 @@ class TelloVideo:
         self._frame_mono: float | None = None
         self._frame_wall: float | None = None
         self._frame_times: deque = deque(maxlen=60)
-        self._jpeg_cache: tuple[float, bytes] | None = None
+        self._jpeg_cache: tuple[float, int, bytes] | None = None
         self.started_mono: float | None = None
         self.packets = 0
         self.bytes = 0
@@ -105,13 +104,16 @@ class TelloVideo:
                 cache = self._jpeg_cache
             if frame is None:
                 return None
-            if cache and cache[0] == stamp:
-                return cache[1], stamp, wall
-            buf = io.BytesIO()
-            frame.to_image().save(buf, format="JPEG", quality=quality)
-            data = buf.getvalue()
+            if cache and cache[:2] == (stamp, quality):
+                return cache[2], stamp, wall
+            import cv2
+            ok, encoded = cv2.imencode('.jpg', frame.to_ndarray(format='bgr24'),
+                                       [cv2.IMWRITE_JPEG_QUALITY, quality])
+            if not ok:
+                return None
+            data = encoded.tobytes()
             with self._lock:
-                self._jpeg_cache = (stamp, data)
+                self._jpeg_cache = (stamp, quality, data)
             return data, stamp, wall
 
     def stats(self) -> dict:
