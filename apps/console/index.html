@@ -13,10 +13,18 @@
     <span class="local"><i></i> 로컬 자료 · 비공개</span>
   </header>
   <main>
-    <nav class="source-tabs" role="tablist" aria-label="지도 선택">
+    <div class="source-bar"><nav class="source-tabs" role="tablist" aria-label="지도 선택">
       <button id="tab-saved" role="tab" data-source="saved" aria-selected="true" aria-controls="map-content">저장 지도</button>
       <button id="tab-live" role="tab" data-source="live" aria-selected="false" aria-controls="map-content" tabindex="-1">실시간 지도 <span id="live-tab-indicator" aria-hidden="true"></span></button>
     </nav>
+    <section id="connection-monitor" class="connection-monitor" hidden role="status" aria-live="polite" aria-label="연결 상태">
+      <strong>연결 상태 <small id="connection-checked">확인 중</small></strong>
+      <dl><div><dt>서버</dt><dd id="connection-server" data-state="idle">확인 중</dd></div>
+        <div><dt>드론</dt><dd id="connection-drone" data-state="idle">연결 전</dd></div>
+        <div><dt>영상</dt><dd id="connection-video" data-state="idle">대기</dd></div>
+        <div><dt>3D 지도</dt><dd id="connection-map" data-state="idle">대기</dd></div></dl>
+      <p id="connection-note">연결 상태를 확인합니다.</p>
+    </section></div>
     <div id="map-content" role="tabpanel" aria-labelledby="tab-saved">
     <section class="heading"><div><p class="eyebrow">VIDEO → SPATIAL RECONSTRUCTION</p><h1>영상 속 공간을, 입체로.</h1><p id="run-name">복원 결과를 불러오는 중입니다.</p></div>
       <a id="download" class="download" hidden download>지도 내려받기 <span>↗</span></a></section>
@@ -30,10 +38,11 @@
     <section id="live-panel" class="live-panel" hidden aria-label="실시간 영상 연결">
       <div><strong>카메라에서 공간으로</strong><p>영상을 받으며 같은 특징점을 추적하고 3D 점을 갱신합니다.</p></div>
       <div class="live-actions">
-        <label>영상 입력 <select id="input-source"><option value="camera">연결된 카메라</option><option value="demo" hidden>현재 녹화 영상 · 스트리밍 시연</option><option value="tello" hidden>Tello / RoboMaster TT</option></select></label>
+        <label>영상 입력 <select id="input-source"><option value="camera">연결된 카메라</option><option value="tello-map" hidden>Tello · 실시간 3D 지도</option><option value="demo" hidden>현재 녹화 영상 · 스트리밍 시연</option><option value="tello" hidden>Tello / RoboMaster TT · 사람 탐지</option></select></label>
         <button id="camera-start">카메라 연결 · 시작</button><button id="camera-stop" disabled>수신 종료</button>
       </div>
       <div id="camera-devices" class="live-actions"><label>카메라 장치 <select id="camera-device"><option value="">브라우저 기본 카메라</option></select></label><button id="camera-refresh" type="button">장치 새로고침</button><span id="camera-device-note">권한을 허용하면 장치 이름을 확인할 수 있습니다.</span></div>
+      <p id="tello-map-note" hidden></p>
       <details><summary>카메라 보정</summary><label>보정 JSON <input id="camera-calibration" type="file" accept=".json,application/json"></label><label>수평 화각 <input id="camera-fov" type="number" min="25" max="120" value="60"> °</label><p>보정 파일이 없으면 화각 추정값을 사용합니다. 단안 좌표는 실제 미터가 아닙니다. 영상은 이 PC에서만 처리·저장됩니다.</p></details>
       <p id="camera-input-info">웹캠으로 지도를 만들려면 같은 공간을 보며 카메라의 위치를 천천히 옮겨야 합니다. 고정 카메라는 영상 연결만 확인할 수 있습니다.</p>
       <p id="camera-status" role="status">Docker 실행 후 카메라를 연결하세요. 권한은 시작할 때 요청합니다.</p>
@@ -49,6 +58,7 @@
       </section>
       <video id="input-preview" muted playsinline hidden aria-label="전송 중인 입력 영상"></video>
       <img id="tello-preview" hidden alt="사람 탐지 윤곽선이 표시된 드론 영상">
+      <img id="tello-map-preview" hidden alt="3D 지도 생성에 사용하는 Tello 실시간 원본 영상">
     </section>
     <section id="map-playback" class="map-playback" hidden aria-label="지도 생성 과정 재생">
       <button id="play" aria-label="지도 생성 과정 재생">▶ 재생</button><button id="replay-reset" aria-label="지도 재생 처음으로">↺ 처음</button>

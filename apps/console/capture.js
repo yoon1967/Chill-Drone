@@ -40,15 +40,17 @@ export async function connectCapture({onStart = () => {}, onStatus = () => {}, o
   }
   $('input-source').querySelector('[value=camera]').hidden = !info.enabled;
   $('input-source').querySelector('[value=demo]').hidden = !info.demo_available;
+  $('input-source').querySelector('[value=tello-map]').hidden = !info.tello_map_enabled;
   $('input-source').querySelector('[value=tello]').hidden = !tello.enabled;
   if (!info.enabled && tello.enabled) $('input-source').value = 'tello';
   const video = $('input-preview'), telloPreview = $('tello-preview'), canvas = document.createElement('canvas');
+  const mapPreview = $('tello-map-preview');
   const context = canvas.getContext('2d', {alpha: false});
   let current = null, creating = false, serverState = {}, deviceRead = 0;
   const terminal = (state) => ['idle', 'complete', 'failed', 'stopped_or_disconnected'].includes(state.session_status || state.status);
   const message = (text, state, run = current) => {
     $('camera-status').textContent = text;
-    onStatus({state, message: text, session: run?.session});
+    onStatus({state, message: text, session: run?.session, kind: run?.kind, error: run?.lastError});
   };
   function controls() {
     const occupied = serverState.session_id && !terminal(serverState);
@@ -58,6 +60,10 @@ export async function connectCapture({onStart = () => {}, onStatus = () => {}, o
     for (const id of ['input-source', 'camera-device', 'camera-refresh', 'camera-calibration', 'camera-fov']) $(id).disabled = locked;
     $('camera-devices').hidden = $('input-source').value !== 'camera';
     $('tello-flight').hidden = $('input-source').value !== 'tello' || !tello.flight_enabled;
+    $('tello-map-note').hidden = $('input-source').value !== 'tello-map';
+    $('tello-map-note').textContent = info.tello_map_mode === 'gateway'
+      ? '조종 사이트에서 드론 영상을 먼저 켜세요. 같은 원본 영상으로 3D 지도를 생성합니다.'
+      : '노트북 Wi-Fi를 Tello / RoboMaster TT에 연결하세요. 원본 카메라로 3D 지도를 생성하며 비행 조작은 하지 않습니다.';
   }
   const post = async (url, body, headers = {}) => {
     const response = await fetch(url, {method: 'POST', headers: {'X-Mapping-Client': '1', ...headers}, body, signal: AbortSignal.timeout(15000)});
@@ -66,6 +72,11 @@ export async function connectCapture({onStart = () => {}, onStatus = () => {}, o
     return value;
   };
   const owns = (run) => current === run && !run.cancelled;
+  async function heartbeat(run) {
+    if (run.kind !== 'tello-map' || Date.now() < (run.nextHeartbeat || 0)) return;
+    await post('/api/live/tello/heartbeat', JSON.stringify({session_id: run.session}), {'Content-Type': 'application/json'});
+    run.nextHeartbeat = Date.now() + 2000;
+  }
   const held = new Set();
   const axes = {a: [0, -1], d: [0, 1], s: [1, -1], w: [1, 1], arrowdown: [2, -1], arrowup: [2, 1], arrowleft: [3, -1], arrowright: [3, 1]};
   let flightState = null, rcTimer = null;
@@ -120,6 +131,7 @@ export async function connectCapture({onStart = () => {}, onStatus = () => {}, o
       else clearTimeout(run.callback);
     }
     run.media?.getTracks().forEach((track) => track.stop());
+    if (run.kind === 'tello-map') { mapPreview.hidden = true; mapPreview.removeAttribute('src'); }
     if (run.kind === 'tello') {
       held.clear(); clearInterval(rcTimer); rcTimer = null; flightState = null;
       telloPreview.hidden = true; telloPreview.removeAttribute('src');
@@ -237,9 +249,10 @@ export async function connectCapture({onStart = () => {}, onStatus = () => {}, o
         catch { throw new Error('보정 JSON을 읽지 못했습니다. 올바른 JSON 파일인지 확인하세요.'); }
       }
       if (!owns(run)) return;
-      video.hidden = false;
+      const drone = kind === 'tello-map';
+      video.hidden = drone;
       if (demo) { video.src = '/api/source-video'; video.load(); }
-      else {
+      else if (!drone) {
         if (!navigator.mediaDevices?.getUserMedia) throw new Error('이 브라우저에서 카메라를 사용할 수 없습니다. localhost 또는 HTTPS에서 열어주세요.');
         message('카메라 권한을 확인하고 있습니다. 브라우저의 권한 요청을 확인하세요.', 'requesting', run);
         const device = $('camera-device').value;
@@ -251,22 +264,28 @@ export async function connectCapture({onStart = () => {}, onStatus = () => {}, o
         track.addEventListener('ended', () => { if (owns(run)) return stop(run, '카메라 연결이 끊겨 수신을 종료했습니다.', 'disconnected'); }, {once: true});
         void refreshDevices();
       }
-      await metadata(run);
+      if (!drone) await metadata(run);
       if (!owns(run)) return;
       const track = run.media?.getVideoTracks()[0], settings = track?.getSettings() || {};
-      const config = captureConfiguration(video.videoWidth, video.videoHeight, demo ? info.demo_camera?.fps || 30 : settings.frameRate || 30, Number($('camera-fov').value), camera);
+      const config = captureConfiguration(drone ? 960 : video.videoWidth, drone ? 720 : video.videoHeight,
+        drone ? 24 : demo ? info.demo_camera?.fps || 30 : settings.frameRate || 30, Number($('camera-fov').value), camera);
       canvas.width = config.width; canvas.height = config.height;
-      $('camera-input-info').textContent = (demo ? '녹화 영상' : track.label || '선택한 카메라') + ' · 원본 ' + video.videoWidth + '×' + video.videoHeight + ' → 전송 ' + config.width + '×' + config.height + ' · ' + config.fps.toFixed(1) + 'fps 설정값 · ' + (camera ? '보정 JSON 사용' : '화각 추정 · 미보정');
+      $('camera-input-info').textContent = (drone ? 'Tello · 960×720 · 24fps 기준' :
+        (demo ? '녹화 영상' : track.label || '선택한 카메라') + ' · 원본 ' + video.videoWidth + '×' + video.videoHeight +
+        ' → 전송 ' + config.width + '×' + config.height + ' · ' + config.fps.toFixed(1) + 'fps 설정값') + ' · ' + (camera ? '보정 JSON 사용' : '화각 추정 · 미보정');
       message('ORB-SLAM3 시작 중 · ' + (camera ? '카메라 보정값 사용' : '화각 추정 · 미보정') + ' · ' + canvas.width + '×' + canvas.height, 'connecting', run);
       creating = true; controls();
       try {
-        const started = await post('/api/live/start', JSON.stringify(config), {'Content-Type': 'application/json'});
+        const started = await post(drone ? '/api/live/tello/start' : '/api/live/start', JSON.stringify(config), {'Content-Type': 'application/json'});
         run.session = started.session_id;
         if (!owns(run)) { await stopSession(run); return; }
         serverState = started; onStart(run.session);
+        message('영상 연결과 SLAM을 준비하고 있습니다.', 'connecting', run);
       } finally { creating = false; controls(); }
       const deadline = Date.now() + 65000;
       while (owns(run)) {
+        await heartbeat(run);
+        if (!owns(run)) return;
         const response = await fetch('/api/live/state?session=' + encodeURIComponent(run.session), {signal: AbortSignal.any([run.controller.signal, AbortSignal.timeout(10000)])});
         const state = await response.json();
         if (!owns(run)) return;
@@ -278,12 +297,31 @@ export async function connectCapture({onStart = () => {}, onStatus = () => {}, o
         await new Promise((resolve) => setTimeout(resolve, 250));
       }
       if (!owns(run)) return;
+      if (drone) {
+        run.active = true; mapPreview.hidden = false;
+        while (owns(run)) {
+          await heartbeat(run);
+          if (!owns(run)) return;
+          const response = await fetch('/api/live/state?session=' + encodeURIComponent(run.session), {signal: AbortSignal.any([run.controller.signal, AbortSignal.timeout(10000)])});
+          const state = await response.json();
+          if (!owns(run)) return;
+          if (!response.ok || state.session_status === 'failed' || state.status === 'failed') throw new Error(state.last_error || state.error || 'Tello 영상 처리가 종료됐습니다.');
+          if (terminal(state) || state.session_status === 'stopping') { update(state); return; }
+          if (state.last_input_sequence >= 0 && run.previewSequence !== state.last_input_sequence) {
+            run.previewSequence = state.last_input_sequence;
+            mapPreview.src = '/api/live/tello-preview.jpg?session=' + encodeURIComponent(run.session) + '&sequence=' + state.last_input_sequence;
+          }
+          message((state.input_origin === 'gateway_reported_fake' ? '검증용 게이트웨이 영상 · ' : 'Tello 수신 중 · ') + '입력 ' + (state.transport_received || 0) + '장 · SLAM 제출 ' + (state.transport_submitted || 0) + '장 · 대기 ' + (state.queue_depth || 0) + '/1', 'receiving', run);
+          await new Promise((resolve) => setTimeout(resolve, 500));
+        }
+        return;
+      }
       await video.play();
       if (!owns(run)) return;
       run.active = true; schedule(run);
       message('영상 수신 중 · 카메라 위치를 천천히 옮기면 지도를 초기화합니다.', 'receiving', run);
     } catch (error) {
-      if (owns(run)) { const failure = captureError(error); await stop(run, failure.message, failure.state); }
+      if (owns(run)) { run.lastError = error.message; const failure = captureError(error); await stop(run, failure.message, failure.state); }
     }
     finally { controls(); }
   });
@@ -309,7 +347,11 @@ export async function connectCapture({onStart = () => {}, onStatus = () => {}, o
   navigator.mediaDevices?.addEventListener?.('devicechange', refreshDevices);
   video.addEventListener('ended', () => { if (current?.active) return stop(current, '시연 영상이 끝났습니다. 생성된 점군과 기록을 저장합니다.'); });
   const sourceChanged = () => {
-    $('camera-start').textContent = $('input-source').value === 'demo' ? '스트리밍 시연 시작' : $('input-source').value === 'tello' ? '드론 연결 · 탐지 시작' : '카메라 연결 · 시작';
+    $('camera-start').textContent = $('input-source').value === 'tello-map' ? '드론 연결 · 지도 시작' : $('input-source').value === 'demo' ? '스트리밍 시연 시작' : $('input-source').value === 'tello' ? '드론 연결 · 탐지 시작' : '카메라 연결 · 시작';
+    if (!current && $('input-source').value === 'tello-map') {
+      $('camera-input-info').textContent = 'Tello 원본 960×720 · 해당 렌즈·해상도에 맞는 보정값을 사용하세요.';
+      message('입력 전 · 드론 연결 · 지도 시작을 누르면 연결합니다. 브라우저 카메라 권한은 요청하지 않습니다.', 'idle');
+    }
     controls();
   };
   $('input-source').addEventListener('change', sourceChanged);

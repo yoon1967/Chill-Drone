@@ -138,12 +138,14 @@ def result_metadata(path, modified_ns, size):
 
 
 class ViewerHandler(BaseHTTPRequestHandler):
-    def __init__(self, *args, result=None, session=None, objects=None, live=None, tello=None,
+    tello_input_lock = threading.Lock()
+    def __init__(self, *args, result=None, session=None, objects=None, live=None, tello=None, tello_map=None,
                  timeline=None, observations=None, demo=None, demo_camera=None, **kwargs):
         self.saved_result = Path(result).resolve() if result else None
         self.recorded_session = Path(session).resolve() if session else None
         self.saved_objects = Path(objects).resolve() if objects else None
         self.live, self.tello, self.timeline, self.demo = live, tello, timeline, demo
+        self.tello_map = tello_map
         self.demo_camera = demo_camera
         self.observations = observations
         # Capture one session per request, even when another request starts a new session.
@@ -240,7 +242,11 @@ class ViewerHandler(BaseHTTPRequestHandler):
                 if not self.tello:
                     self.json_response({"error": "tello_input_disabled"}, 403)
                     return
-                self.json_response(self.tello.start(), 201)
+                with self.tello_input_lock:
+                    if self.tello_map and self.tello_map.busy:
+                        self.json_response({"error": "tello_mapping_input_is_active"}, 409)
+                        return
+                    self.json_response(self.tello.start(), 201)
             elif url.path == "/api/tello/stop":
                 if not self.tello:
                     self.json_response({"error": "tello_input_disabled"}, 403)
@@ -270,6 +276,20 @@ class ViewerHandler(BaseHTTPRequestHandler):
                     self.json_response(flight.status(), 202)
                 else:
                     self.send_error(404)
+            elif url.path == "/api/live/tello/start":
+                if not self.tello_map:
+                    self.json_response({"error": "tello_mapping_input_disabled"}, 403)
+                    return
+                with self.tello_input_lock:
+                    if self.tello and self.tello.running:
+                        self.json_response({"error": "tello_detection_input_is_active"}, 409)
+                        return
+                    self.json_response(self.tello_map.start(json.loads(data)), 201)
+            elif url.path == "/api/live/tello/heartbeat":
+                if not self.tello_map:
+                    self.json_response({"error": "tello_mapping_input_disabled"}, 403)
+                    return
+                self.json_response(self.tello_map.heartbeat(json.loads(data)["session_id"]))
             elif not self.live:
                 self.json_response({"error": "camera_input_disabled"}, 403)
             elif url.path == "/api/live/start":
@@ -277,6 +297,9 @@ class ViewerHandler(BaseHTTPRequestHandler):
             elif url.path == "/api/live/frame":
                 query = parse_qs(url.query)
                 session = self.live.require(query.get("session", [""])[0])
+                if session.stats()["input"] != "browser_camera":
+                    self.json_response({"error": "input_is_owned_by_tello_adapter"}, 409)
+                    return
                 self.json_response(session.offer(data, float(self.headers["X-Frame-Timestamp"]), int(self.headers["X-Frame-Sequence"])), 202)
             elif url.path == "/api/live/stop":
                 session = self.live.require(json.loads(data)["session_id"])
@@ -293,7 +316,7 @@ class ViewerHandler(BaseHTTPRequestHandler):
 
     def log_message(self, format, *args):
         # Frame/status polling is operational traffic; avoid an unbounded terminal log.
-        if args and re.search(r"/api/(?:(?:saved|live)/)?(?:state|run|timeline|frame|slam-preview)", str(args[0])):
+        if args and re.search(r"/api/(?:(?:saved|live)/)?(?:state|run|timeline|frame|slam-preview|tello-preview|tello/heartbeat)", str(args[0])):
             return
         super().log_message(format, *args)
 
@@ -358,6 +381,22 @@ class ViewerHandler(BaseHTTPRequestHandler):
             return
         url = urlsplit(self.path)
         path = unquote(url.path)
+        if path == "/api/live/tello-preview.jpg":
+            session = parse_qs(url.query).get("session", [""])[0]
+            if not self.tello_map or not self.live or not self.live.current or self.live.current.id != session:
+                self.json_response({"error": "camera_session_mismatch"}, 409)
+                return
+            image = self.tello_map.latest(session)
+            if image is None:
+                self.send_error(404, "No fresh Tello frame")
+                return
+            self.send_response(200)
+            self.send_header("Content-Type", "image/jpeg")
+            self.send_header("Content-Length", str(len(image)))
+            self.send_header("Cache-Control", "no-store")
+            self.end_headers()
+            self.write_payload(image)
+            return
         if path == "/api/tello":
             self.json_response(self.tello.stats() if self.tello else {"enabled": False, "running": False})
             return
@@ -387,6 +426,8 @@ class ViewerHandler(BaseHTTPRequestHandler):
             return
         if path == "/api/live":
             self.json_response({"enabled": self.live is not None, "demo_available": self.demo is not None,
+                                "tello_map_enabled": self.tello_map is not None,
+                                "tello_map_mode": ("gateway" if self.tello_map.gateway else "direct") if self.tello_map else None,
                 "demo_camera": self.demo_camera, "current": self.current.stats() if self.current else None})
             return
         if path.startswith("/api/saved/"):
@@ -546,6 +587,8 @@ def main():
     parser.add_argument("--objects", type=Path, help="Optional planar object bundle for an offline result")
     parser.add_argument("--port", type=int, default=8790)
     parser.add_argument("--enable-camera", action="store_true", help="Enable local browser camera -> Docker ORB-SLAM3")
+    parser.add_argument("--enable-tello-map", action="store_true", help="Enable Tello camera -> live 3D map (no flight commands)")
+    parser.add_argument("--tello-gateway", help="Share video from a fixed loopback HTTP gateway, e.g. http://127.0.0.1:8010")
     parser.add_argument("--enable-tello", action="store_true", help="Enable Tello/RoboMaster TT video and person detection")
     parser.add_argument("--tello-flight", action="store_true", help="Enable guarded manual flight controls in the Tello detection view")
     parser.add_argument("--tello-model", default="yolo26n-seg.pt",
@@ -558,8 +601,8 @@ def main():
     calibration.add_argument("--demo-calibration-result", type=Path, help="Reuse only intrinsics from this video's saved reconstruction")
     args = parser.parse_args()
     result = args.result.resolve() if args.result else None
-    if not (args.result or args.session or args.enable_camera or args.tello_only):
-        parser.error("Select --result, --session, --enable-camera, or --tello-only")
+    if not (args.result or args.session or args.enable_camera or args.tello_only or args.enable_tello_map or args.tello_gateway):
+        parser.error("Select --result, --session, --enable-camera, --enable-tello-map, or --tello-only")
     if args.objects and not args.result:
         parser.error("--objects requires a saved --result")
     if result and (not (result / "status.json").is_file() or json.loads(
@@ -568,9 +611,16 @@ def main():
     if not (APP / "node_modules/three/build/three.module.js").is_file():
         parser.error("Install apps/console dependencies first: pnpm install --frozen-lockfile")
     live = None
-    if args.enable_camera:
+    if args.enable_camera or args.enable_tello_map or args.tello_gateway:
         from modules.mapping.localization.orbslam3_live import LiveManager
         live = LiveManager(args.live_root)
+    tello_map = None
+    if args.enable_tello_map or args.tello_gateway:
+        from modules.mapping.localization.tello_input import TelloMapInput
+        try:
+            tello_map = TelloMapInput(live, args.tello_gateway)
+        except ValueError as error:
+            parser.error(str(error))
     tello = None
     if args.enable_tello or args.tello_only:
         from modules.perception.inference.tello_person_stream import TelloPersonStream
@@ -588,7 +638,7 @@ def main():
         except (OSError, ValueError, KeyError, TypeError) as error:
             parser.error(str(error))
     server = ViewerServer(("127.0.0.1", args.port), partial(ViewerHandler, result=result,
-        session=args.session, objects=args.objects, live=live, tello=tello, timeline=Timeline(), observations=ObservationCache(),
+        session=args.session, objects=args.objects, live=live, tello=tello, tello_map=tello_map, timeline=Timeline(), observations=ObservationCache(),
         demo=demo, demo_camera=demo_camera))
     print(f"Phone mapping viewer: http://127.0.0.1:{args.port}/", flush=True)
     try:
@@ -597,6 +647,8 @@ def main():
         pass
     finally:
         server.server_close()
+        if tello_map:
+            tello_map.shutdown()
         if live:
             live.shutdown()
         if tello and tello.running:

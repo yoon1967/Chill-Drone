@@ -14,6 +14,29 @@ import numpy as np
 from .orbslam3 import IMAGE, SessionPublisher, atomic_json, read_json, write_settings
 
 
+def require_slam_image():
+    """Bounded preflight; reconcile a failed tag lookup with the engine's image list.
+
+    Retry once when tag lookup and image listing disagree.
+    Never pull/build implicitly: a genuine missing image remains an actionable error.
+    """
+    inspect = ["docker", "image", "inspect", "--format", "{{.Id}}", IMAGE]
+    try:
+        try:
+            return subprocess.check_output(inspect, stderr=subprocess.DEVNULL, text=True, timeout=4).strip()
+        except subprocess.CalledProcessError:
+            listed = subprocess.check_output(["docker", "image", "ls", "--no-trunc", "--quiet", IMAGE],
+                                             stderr=subprocess.DEVNULL, text=True, timeout=4).strip()
+            if not listed:
+                raise RuntimeError("slam_image_missing")
+            try:
+                return subprocess.check_output(inspect, stderr=subprocess.DEVNULL, text=True, timeout=4).strip()
+            except subprocess.CalledProcessError:
+                raise RuntimeError("slam_image_missing") from None
+    except (OSError, subprocess.TimeoutExpired, subprocess.CalledProcessError):
+        raise RuntimeError("slam_docker_unavailable") from None
+
+
 def live_camera(config):
     def number(value):
         if isinstance(value, bool) or not isinstance(value, (int, float)) or not math.isfinite(value):
@@ -63,10 +86,11 @@ def live_camera(config):
 
 
 class LiveSession:
-    def __init__(self, root, camera, image_id, image=IMAGE):
+    def __init__(self, root, camera, image_id, image=IMAGE, *, input_kind="browser_camera", timestamp_basis="browser_media_time"):
         self.id = "live_" + uuid.uuid4().hex[:16]
         self.path = root / self.id
         self.camera, self.image = camera, image
+        self.input_kind, self.timestamp_basis = input_kind, timestamp_basis
         self.condition = threading.Condition()
         self.pending = None
         self.closing = False
@@ -80,7 +104,8 @@ class LiveSession:
         self.path.mkdir(parents=True)
         (self.path / "revisions").mkdir()
         atomic_json(self.path / "camera.json", camera)
-        atomic_json(self.path / "settings.json", {"backend": "orb_slam3_monocular", "input": "browser_camera",
+        atomic_json(self.path / "settings.json", {"backend": "orb_slam3_monocular", "input": input_kind,
+            "input_timestamp_basis": timestamp_basis,
             "image": image, "image_id": image_id, "camera": camera, "scale": "arbitrary",
             "frame_policy": "latest_one_pending; one_inflight_until_tracker_ACK", "dense_surface": False})
         write_settings(self.path / "camera.yaml", camera, 1800)
@@ -95,7 +120,9 @@ class LiveSession:
                 "stopping" if self.closing else "receiving" if self.ready else "starting"
             return {"source": "live", "backend": "orb_slam3_monocular",
                     "session_id": self.id, "session_status": lifecycle,
-                    "input": "browser_camera", "transport_ready": self.ready,
+                    "input": getattr(self, "input_kind", "browser_camera"),
+                    "input_origin": getattr(self, "input_origin", "local_camera" if getattr(self, "input_kind", "browser_camera") == "browser_camera" else "not_connected"),
+                    "input_timestamp_basis": getattr(self, "timestamp_basis", "browser_media_time"), "transport_ready": self.ready,
                     "transport_active": not self.done, "transport_stopping": self.closing,
                     "transport_received": self.received, "transport_submitted": self.submitted,
                     "frame_drops": self.dropped, "queue_depth": int(self.pending is not None),
@@ -164,60 +191,71 @@ class LiveSession:
                 pass
 
     def _read(self, process, log):
-        for line in iter(process.stdout.readline, b""):
-            log.write(line)
-            if line.startswith(b"ORB_ACK "):
-                with self.condition:
-                    self.ack = float(line.split()[1])
-                    self.condition.notify_all()
+        # The reader owns this file until EOF, including exceptional worker stops.
+        # Closing it in the worker's exception unwind races with a final ACK/log.
+        try:
+            for line in iter(process.stdout.readline, b""):
+                log.write(line)
+                if line.startswith(b"ORB_ACK "):
+                    with self.condition:
+                        self.ack = float(line.split()[1])
+                        self.condition.notify_all()
+        finally:
+            log.close()
 
     def _run(self):
         name = "ssafy-orb-" + uuid.uuid4().hex[:12]
-        process = None
+        process = reader = writer = log = None
         try:
             command = ["docker", "run", "--rm", "-i", "--name", name, "--network", "none", "--cap-drop", "ALL",
                 "--security-opt", "no-new-privileges", "--cpus", "6", "--memory", "8g",
                 "--mount", f"type=bind,source={self.path},target=/output", self.image,
                 "-", "/output/camera.yaml", "/output", "1", "0"]
-            with (self.path / "orb.log").open("wb", buffering=0) as log:
-                process = subprocess.Popen(command, stdin=subprocess.PIPE, stdout=subprocess.PIPE, stderr=subprocess.STDOUT, bufsize=0)
-                reader = threading.Thread(target=self._read, args=(process, log), daemon=True)
-                reader.start()
-                start = time.monotonic()
-                while not (self.path / "ready.json").is_file():
-                    if process.poll() is not None:
-                        raise RuntimeError("docker_or_tracker_start_failed; see local orb.log")
-                    if self.closing or time.monotonic() - start > 60:
-                        raise RuntimeError("tracker_start_cancelled_or_timeout")
-                    time.sleep(.1)
-                self.ready = True
-                self.last_input = time.monotonic()
-                writer = threading.Thread(target=self._write, args=(process,), daemon=True)
-                writer.start()
-                while process.poll() is None:
-                    if not self.closing and time.monotonic() - self.last_input > 10:
-                        self.stop("input_timeout")
-                    self.publisher.update(self.stats())
-                    if self.error:
-                        raise RuntimeError(self.error)
-                    time.sleep(.15)
-                writer.join(timeout=2)
-                reader.join(timeout=2)
+            log = (self.path / "orb.log").open("wb", buffering=0)
+            process = subprocess.Popen(command, stdin=subprocess.PIPE, stdout=subprocess.PIPE, stderr=subprocess.STDOUT, bufsize=0)
+            reader = threading.Thread(target=self._read, args=(process, log), daemon=True)
+            reader.start()
+            start = time.monotonic()
+            while not (self.path / "ready.json").is_file():
+                if process.poll() is not None:
+                    raise RuntimeError("docker_or_tracker_start_failed; see local orb.log")
+                if self.closing or time.monotonic() - start > 60:
+                    raise RuntimeError(self.error or "tracker_start_cancelled_or_timeout")
+                time.sleep(.1)
+            self.ready = True
+            self.last_input = time.monotonic()
+            writer = threading.Thread(target=self._write, args=(process,), daemon=True)
+            writer.start()
+            while process.poll() is None:
+                if not self.closing and time.monotonic() - self.last_input > 10:
+                    self.stop("input_timeout")
                 self.publisher.update(self.stats())
-                # Exit 3 means the stream ended without an initialized map. A requested
-                # stop is a completed empty recording, not a camera/transport failure.
-                empty_stop = process.returncode == 3 and self.closing and self.publisher.revision == 0
-                if process.returncode and not empty_stop:
-                    raise RuntimeError("tracker_failed_or_no_initialized_map; see local orb.log")
+                if self.error:
+                    raise RuntimeError(self.error)
+                time.sleep(.15)
+            writer.join(timeout=2)
+            reader.join(timeout=2)
+            self.publisher.update(self.stats())
+            # Exit 3 means the stream ended without an initialized map. A requested
+            # stop is a completed empty recording, not a camera/transport failure.
+            empty_stop = process.returncode == 3 and self.closing and self.publisher.revision == 0
+            if process.returncode and not empty_stop:
+                raise RuntimeError("tracker_failed_or_no_initialized_map; see local orb.log")
         except Exception as error:
             self.error = str(error)
             if process and process.poll() is None:
                 subprocess.run(["docker", "stop", "-t", "3", name], stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL, timeout=15)
                 process.wait(timeout=15)
         finally:
+            if writer:
+                writer.join(timeout=3)
+            if reader and reader.ident:
+                reader.join(timeout=3)
+            elif log:
+                log.close()
             self.done, self.ready = True, False
             self.publisher.state.update(self.stats(), status="failed" if self.error else "complete",
-                                        last_error=self.error, input="browser_camera")
+                                        last_error=self.error, input=getattr(self, "input_kind", "browser_camera"))
             atomic_json(self.path / "state.json", self.publisher.state)
 
 
@@ -227,15 +265,14 @@ class LiveManager:
         self.lock = threading.Lock()
         self.current = None
 
-    def start(self, config):
+    def start(self, config, *, input_kind="browser_camera", timestamp_basis="browser_media_time"):
         camera = live_camera(config)
         with self.lock:
             if self.current and not self.current.done:
                 raise RuntimeError("another_camera_session_is_active")
             # Fail before changing the viewer's selected result when Docker isn't available.
-            image_id = subprocess.check_output(["docker", "image", "inspect", "--format", "{{.Id}}", IMAGE],
-                                               stderr=subprocess.DEVNULL, text=True, timeout=10).strip()
-            self.current = LiveSession(self.root, camera, image_id)
+            image_id = require_slam_image()
+            self.current = LiveSession(self.root, camera, image_id, input_kind=input_kind, timestamp_basis=timestamp_basis)
             return self.current.stats()
 
     def require(self, session_id):

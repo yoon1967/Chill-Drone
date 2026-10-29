@@ -1,6 +1,7 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
 import { connectCapture, captureConfiguration } from '../capture.js';
+import { FrameLatency } from '../frame-latency.js';
 
 const deferred = () => { let resolve; const promise = new Promise((r) => { resolve = r; }); return {promise, resolve}; };
 const reply = (value, ok = true) => ({ok, json: async () => value});
@@ -52,8 +53,21 @@ function fixture(t, {denied = false, enabled = true, devices = [], getMedia, fet
   return {get, media, requests, statuses, starts, constraints, windowEvents, deviceEvents,
     permissions: () => permissions,
     async deliver(data) { const [id, fn] = callbacks.entries().next().value; callbacks.delete(id); return fn(0, data); },
-    connect: () => connectCapture({onStart: (id) => starts.push(id), onStatus: (status) => statuses.push(status)})};
+    connect: (callbacks = {}) => connectCapture({onStart: (id) => starts.push(id), onStatus: (status) => statuses.push(status), ...callbacks})};
 }
+
+test('new session is announced before status callbacks feed the selected state back', async (t) => {
+  const f = fixture(t);
+  let handle, selected = {session_id: 'previous', session_status: 'failed'};
+  handle = await f.connect({
+    onStart: id => { selected = {session_id: id, session_status: 'starting'}; },
+    onStatus: () => handle?.update(selected),
+  });
+  await f.get('camera-start').handlers.click();
+  assert.equal(f.get('camera-stop').disabled, false);
+  assert.equal(f.media.track.stops, 0);
+  assert.equal(f.requests.some(r => r.url === '/api/live/stop'), false);
+});
 
 test('page/device enumeration is lazy; denial never starts SLAM and can be retried', async (t) => {
   const f = fixture(t, {denied: true}); await f.connect();
@@ -151,6 +165,33 @@ test('frame metadata preserves media timestamps and capture sequence gaps; dupli
   assert.ok(Math.abs(Number(frames[1].options.headers['X-Frame-Timestamp']) - .1) < 1e-8);
 });
 
+test('browser capture timing survives status feedback and reaches the matching displayed map', async (t) => {
+  const f = fixture(t), latency = new FrameLatency(), marks = [];
+  let handle, selected = {session_id: 'previous', session_status: 'complete'};
+  handle = await f.connect({
+    onStart(id) {
+      selected = {session_id: id, session_status: 'starting'};
+      latency.start(id);
+    },
+    onStatus: () => handle?.update(selected),
+    onFrameTiming(mark) { marks.push(mark); latency.record(mark); },
+  });
+  await f.get('camera-start').handlers.click();
+  await f.deliver({mediaTime: 12, presentedFrames: 100});
+  assert.equal(marks.length, 3);
+  assert.ok(marks.every(mark => mark.session === 'live_test' && mark.pts === 0));
+  assert.ok(marks[0].capturedAtMs <= marks[1].encodedAtMs);
+  assert.ok(marks[1].encodedAtMs <= marks[2].ackAtMs);
+  const scene = {source: 'live', input_run_id: 'live_test', pose_source: 'orb_slam3',
+    cameras: [{frame_id: 'frame-0', timestamp_s: 0}],
+    point_observations: {schema_version: 'point-observations/1.0', frame_index_by_point: {1: [0]}}};
+  assert.equal(latency.present(scene, performance.now() + 10, {}, [1]), 1);
+  assert.equal(latency.summary().submittedFrames, 1);
+  assert.ok(latency.summary().meanMs >= 10);
+  assert.ok(latency.summary().encodeMeanMs >= 0);
+  assert.ok(latency.summary().uploadMeanMs >= 0);
+});
+
 test('one encoding/upload at a time; canceled encoding never uploads into the next session', async (t) => {
   const encoded = deferred();
   const f = fixture(t, {getMedia: () => stream(), encode: (done) => encoded.promise.then(done)}); const handle = await f.connect();
@@ -213,4 +254,61 @@ test('capture configuration caps long side, preserves portrait orientation and v
   for (const bad of [{...camera, fx: '1000'}, {...camera, cy: 2000}, {...camera, distortion: [NaN, 0, 0, 0]}, []]) {
     assert.throws(() => captureConfiguration(960, 540, 30, 60, bad));
   }
+});
+
+test('Tello mapping receives on the server, asks for no media, heartbeats and stops its session', async (t) => {
+  const polling = deferred();
+  const f = fixture(t, {fetcher: (url, options, value) => {
+    if (url === '/api/live') return reply({...value, tello_map_enabled: true, tello_map_mode: 'direct'});
+    if (url === '/api/live/tello/start') return reply({session_id: 'drone_map', session_status: 'starting'});
+    if (url.startsWith('/api/live/state')) { polling.resolve(); return reply({session_id: 'drone_map', transport_ready: true, session_status: 'receiving', last_input_sequence: 2}); }
+    return reply(value);
+  }});
+  await f.connect(); f.get('input-source').value = 'tello-map'; f.get('input-source').handlers.change();
+  assert.match(f.get('camera-start').textContent, /드론 연결 · 지도/);
+  const pending = f.get('camera-start').handlers.click(); await polling.promise;
+  await new Promise((resolve) => setImmediate(resolve));
+  assert.equal(f.permissions(), 0);
+  const config = JSON.parse(f.requests.find((r) => r.url === '/api/live/tello/start').options.body);
+  assert.deepEqual([config.width, config.height, config.fps], [960, 720, 24]);
+  assert.match(f.get('tello-map-preview').src, /session=drone_map/);
+  assert.ok(f.requests.some((r) => r.url === '/api/live/tello/heartbeat'));
+  assert.equal(f.requests.some((r) => r.url.startsWith('/api/live/frame')), false);
+  await f.get('camera-stop').handlers.click(); await pending;
+  assert.deepEqual(JSON.parse(f.requests.find((r) => r.url === '/api/live/stop').options.body), {session_id: 'drone_map'});
+  assert.equal(f.get('tello-map-preview').hidden, true);
+});
+
+test('canceling a pending Tello start stops the late ID and never touches browser media', async (t) => {
+  const requested = deferred(), late = deferred();
+  const f = fixture(t, {fetcher: (url, options, value) => {
+    if (url === '/api/live/tello/start') { requested.resolve(); return late.promise; }
+    return reply(value);
+  }});
+  await f.connect(); f.get('input-source').value = 'tello-map';
+  const pending = f.get('camera-start').handlers.click(); await requested.promise;
+  await f.get('camera-stop').handlers.click();
+  late.resolve(reply({session_id: 'late_drone', session_status: 'starting'})); await pending;
+  assert.equal(f.permissions(), 0);
+  assert.deepEqual(f.starts, []);
+  assert.deepEqual(JSON.parse(f.requests.at(-1).options.body), {session_id: 'late_drone'});
+});
+
+test('Tello backend failure and page exit release preview and scope the stop to its ID', async (t) => {
+  const ready = deferred();
+  const f = fixture(t, {fetcher: (url, options, value) => {
+    if (url === '/api/live/tello/start') return reply({session_id: 'drone', session_status: 'starting'});
+    if (url.startsWith('/api/live/state')) { ready.resolve(); return reply({session_id: 'drone', transport_ready: true, session_status: 'receiving'}); }
+    return reply(value);
+  }});
+  const handle = await f.connect(); f.get('input-source').value = 'tello-map';
+  const pending = f.get('camera-start').handlers.click(); await ready.promise;
+  await new Promise((resolve) => setImmediate(resolve));
+  f.windowEvents.pagehide(); await pending;
+  const stop = f.requests.find((r) => r.options?.keepalive);
+  assert.equal(stop.url, '/api/live/stop');
+  assert.deepEqual(JSON.parse(stop.options.body), {session_id: 'drone'});
+  assert.equal(f.get('tello-map-preview').hidden, true);
+  handle.update({session_id: 'drone', session_status: 'failed', last_error: 'disconnected'});
+  assert.equal(f.permissions(), 0);
 });
