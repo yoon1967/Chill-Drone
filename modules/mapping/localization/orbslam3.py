@@ -6,7 +6,6 @@ Only camera intrinsics from a prior result may be reused as a self-estimated pri
 from __future__ import annotations
 
 import argparse
-from collections import defaultdict
 from datetime import datetime, timezone
 import json
 from pathlib import Path
@@ -20,8 +19,12 @@ import numpy as np
 
 if __package__:
     from .observations import native_observations
+    from .landmarks import confirm_landmarks, UnconfirmedGeometry
+    from .fixed_pose_association import FixedPoseAssociation
 else:
     from observations import native_observations
+    from landmarks import confirm_landmarks, UnconfirmedGeometry
+    from fixed_pose_association import FixedPoseAssociation
 
 IMAGE = "ssafy-orbslam3:local"
 DISPLAY = np.diag([1., -1., -1.])
@@ -117,13 +120,23 @@ def camera_matrix(camera):
     return np.array([[camera["fx"], 0., camera["cx"]], [0., camera["fy"], camera["cy"]], [0., 0., 1.]])
 
 
-def convert(native, camera, progress, session):
+def convert(native, camera, progress, session, association=None, color_cache=None):
     """One atomic map revision: all poses and points share the same native map snapshot."""
+    confirmation_started = time.monotonic()
+    native, errors, landmark_quality = confirm_landmarks(native, camera)
+    if association is not None:
+        native, association_quality = association.apply(native, camera)
+        landmark_quality["association"] = association_quality
+        if association_quality["renamed_points"]:
+            native, errors, final_quality = confirm_landmarks(native, camera)
+            landmark_quality["confirmed_points"] = len(native["points"])
+            landmark_quality["after_association"] = final_quality
+    landmark_quality["processing_ms"] = (time.monotonic() - confirmation_started) * 1000
+    if not native["points"]:
+        raise UnconfirmedGeometry(landmark_quality)
     native_points = {p["id"]: p for p in native["points"]}
-    colors, errors = {}, defaultdict(list)
+    colors = color_cache if color_cache is not None else {}
     cameras = []
-    K = camera_matrix(camera)
-    distortion = np.array(camera["distortion"])
     for keyframe in native["keyframes"]:
         T = np.array(keyframe["T_cw"])
         if T.shape != (4, 4) or not np.isfinite(T).all() or not np.allclose(T[3], [0, 0, 0, 1]):
@@ -140,23 +153,18 @@ def convert(native, camera, progress, session):
             "camera_id": 1, "model": "OPENCV", "width": camera["width"], "height": camera["height"],
             "params": [camera[k] for k in ("fx", "fy", "cx", "cy")] + camera["distortion"]})
         observations = [o for o in keyframe["observations"] if o["point_id"] in native_points]
-        if not observations:
+        if not observations or all(o["point_id"] in colors for o in observations):
             continue
-        xyz = np.array([native_points[o["point_id"]]["xyz"] for o in observations])
-        projected, _ = cv2.projectPoints(xyz, cv2.Rodrigues(R)[0], t, K, distortion)
-        residual = np.linalg.norm(projected.reshape(-1, 2) - np.array([o["xy"] for o in observations]), axis=1)
-        image = cv2.imread(str(session / "frames" / name))
-        for obs, error in zip(observations, residual):
-            errors[obs["point_id"]].append(float(error))
+        image_path = session / "frames" / name
+        image = cv2.imread(str(image_path)) if image_path.is_file() else None
+        for obs in observations:
             x, y = np.rint(obs["xy"]).astype(int)
             if obs["point_id"] not in colors and image is not None and 0 <= x < image.shape[1] and 0 <= y < image.shape[0]:
                 colors[obs["point_id"]] = image[y, x, ::-1].tolist()
     points = []
     for p in native_points.values():
-        if not errors[p["id"]] or not np.isfinite(p["xyz"]).all():
-            continue
         points.append([p["id"], *(DISPLAY @ p["xyz"]).tolist(), *colors.get(p["id"], [170, 190, 190]),
-                       float(np.mean(errors[p["id"]])), p["observations"]])
+                       errors[p["id"]], p["observations"]])
     if not points or not cameras:
         raise ValueError("empty_native_map")
     xyz = np.array([p[1:4] for p in points])
@@ -165,9 +173,11 @@ def convert(native, camera, progress, session):
         "created_utc": datetime.now(timezone.utc).isoformat(), "revision": native["revision"],
         "segment_id": native["map_id"], "gauge_aligned": True,
         "coordinate_system": {"native": "ORB-SLAM3 world; camera x-right y-down z-forward", "display_rotation": DISPLAY.tolist()},
+        "camera_pose_policy": "native_pose_first; fixed_during_landmark_association; no_feedback_to_slam",
         "scale": {"status": "arbitrary", "unit": "arbitrary", "reason": "monocular_without_metric_sensor"},
         "points": points, "cameras": cameras,
         "quality": {"registered_frames": len(cameras), "input_frames": count,
+            "landmark_confirmation": landmark_quality,
             "registration_ratio": len(cameras) / max(count, 1), "excluded_frames": [], "points3D": len(points),
             "mean_reprojection_error_px": float(np.mean([p[7] for p in points])), "result_status": "partial",
             "processing_seconds": progress.get("elapsed_seconds", 0),
@@ -179,6 +189,14 @@ def convert(native, camera, progress, session):
             "calibration_status": camera["calibration_status"], "keyframes": len(cameras)},
         "limitations": ["단안 임의 단위 · 실제 치수 미검증", "ORB-SLAM3의 희소 지도 · 밀집 표면 복원은 별도 단계"]}
     result["point_observations"] = native_observations(result, native)
+    if association is not None:
+        published = {p[0] for p in points}
+        result["point_aliases"] = {str(pid): alias for pid, alias in association.aliases.items()
+                                   if alias in published and pid != alias}
+    if color_cache is not None:
+        for pid in list(color_cache):
+            if pid not in native_points:
+                del color_cache[pid]
     return result
 
 
@@ -212,6 +230,9 @@ class SessionPublisher:
     def __init__(self, session, camera):
         self.session, self.camera = session, camera
         self.revision, self.last_frame = 0, None
+        self.consumed_revision = 0
+        self.association = FixedPoseAssociation()
+        self.color_cache, self.color_map_id = {}, None
         self.entries = []
         self.state = {"status": "starting", "backend": "orb_slam3_monocular", "revision": 0,
                       "session_id": session.name, "map_available": False, "frame_drops": 0}
@@ -226,8 +247,17 @@ class SessionPublisher:
                 preview(self.session, progress, self.camera)
                 self.last_frame = progress.get("frame_id")
             native = read_json(self.session / "native.json")
-            if native and native["revision"] != self.revision:
-                scene = convert(native, self.camera, progress, self.session)
+            if native and native["revision"] != self.consumed_revision:
+                self.consumed_revision = native["revision"]
+                if self.color_map_id != native["map_id"]:
+                    self.color_cache, self.color_map_id = {}, native["map_id"]
+                try:
+                    scene = convert(native, self.camera, progress, self.session, self.association, self.color_cache)
+                except UnconfirmedGeometry as error:
+                    self.state.update(mapping_state="confirming_geometry", landmark_confirmation=error.quality)
+                    self.state.update(extra or {})
+                    atomic_json(self.session / "state.json", self.state)
+                    return
                 directory = self.session / "revisions" / f"{native['revision']:06d}"
                 directory.mkdir(exist_ok=True)
                 atomic_json(directory / "scene.json", scene)
@@ -239,8 +269,12 @@ class SessionPublisher:
                 atomic_json(self.session / "timeline.json", {"schema_version": "orb-map-timeline/1.0",
                     "session_id": self.session.name, "entries": self.entries})
                 self.state.update(revision=self.revision, map_available=True, revision_path=f"revisions/{self.revision:06d}",
-                                  segment_id=native["map_id"], points3D=len(scene["points"]), keyframes=len(scene["cameras"]))
+                                  segment_id=native["map_id"], points3D=len(scene["points"]), keyframes=len(scene["cameras"]),
+                                  landmark_confirmation=scene["quality"]["landmark_confirmation"])
         self.state.update(extra or {})
+        if (self.state.get("landmark_confirmation", {}).get("confirmed_points") == 0
+                and self.state.get("mapping_state") == "tracking"):
+            self.state["mapping_state"] = "confirming_geometry"
         atomic_json(self.session / "state.json", self.state)
 
 
@@ -275,7 +309,7 @@ def run(args):
                 if process.poll() is not None:
                     # Consume the final atomic native snapshot in the next iteration.
                     latest = read_json(args.session / "native.json")
-                    if latest and latest["revision"] != publisher.revision:
+                    if latest and latest["revision"] != publisher.consumed_revision:
                         continue
                     break
                 time.sleep(.15)
@@ -287,10 +321,12 @@ def run(args):
             raise
     if process.returncode:
         state.update(status="failed", last_error="ORB-SLAM3 exited; see local orb.log", map_available=publisher.revision > 0)
-    else:
+    elif publisher.revision:
         state["status"] = "complete"
+    else:
+        state.update(status="insufficient_geometry", mapping_state="confirming_geometry")
     atomic_json(args.session / "state.json", state)
-    return process.returncode
+    return process.returncode or (0 if publisher.revision else 3)
 
 
 def main():

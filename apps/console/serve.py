@@ -467,6 +467,7 @@ class ViewerHandler(BaseHTTPRequestHandler):
         static = {"/": APP / "index.html", "/app.js": APP / "app.js", "/objects.js": APP / "objects.js", "/capture.js": APP / "capture.js", "/point-grid.js": APP / "point-grid.js", "/point-surfaces.js": APP / "point-surfaces.js", "/style.css": APP / "style.css",
                   "/point-surface-worker.js": APP / "point-surface-worker.js", "/map-delta.js": APP / "map-delta.js",
                   "/map-source.js": APP / "map-source.js", "/wide-surfaces.js": APP / "wide-surfaces.js",
+                  "/frame-latency.js": APP / "frame-latency.js",
                   "/vendor/three.module.js": APP / "node_modules/three/build/three.module.js",
                   "/vendor/three.core.js": APP / "node_modules/three/build/three.core.js",
                   "/vendor/OrbitControls.js": APP / "node_modules/three/examples/jsm/controls/OrbitControls.js"}

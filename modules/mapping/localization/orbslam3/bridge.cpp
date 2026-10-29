@@ -69,7 +69,7 @@ public:
             try {
                 while(running) {
                     if(publish(revision+1,false)) ++revision;
-                    for(int i=0;i<10 && running;++i) std::this_thread::sleep_for(std::chrono::milliseconds(100));
+                    for(int i=0;i<5 && running;++i) std::this_thread::sleep_for(std::chrono::milliseconds(50));
                 }
             } catch(const std::exception& e) {error=e.what();failed=true;running=false;}
         });
@@ -94,7 +94,12 @@ static bool export_map(System& slam, const std::string& root,
         if(!p || p->isBad() || p->Observations()<2) continue;
         const auto xyz=p->GetWorldPos();
         if(!xyz.allFinite()) continue;
-        points.push_back({{"id",p->mnId},{"xyz",{xyz.x(),xyz.y(),xyz.z()}},{"observations",p->Observations()}});
+        const cv::Mat descriptor=p->GetDescriptor();
+        std::vector<unsigned char> bytes;
+        if(!descriptor.empty() && descriptor.type()==CV_8U && descriptor.total()==32)
+            bytes.assign(descriptor.ptr<unsigned char>(),descriptor.ptr<unsigned char>()+32);
+        points.push_back({{"id",p->mnId},{"xyz",{xyz.x(),xyz.y(),xyz.z()}},
+            {"observations",p->Observations()},{"descriptor",bytes}});
         available.insert(p->mnId);
     }
     for(auto* k:keys) {
@@ -109,7 +114,8 @@ static bool export_map(System& slam, const std::string& root,
         for(size_t i=0;i<matches.size() && i<k->mvKeysUn.size();++i) {
             auto* p=matches[i]; if(!p || p->isBad() || !available.count(p->mnId)) continue;
             const auto xy=k->mvKeys[i].pt;
-            observations.push_back({{"point_id",p->mnId},{"xy",{xy.x,xy.y}}});
+            observations.push_back({{"point_id",p->mnId},{"xy",{xy.x,xy.y}},
+                {"sigma2",k->mvLevelSigma2[k->mvKeysUn[i].octave]}});
         }
         keyframes.push_back({{"id",k->mnId},{"frame_id",source->second.name},
             {"timestamp_s",k->mTimeStamp},{"timestamp_source",source->second.clock},

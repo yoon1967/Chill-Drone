@@ -5,6 +5,7 @@ import { connectCapture } from '/capture.js';
 import { MapSource } from '/map-source.js';
 import { updatePointGrid, pointSpacingProfile, pointGridCells, displayPointCells } from '/point-grid.js';
 import { applySceneDelta } from '/map-delta.js';
+import { FrameLatency } from '/frame-latency.js';
 const $ = (id) => document.getElementById(id);
 const number = (n) => Number(n).toLocaleString('ko-KR');
 const timeOf = (c) => c.source_pts_s ?? c.timestamp_s;
@@ -36,6 +37,15 @@ let spacingProfile = {step: .0001, max: .05, recommended: .003, median: 0};
 const decimal = (n) => Number(n).toLocaleString('ko-KR', {maximumFractionDigits: 12});
 const renderTimes = [];
 let lastRenderReport = 0;
+const frameLatency = new FrameLatency();
+let pendingPresentation = null;
+function latencyStatus() {
+  const stats = frameLatency.summary(), target = $('frame-latency');
+  target.textContent = stats.samples ? `입력 → 지도 표시 · 평균 ${stats.meanMs.toFixed(0)}ms · P95 ${stats.p95Ms.toFixed(0)}ms · 최대 ${stats.maxMs.toFixed(0)}ms · ${stats.samples}개 키프레임` :
+    '입력 → 지도 표시 지연 · 이 화면에서 시작한 영상의 확정 키프레임을 기다립니다.';
+  target.dataset.report = JSON.stringify(frameLatency.report());
+  $('latency-export').disabled = !stats.samples;
+}
 const replay = {session: null, entries: [], following: true, time: 0, lastTick: 0, generation: 0,
   loading: false, applied: null, manifestRevision: null, cache: new Map()};
 const keys = new Set();
@@ -808,6 +818,7 @@ async function poll() {
     const query = state.session_id ? `?session=${encodeURIComponent(state.session_id)}&revision=${String(state.revision).padStart(6, '0')}` : '';
     const useDelta = run?.pose_source === 'orb_slam3' && run.source === state.source && run.input_run_id === state.session_id && run.revision < state.revision;
     const deltaQuery = useDelta ? `${query}&since_revision=${String(run.revision).padStart(6, '0')}` : query;
+    const fetchStarted = performance.now();
     const response = await source.read(`run${deltaQuery}`, context);
     if (!response) return;
     if (response.status === 503) { $('run-name').textContent = '영상 수신 중 · 충분한 시차와 관측점을 기다립니다.'; return; }
@@ -822,7 +833,9 @@ async function poll() {
     }
     if (value.source !== state.source || (state.session_id && value.input_run_id !== state.session_id)) return;
     if (!replay.following || (state.backend === 'orb_slam3_monocular' && state.session_id !== replay.session)) return;
+    const fetchedAt = performance.now();
     applyRun(value);
+    pendingPresentation = {scene: run, fetchMs: fetchedAt - fetchStarted, applyMs: performance.now() - fetchedAt};
     revision = run.revision ?? 0;
     if (state.source === 'live') { replay.applied = revision; replayControls(); liveStatus(state); }
     $('error').hidden = true;
@@ -952,7 +965,22 @@ function animate(time) {
   } else controls.update();
   if (navigating) $('explorer-position').textContent = `탐색 위치 ${camera.position.toArray().map((n) => n.toFixed(2)).join(' / ')} ${run.scale.unit === 'm' ? 'm' : '(임의 단위)'}`;
   objectLayer.render(time);
+  const renderStarted = performance.now();
   renderer.render(scene, camera);
+  if (pendingPresentation && !pendingPresentation.scheduled && root?.visible && cloud?.geometry.drawRange.count > 0 && run === pendingPresentation.scene &&
+      source.source === 'live' && replay.following && document.visibilityState === 'visible') {
+    const pending = pendingPresentation;
+    pending.scheduled = true;
+    const renderMs = performance.now() - renderStarted;
+    requestAnimationFrame(() => {
+      if (run === pending.scene && root?.visible && replay.following && source.source === 'live' && document.visibilityState === 'visible') {
+        const visibleIds = mode === 'hologram' ? (gridCells?.cells || []).filter(cell => cell.support >= confidenceThreshold).flatMap(cell => cell.sourceIds) :
+          filteredPoints.map(point => point[0]);
+        frameLatency.present(run, performance.now(), {fetchMs: pending.fetchMs, applyMs: pending.applyMs, renderMs}, visibleIds);
+        latencyStatus();
+      }
+    });
+  }
 }
 requestAnimationFrame(animate);
 document.querySelectorAll('[data-source]').forEach((tab) => {
@@ -969,9 +997,11 @@ window.addEventListener('hashchange', () => selectSource(location.hash === '#liv
 selectSource(source.source, true);
 connectCapture({
   onStart(id) {
+    frameLatency.start(id); pendingPresentation = null; latencyStatus();
     lastLiveState = {source: 'live', session_id: id, session_status: 'starting', status: 'starting', map_available: false};
     if (source.source === 'live') selectSource('live', true);
   },
+  onFrameTiming(mark) { frameLatency.record(mark); },
   onStatus(status) {
     captureState = status;
     $('live-tab-indicator').textContent = status.state === 'receiving' ? '수신 중' : ['requesting', 'connecting', 'stopping'].includes(status.state) ? '연결 중' : '';
@@ -984,3 +1014,9 @@ connectCapture({
     $('camera-start').disabled = true;
     if (source.source === 'live') liveStatus(lastLiveState);
   });
+$('latency-export').addEventListener('click', () => {
+  const blob = new Blob([JSON.stringify(frameLatency.report(), null, 2)], {type: 'application/json'});
+  const url = URL.createObjectURL(blob), link = document.createElement('a');
+  link.href = url; link.download = `${frameLatency.session}-latency.json`; link.click();
+  setTimeout(() => URL.revokeObjectURL(url), 1000);
+});
