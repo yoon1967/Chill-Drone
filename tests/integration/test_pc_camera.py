@@ -137,5 +137,37 @@ class PCCameraConfigurationTests(unittest.TestCase):
             self.assertEqual(session.publisher.state['status'], 'failed')
 
 
+class RecordingFinalizationTests(unittest.TestCase):
+    def test_mapping_metadata_write_failure_still_finishes_recording(self):
+        import modules.mapping.localization.orbslam3_live as live
+        with tempfile.TemporaryDirectory() as directory:
+            session = object.__new__(LiveSession)
+            session.path = Path(directory)
+            (session.path / 'ready.json').write_text('{}')
+            session.id, session.image = 'synthetic', 'synthetic-image'
+            session.condition = threading.Condition()
+            session.pending = session.inflight = None
+            session.closing = session.done = session.ready = False
+            session.error, session.reason = None, 'user_stop'
+            session.received = session.dropped = session.submitted = 0
+            session.last_sequence = session.last_pts = session.ack = -1
+            session.publisher = Mock(revision=1, state={})
+            session.recording = Mock()
+            session.recording.stats.return_value = {}
+            process = Mock(stdin=io.BytesIO(), stdout=io.BytesIO(), returncode=0)
+            process.poll.return_value = 0
+            original = live.atomic_json
+            def save(path, value):
+                if path.name == 'state.json':
+                    raise OSError('synthetic full disk')
+                original(path, value)
+            with patch.object(live.subprocess, 'Popen', return_value=process), patch.object(live, 'atomic_json', save):
+                session._run()
+            self.assertTrue(session.done)
+            self.assertEqual(session.error, 'session_metadata_write_OSError')
+            session.recording.finish_mapping.assert_called_once()
+            self.assertEqual(session.recording.finish_mapping.call_args.args[0]['status'], 'failed')
+
+
 if __name__ == "__main__":
     unittest.main()

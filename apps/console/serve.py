@@ -12,12 +12,14 @@ import re
 import sys
 import threading
 import time
+import zipfile
 from types import SimpleNamespace
 from urllib.parse import parse_qs, unquote, urlsplit
 
 APP = Path(__file__).resolve().parent
 sys.path.insert(0, str(APP.parents[1]))
 from modules.mapping.localization.observations import native_observations
+from modules.mapping.data.live_recording import archive_files
 
 
 def scene_delta(previous, current):
@@ -169,6 +171,12 @@ class ViewerHandler(BaseHTTPRequestHandler):
             value["session_id"] = self.session.name
             if self.current:
                 value.update(self.current.stats())
+            elif (self.session / 'session.json').is_file():
+                try:
+                    value['recording'] = {**load_json(self.session / 'session.json')['recording'],
+                                          'session_path': str(self.session)}
+                except (OSError, ValueError, KeyError, TypeError):
+                    pass
             value.setdefault("session_status", value.get("status", "starting"))
         value.update(schema_version="mapping-source-state/1.0", source=self.source,
                      coordinate_system=None, scale=None, map_available=False)
@@ -392,6 +400,50 @@ class ViewerHandler(BaseHTTPRequestHandler):
             return
         url = urlsplit(self.path)
         path = unquote(url.path)
+        if path in {'/api/live/session', '/api/live/session-download'}:
+            session = self.current.path if self.current else self.recorded_session
+            if session is None:
+                self.json_response({'error': 'no_live_session'}, 404)
+                return
+            requested = parse_qs(url.query).get('session', [None])[0]
+            if requested != session.name:
+                self.json_response({'error': 'camera_session_mismatch'}, 409)
+                return
+            try:
+                recorder = getattr(self.current, 'recording', None) if self.current else None
+                manifest = recorder.snapshot() if recorder else load_json(session / 'session.json')
+            except (OSError, ValueError):
+                self.json_response({'error': 'session_recording_unavailable'}, 404)
+                return
+            if (not isinstance(manifest, dict) or manifest.get('schema_version') != 'mapping-session/1.0'
+                    or not isinstance(manifest.get('recording'), dict)):
+                self.json_response({'error': 'invalid_session_manifest'}, 400)
+                return
+            if path == '/api/live/session':
+                self.json_response(manifest)
+                return
+            if (manifest['recording'].get('finalized') is not True or
+                    (self.current and not self.current.done)):
+                self.json_response({'error': 'session_save_in_progress'}, 409)
+                return
+            self.send_response(200)
+            self.send_header('Content-Type', 'application/zip')
+            name = session.name if re.fullmatch(r'[a-zA-Z0-9_-]{1,80}', session.name) else 'mapping-session'
+            self.send_header('Content-Disposition', f'attachment; filename="{name}.zip"')
+            self.send_header('Cache-Control', 'no-store')
+            self.send_header('Connection', 'close')
+            self.end_headers()
+            self.close_connection = True
+            try:
+                # Stream the completed folder with bounded memory; no second on-disk copy.
+                with zipfile.ZipFile(self.wfile, 'w', compression=zipfile.ZIP_STORED) as archive:
+                    for item, relative in archive_files(session):
+                        if relative != 'session.json':
+                            archive.write(item, name + '/' + relative)
+                    archive.writestr(name + '/session.json', json.dumps(manifest, ensure_ascii=False))
+            except (BrokenPipeError, ConnectionResetError, ConnectionAbortedError, OSError):
+                pass
+            return
         if path == '/api/live/tracking' and not self.current:
             if self.recorded_session:
                 requested = parse_qs(url.query).get('session', [None])[0]
@@ -566,7 +618,7 @@ class ViewerHandler(BaseHTTPRequestHandler):
                         pass  # Missing/pruned/unsupported bases always fall back to a complete snapshot.
             self.json_response(value)
             return
-        static = {"/": APP / "index.html", "/app.js": APP / "app.js", "/objects.js": APP / "objects.js", "/capture.js": APP / "capture.js", "/point-grid.js": APP / "point-grid.js", "/point-surfaces.js": APP / "point-surfaces.js", "/style.css": APP / "style.css",
+        static = {"/": APP / "index.html", "/app.js": APP / "app.js", "/objects.js": APP / "objects.js", "/capture.js": APP / "capture.js", "/recording-view.js": APP / "recording-view.js", "/point-grid.js": APP / "point-grid.js", "/point-surfaces.js": APP / "point-surfaces.js", "/style.css": APP / "style.css",
                   "/point-surface-worker.js": APP / "point-surface-worker.js", "/map-delta.js": APP / "map-delta.js",
                   "/map-source.js": APP / "map-source.js", "/wide-surfaces.js": APP / "wide-surfaces.js",
                   "/frame-latency.js": APP / "frame-latency.js",

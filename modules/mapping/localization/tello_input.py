@@ -89,6 +89,10 @@ class DirectCamera:
         self.link_factory, self.video_factory = link_factory, video_factory
         self.link = self.video = None
         self.stream_requested = False
+        self.recording = self.recording_sink = None
+
+    def set_recording(self, recording):
+        self.recording = recording
 
     def open(self, cancelled):
         self.link = self.link_factory(allow_flight=False)
@@ -100,6 +104,10 @@ class DirectCamera:
         if cancelled():
             return
         self.video = self.video_factory()
+        if self.recording:
+            self.recording_sink = self.recording.open_part('h264', 'pc_udp_receive_monotonic')
+            if self.recording_sink:
+                self.video.packet_sink = self.recording_sink.offer
         self.video.start()
         self.stream_requested = True
         if not self.link.send("streamon", timeout=3, source="mapping").ok:
@@ -130,6 +138,9 @@ class DirectCamera:
                 if self.video:
                     self.video.stop()
             finally:
+                if self.recording_sink:
+                    self.recording_sink.close(self.video.stats() if self.video else None)
+                    self.recording_sink = None
                 if self.link:
                     self.link.close()
                 self.link = self.video = None
@@ -147,6 +158,10 @@ class GatewayCamera:
         self.checked = -math.inf
         self.run_id = None
         self.source_label = "gateway_unspecified"
+        self.recording = self.recording_sink = None
+
+    def set_recording(self, recording):
+        self.recording = recording
 
     def check(self):
         try:
@@ -180,12 +195,16 @@ class GatewayCamera:
         self.response = self.opener.open(Request(self.address + "/video.mjpg"), timeout=2)
         if "multipart/x-mixed-replace" not in self.response.headers.get("Content-Type", ""):
             raise InputError("tello_gateway_invalid_content_type")
+        if self.recording:
+            self.recording_sink = self.recording.open_part('received_jpeg', self.time_basis)
 
     def frames(self, cancelled):
         for jpeg in mjpeg_frames(self.response, cancelled):
             # Windows monotonic() can have a coarse tick. Several JPEGs may arrive
             # in one socket read, so use the high-resolution monotonic counter.
             stamp = time.perf_counter()
+            if self.recording_sink:
+                self.recording_sink.offer(jpeg, stamp)
             if time.monotonic() - self.checked >= .25:
                 self.check()
             yield jpeg, stamp
@@ -194,6 +213,9 @@ class GatewayCamera:
         if self.response:
             self.response.close()
             self.response = None
+        if self.recording_sink:
+            self.recording_sink.close()
+            self.recording_sink = None
 
 
 class TelloMapInput:
@@ -250,6 +272,8 @@ class TelloMapInput:
         try:
             while not cancelled():
                 try:
+                    if hasattr(source, 'set_recording'):
+                        source.set_recording(getattr(session, 'recording', None))
                     source.open(cancelled)
                     if cancelled():
                         break
@@ -281,6 +305,8 @@ class TelloMapInput:
                             continue
                         if base is None:
                             base = stamp
+                            if getattr(session, 'recording', None):
+                                session.recording.set_mapping_origin(base)
                         session.offer(jpeg, stamp - base, sequence)
                         sequence += 1
                     if not cancelled():
@@ -314,6 +340,8 @@ class TelloMapInput:
                 pass
             if not cancelled():
                 session.stop("tello_input_ended")
+            if getattr(session, 'recording', None):
+                session.recording.finish_input()
 
     def latest(self, session_id):
         with self.lock:

@@ -34,6 +34,12 @@
         <div><dt>특징점 추적</dt><dd><strong id="tracking-state">대기 중</strong><p id="tracking-detail">아직 받은 영상이 없습니다.</p></dd></div>
         <div><dt>3D 지도</dt><dd><strong id="map-state">생성 전</strong><p id="map-detail">충분한 움직임과 관측점이 모이면 점이 표시됩니다.</p></dd></div></dl>
       <p id="session-detail"></p>
+      <div id="session-recording" class="session-recording" hidden role="status" aria-label="영상·세션 저장">
+        <strong id="recording-state">자동 저장 대기</strong>
+        <span id="recording-detail"></span>
+        <p id="recording-path"></p>
+        <a id="session-download" hidden download>영상·지도·기록 묶음 저장 ↓</a>
+      </div>
     </section>
     <section id="live-panel" class="live-panel" hidden aria-label="실시간 영상 연결">
       <div><strong>카메라에서 공간으로</strong><p>영상을 받으며 같은 특징점을 추적하고 3D 점을 갱신합니다.</p></div>

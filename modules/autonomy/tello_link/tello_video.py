@@ -33,6 +33,10 @@ class TelloVideo:
         self.decode_errors = 0
         self.last_packet_mono: float | None = None
         self.size: tuple[int, int] | None = None
+        # Optional nonblocking observer for exact received H.264 bytes. It must
+        # enqueue work; disk I/O belongs to the caller's recording worker.
+        self.packet_sink = None
+        self.packet_sink_errors = 0
 
     @property
     def running(self) -> bool:
@@ -76,6 +80,11 @@ class TelloVideo:
             self.packets += 1
             self.bytes += len(data)
             self.last_packet_mono = time.monotonic()
+            if self.packet_sink is not None:
+                try:
+                    self.packet_sink(data, self.last_packet_mono)
+                except Exception:
+                    self.packet_sink_errors += 1
             try:
                 for packet in self._codec.parse(data):
                     for frame in self._codec.decode(packet):
@@ -133,6 +142,7 @@ class TelloVideo:
             "bytes": self.bytes,
             "frames": self.frames,
             "decode_errors": self.decode_errors,
+            "packet_sink_errors": self.packet_sink_errors,
             "fps": fps,
             "frame_age_s": None if frame_mono is None else round(now - frame_mono, 3),
             "packet_age_s": None if self.last_packet_mono is None else round(now - self.last_packet_mono, 3),
