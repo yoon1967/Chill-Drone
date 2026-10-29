@@ -4,4 +4,5 @@ fastapi>=0.110        # MIT
 uvicorn[standard]>=0.29  # BSD-3-Clause
 av>=12                # BSD-3-Clause (휠에 FFmpeg 포함, 라이선스는 README 참고)
 pillow>=10            # MIT-CMU (HPND)
+opencv-python>=4.10   # Apache-2.0; fast JPEG encoding
 numpy>=1.24           # BSD-3-Clause, 가짜 Tello 테스트 영상 생성에만 사용

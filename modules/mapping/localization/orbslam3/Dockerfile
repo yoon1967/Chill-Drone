@@ -29,9 +29,19 @@ RUN --mount=type=cache,id=ssafy-orb4452-build,target=/opt/ORB_SLAM3/build \
        || { grep -n -E 'error:|Error|No rule|undefined reference|Killed' /tmp/orb-build.log; tail -40 /tmp/orb-build.log; exit 1; })
 ENV LD_LIBRARY_PATH=/opt/ORB_SLAM3/lib:/opt/ORB_SLAM3/Thirdparty/DBoW2/lib:/opt/ORB_SLAM3/Thirdparty/g2o/lib:/usr/local/lib
 
-FROM dependencies AS runtime
-COPY CMakeLists.txt bridge.cpp /opt/bridge/
+FROM dependencies AS guarded
+COPY safe_sim3.hpp /opt/ORB_SLAM3/include/
+COPY apply_guard.cmake /opt/patch/
+RUN cmake -DORB_ROOT=/opt/ORB_SLAM3 -P /opt/patch/apply_guard.cmake
+RUN --mount=type=cache,id=ssafy-orb4452-build,target=/opt/ORB_SLAM3/build \
+    cmake -S /opt/ORB_SLAM3 -B /opt/ORB_SLAM3/build -DCMAKE_BUILD_TYPE=Release \
+    && cmake --build /opt/ORB_SLAM3/build --target ORB_SLAM3 -j2 >/tmp/guard-build.log 2>&1 \
+       || { tail -60 /tmp/guard-build.log; exit 1; }
+
+FROM guarded AS runtime
+COPY CMakeLists.txt bridge.cpp safe_sim3.hpp sim3_geometry_test.cpp /opt/bridge/
 RUN cmake -S /opt/bridge -B /opt/bridge/build -DCMAKE_BUILD_TYPE=Release \
-    && cmake --build /opt/bridge/build -j2
+    && cmake --build /opt/bridge/build -j2 \
+    && /opt/bridge/build/sim3_geometry_test
 WORKDIR /output
 ENTRYPOINT ["/opt/bridge/build/orb_video"]

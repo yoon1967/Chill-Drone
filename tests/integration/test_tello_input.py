@@ -74,9 +74,20 @@ class TelloInputTests(unittest.TestCase):
             lambda: TelloVideo(port=video_port, bind_ip='127.0.0.1'))
         try:
             source.open(lambda: False)
-            jpeg, stamp = next(source.frames(lambda: False))
+            frames = source.frames(lambda: False)
+            jpeg, stamp = next(frames)
             self.assertTrue(jpeg.startswith(b'\xff\xd8'))
             self.assertGreater(stamp, 0)
+            fake.send_video = False
+            while next(frames)[0] is not None:
+                pass
+            fake.send_video = True
+            while True:
+                jpeg, resumed = next(frames)
+                if jpeg is not None:
+                    break
+            self.assertGreater(resumed, stamp)
+            frames.close()
         finally:
             source.close()
         self.assertEqual(fake.received, ['command', 'streamon', 'streamoff'])
@@ -195,11 +206,11 @@ class TelloInputTests(unittest.TestCase):
             live = LiveManager(Path(directory))
             source = Frames()
             source.open = Mock(side_effect=InputError('tello_gateway_video_off_or_stale'))
-            adapter = TelloMapInput(live, source_factory=lambda: source)
+            adapter = TelloMapInput(live, source_factory=lambda: source, recovery_seconds=0)
             adapter.start({'fov':60})
             wait_for(lambda: not adapter.busy)
             self.assertTrue(source.closed)
-            self.assertEqual(live.current.error, 'tello_gateway_video_off_or_stale')
+            self.assertEqual(live.current.error, 'tello_reconnect_timeout')
             gate, entered = threading.Event(), threading.Event()
             source = Frames()
             def opening(cancelled):

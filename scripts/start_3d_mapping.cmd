@@ -18,6 +18,7 @@ exit /b %MAPPING_EXIT%
 # === PYTHON ===
 """Double-click for live mapping; drop a video to reconstruct and view its result."""
 import argparse
+import hashlib
 from datetime import datetime, timezone
 import importlib.util
 import json
@@ -33,6 +34,54 @@ import uuid
 import webbrowser
 
 ROOT = Path(os.environ['MAPPING_LAUNCHER']).resolve().parent.parent
+SLAM_IMAGE = 'ssafy-orbslam3:local'
+SLAM_SOURCE_LABEL = 'org.ssafy.mapping.source-sha256'
+
+
+def slam_source_hash(context):
+    """Version local image inputs; Python/web changes are read on every launch."""
+    digest = hashlib.sha256()
+    for path in sorted(context.rglob('*')):
+        relative = path.relative_to(context)
+        if not path.is_file() or any(part in {'build', '__pycache__', '.git'} for part in relative.parts):
+            continue
+        digest.update(relative.as_posix().encode('utf-8') + b'\0')
+        digest.update(path.read_bytes().replace(b'\r\n', b'\n') + b'\0')
+    return digest.hexdigest()
+
+
+def ensure_slam_image():
+    context = ROOT / 'modules/mapping/localization/orbslam3'
+    expected = slam_source_hash(context)
+    inspect = ['docker', 'image', 'inspect', SLAM_IMAGE, '--format',
+               '{{ index .Config.Labels "' + SLAM_SOURCE_LABEL + '" }}']
+    try:
+        engine = subprocess.run(['docker', 'info', '--format', '{{.ServerVersion}}'],
+                                capture_output=True, text=True, timeout=10)
+        if engine.returncode:
+            print('[ERROR] Start Docker Desktop (Linux engine), then run this CMD again.', flush=True)
+            return False
+        current = subprocess.run(inspect, capture_output=True, text=True, timeout=10)
+        if current.returncode == 0 and current.stdout.strip() == expected:
+            print('SLAM backend matches this checkout.', flush=True)
+            return True
+        print('Preparing the updated SLAM backend. The first build can take several minutes.\n'
+              'Keep internet available until the build finishes; existing containers stay running.', flush=True)
+        code = subprocess.call(['docker', 'build', '--label', SLAM_SOURCE_LABEL + '=' + expected,
+                                '-t', SLAM_IMAGE, str(context)], cwd=ROOT)
+        if code:
+            print('[ERROR] SLAM build failed. The site was not started with an outdated backend.', flush=True)
+            return False
+        current = subprocess.run(inspect, capture_output=True, text=True, timeout=10)
+        if current.returncode or current.stdout.strip() != expected:
+            print('[ERROR] Could not verify the updated SLAM image. Retry after checking Docker.', flush=True)
+            return False
+        print('Updated SLAM backend is ready.', flush=True)
+        return True
+    except (OSError, subprocess.TimeoutExpired) as error:
+        print('[ERROR] Docker is unavailable: ' + type(error).__name__ +
+              '. Start Docker Desktop, then run this CMD again.', flush=True)
+        return False
 
 
 def saved_result(folder):
@@ -92,6 +141,8 @@ def main():
             print('[ERROR] The video or result folder does not exist.')
             return 1
     else:
+        if not ensure_slam_image():
+            return 1
         # Reuse an existing saved map alongside live mapping, without changing it.
         candidates = [saved_result(folder) for folder in (ROOT / 'output/phone_mapping').glob('*') if folder.is_dir()]
         result = max((path for path in candidates if path),
@@ -156,8 +207,9 @@ def main():
                 process.wait()
 
 
-try:
-    sys.exit(main())
-except KeyboardInterrupt:
-    print('\nMapping launcher stopped.')
-    sys.exit(0)
+if __name__ == '__main__':
+    try:
+        sys.exit(main())
+    except KeyboardInterrupt:
+        print('\nMapping launcher stopped.')
+        sys.exit(0)

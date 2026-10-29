@@ -44,7 +44,7 @@ function fixture(t, {denied = false, enabled = true, devices = [], getMedia, fet
       requests.push({url, options});
       const value = url === '/api/live' ? {enabled, demo_available: false} :
         url === '/api/live/start' ? {session_id: 'live_test', session_status: 'starting'} :
-        url.startsWith('/api/live/state') ? {session_id: 'live_test', status: 'receiving', transport_ready: true} :
+        (url.startsWith('/api/live/state') || url.startsWith('/api/live/tracking')) ? {session_id: 'live_test', status: 'receiving', transport_ready: true} :
         url.startsWith('/api/live/frame') ? {frame_drops: 0, queue_depth: 1} : {status: 'stopping'};
       return fetcher ? fetcher(url, options, value) : reply(value);
     },
@@ -261,7 +261,7 @@ test('Tello mapping receives on the server, asks for no media, heartbeats and st
   const f = fixture(t, {fetcher: (url, options, value) => {
     if (url === '/api/live') return reply({...value, tello_map_enabled: true, tello_map_mode: 'direct'});
     if (url === '/api/live/tello/start') return reply({session_id: 'drone_map', session_status: 'starting'});
-    if (url.startsWith('/api/live/state')) { polling.resolve(); return reply({session_id: 'drone_map', transport_ready: true, session_status: 'receiving', last_input_sequence: 2}); }
+    if (url.startsWith('/api/live/state') || url.startsWith('/api/live/tracking')) { polling.resolve(); return reply({session_id: 'drone_map', transport_ready: true, session_status: 'receiving', last_input_sequence: 2}); }
     return reply(value);
   }});
   await f.connect(); f.get('input-source').value = 'tello-map'; f.get('input-source').handlers.change();

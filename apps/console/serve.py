@@ -316,7 +316,7 @@ class ViewerHandler(BaseHTTPRequestHandler):
 
     def log_message(self, format, *args):
         # Frame/status polling is operational traffic; avoid an unbounded terminal log.
-        if args and re.search(r"/api/(?:(?:saved|live)/)?(?:state|run|timeline|frame|slam-preview|tello-preview|tello/heartbeat)", str(args[0])):
+        if args and re.search(r"/api/(?:(?:saved|live)/)?(?:state|run|timeline|frame|tracking|slam-preview|tello-preview|tello/heartbeat)", str(args[0])):
             return
         super().log_message(format, *args)
 
@@ -381,6 +381,55 @@ class ViewerHandler(BaseHTTPRequestHandler):
             return
         url = urlsplit(self.path)
         path = unquote(url.path)
+        if path == '/api/live/tracking' and not self.current:
+            if self.recorded_session:
+                requested = parse_qs(url.query).get('session', [None])[0]
+                if requested and requested != self.recorded_session.name:
+                    self.json_response({'error': 'camera_session_mismatch'}, 409)
+                    return
+                progress_path = self.recorded_session / 'tracking.json'
+                try:
+                    progress = load_json(progress_path) if progress_path.is_file() else {}
+                    state = load_json(self.recorded_session / 'state.json')
+                except (OSError, ValueError):
+                    self.json_response({'source': 'live', 'error': 'source_unavailable'}, 503)
+                    return
+                self.json_response({**{k: v for k, v in progress.items() if k not in {'features', 'T_cw'}},
+                    **state, 'source': 'live', 'session_id': self.recorded_session.name,
+                    'preview_ready': (self.recorded_session / 'preview.jpg').is_file()})
+            else:
+                self.json_response({'source': 'live', 'status': 'idle', 'session_status': 'idle', 'preview_ready': False})
+            return
+        if path == '/api/live/tracking' and self.current:
+            requested_session = parse_qs(url.query).get('session', [None])[0]
+            if requested_session and requested_session != self.current.id:
+                self.json_response({'error': 'camera_session_mismatch'}, 409)
+                return
+            with self.current.condition:
+                progress = dict(getattr(self.current, 'preview_progress', {}))
+            stats = self.current.stats()
+            self.json_response({**progress, **stats, 'status': stats['session_status'],
+                'preview_ready': bool(progress.get('frame_id'))})
+            return
+        if path == '/api/live/slam-preview' and self.current and hasattr(self.current, 'previews'):
+            query = parse_qs(url.query)
+            if query.get('session', [''])[0] != self.current.id:
+                self.json_response({'error': 'camera_session_mismatch'}, 409)
+                return
+            frame = query.get('frame', [''])[0]
+            with self.current.condition:
+                payload = self.current.previews.get(frame)
+            if payload is None:
+                self.send_error(404, 'Tracking preview expired or not ready')
+                return
+            self.send_response(200)
+            self.send_header('Content-Type', 'image/jpeg')
+            self.send_header('Content-Length', str(len(payload)))
+            self.send_header('Cache-Control', 'no-store')
+            self.send_header('X-Frame-Id', frame)
+            self.end_headers()
+            self.write_payload(payload)
+            return
         if path == "/api/live/tello-preview.jpg":
             session = parse_qs(url.query).get("session", [""])[0]
             if not self.tello_map or not self.live or not self.live.current or self.live.current.id != session:
@@ -428,6 +477,7 @@ class ViewerHandler(BaseHTTPRequestHandler):
             self.json_response({"enabled": self.live is not None, "demo_available": self.demo is not None,
                                 "tello_map_enabled": self.tello_map is not None,
                                 "tello_map_mode": ("gateway" if self.tello_map.gateway else "direct") if self.tello_map else None,
+                                "tello_camera": self.tello_map.camera if self.tello_map else None,
                 "demo_camera": self.demo_camera, "current": self.current.stats() if self.current else None})
             return
         if path.startswith("/api/saved/"):
@@ -509,6 +559,7 @@ class ViewerHandler(BaseHTTPRequestHandler):
                   "/point-surface-worker.js": APP / "point-surface-worker.js", "/map-delta.js": APP / "map-delta.js",
                   "/map-source.js": APP / "map-source.js", "/wide-surfaces.js": APP / "wide-surfaces.js",
                   "/frame-latency.js": APP / "frame-latency.js",
+                  "/tracking-preview.js": APP / "tracking-preview.js",
                   "/vendor/three.module.js": APP / "node_modules/three/build/three.module.js",
                   "/vendor/three.core.js": APP / "node_modules/three/build/three.core.js",
                   "/vendor/OrbitControls.js": APP / "node_modules/three/examples/jsm/controls/OrbitControls.js"}
@@ -589,6 +640,7 @@ def main():
     parser.add_argument("--enable-camera", action="store_true", help="Enable local browser camera -> Docker ORB-SLAM3")
     parser.add_argument("--enable-tello-map", action="store_true", help="Enable Tello camera -> live 3D map (no flight commands)")
     parser.add_argument("--tello-gateway", help="Share video from a fixed loopback HTTP gateway, e.g. http://127.0.0.1:8010")
+    parser.add_argument('--tello-camera', type=Path, help='Override measured Tello camera JSON for another camera/crop')
     parser.add_argument("--enable-tello", action="store_true", help="Enable Tello/RoboMaster TT video and person detection")
     parser.add_argument("--tello-flight", action="store_true", help="Enable guarded manual flight controls in the Tello detection view")
     parser.add_argument("--tello-model", default="yolo26n-seg.pt",
@@ -618,7 +670,8 @@ def main():
     if args.enable_tello_map or args.tello_gateway:
         from modules.mapping.localization.tello_input import TelloMapInput
         try:
-            tello_map = TelloMapInput(live, args.tello_gateway)
+            tello_map = TelloMapInput(live, args.tello_gateway,
+                camera=json.loads(args.tello_camera.read_text(encoding='utf-8')) if args.tello_camera else None)
         except ValueError as error:
             parser.error(str(error))
     tello = None

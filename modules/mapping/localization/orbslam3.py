@@ -201,22 +201,31 @@ def convert(native, camera, progress, session, association=None, color_cache=Non
 
 
 def preview(session, progress, camera):
+    data = render_preview(session, progress, camera)
+    if data is None:
+        return
+    temporary = session / "preview.tmp.jpg"
+    temporary.write_bytes(data)
+    replace_file(temporary, session / "preview.jpg")
+
+
+def render_preview(session, progress, camera, remap=None):
     name = progress.get("frame_id", "")
     if not re.fullmatch(r"orb_\d{8}\.jpg", name):
         return
     image = cv2.imread(str(session / "previews" / name))
     if image is None:
         return
-    image = cv2.undistort(image, camera_matrix(camera), np.array(camera["distortion"]))
+    image = cv2.remap(image, *remap, cv2.INTER_LINEAR) if remap is not None else \
+        cv2.undistort(image, camera_matrix(camera), np.array(camera["distortion"]))
     for i, (x, y, point_id, same) in enumerate(progress.get("features", [])):
         x, y = round(x), round(y)
         color = (70, 230, 255) if same else (120, 240, 110)
         cv2.circle(image, (x, y), 2, color, 1, cv2.LINE_AA)
         if i % 15 == 0:
             cv2.putText(image, str(point_id), (x + 3, y - 3), cv2.FONT_HERSHEY_SIMPLEX, .3, color, 1, cv2.LINE_AA)
-    temporary = session / "preview.tmp.jpg"
-    cv2.imwrite(str(temporary), image)
-    replace_file(temporary, session / "preview.jpg")
+    ok, encoded = cv2.imencode('.jpg', image, [cv2.IMWRITE_JPEG_QUALITY, 80])
+    return encoded.tobytes() if ok else None
 
 
 def timeline_entry(scene):
@@ -234,6 +243,8 @@ class SessionPublisher:
         self.association = FixedPoseAssociation()
         self.color_cache, self.color_map_id = {}, None
         self.entries = []
+        self.segments = {}
+        self.preview_enabled = True
         self.state = {"status": "starting", "backend": "orb_slam3_monocular", "revision": 0,
                       "session_id": session.name, "map_available": False, "frame_drops": 0}
         atomic_json(session / "state.json", self.state)
@@ -243,7 +254,7 @@ class SessionPublisher:
         if progress:
             self.state.update({k: v for k, v in progress.items() if k not in {"features", "T_cw", "revision"}})
             self.state["mapping_state"] = {2: "tracking", 3: "recently_lost", 4: "lost"}.get(progress.get("tracking_state"), "initializing")
-            if progress.get("frame_id") != self.last_frame:
+            if self.preview_enabled and progress.get("frame_id") != self.last_frame:
                 preview(self.session, progress, self.camera)
                 self.last_frame = progress.get("frame_id")
             native = read_json(self.session / "native.json")
@@ -258,6 +269,13 @@ class SessionPublisher:
                     self.state.update(extra or {})
                     atomic_json(self.session / "state.json", self.state)
                     return
+                except (ValueError, KeyError, np.linalg.LinAlgError) as error:
+                    # A malformed/nonfinite snapshot must never replace the last valid map.
+                    self.state.update(map_warning='invalid_snapshot_preserved_previous',
+                                      map_warning_detail=type(error).__name__)
+                    self.state.update(extra or {})
+                    atomic_json(self.session / 'state.json', self.state)
+                    return
                 directory = self.session / "revisions" / f"{native['revision']:06d}"
                 directory.mkdir(exist_ok=True)
                 atomic_json(directory / "scene.json", scene)
@@ -266,6 +284,11 @@ class SessionPublisher:
                 atomic_json(directory / "status.json", {"status": "partial"})
                 self.revision = native["revision"]
                 self.entries.append(timeline_entry(scene))
+                self.segments[str(native['map_id'])] = timeline_entry(scene)
+                atomic_json(self.session / 'segments.json', {'session_id': self.session.name,
+                    'alignment': 'independent_native_maps; never_concatenate_unaligned_coordinates',
+                    'segments': list(self.segments.values())})
+                self.state.update(segments=list(self.segments.values()), map_warning=None)
                 atomic_json(self.session / "timeline.json", {"schema_version": "orb-map-timeline/1.0",
                     "session_id": self.session.name, "entries": self.entries})
                 self.state.update(revision=self.revision, map_available=True, revision_path=f"revisions/{self.revision:06d}",

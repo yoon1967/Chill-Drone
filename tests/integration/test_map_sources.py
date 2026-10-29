@@ -286,6 +286,36 @@ class MapSourceTests(unittest.TestCase):
         current.error = "synthetic tracker failure"
         self.assertEqual(current.stats()["session_status"], "failed")
 
+    def test_tracking_preview_avoids_scene_reads_and_never_substitutes_another_frame(self):
+        idle_port = self.serve()
+        idle_status, idle = self.request(idle_port, '/api/live/tracking')
+        self.assertEqual(idle_status, 200)
+        self.assertEqual(idle['status'], 'idle')
+        self.manager.start(self.config)
+        current = self.manager.current
+        current.previews = {'orb_00000001.jpg': b'exact processed image'}
+        current.preview_progress = {'frame_id': 'orb_00000001.jpg', 'tracking_state': 2}
+        # The fast path must work even while map metadata is not readable.
+        (current.path / 'state.json').write_text('{incomplete', encoding='utf-8')
+        port = self.serve()
+        status, tracking = self.request(port, '/api/live/tracking?session=' + current.id)
+        self.assertEqual(status, 200)
+        self.assertEqual(tracking['frame_id'], 'orb_00000001.jpg')
+        self.assertTrue(tracking['preview_ready'])
+        status, image = self.request(port, '/api/live/slam-preview?session=' + current.id + '&frame=orb_00000001.jpg')
+        self.assertEqual((status, image), (200, b'exact processed image'))
+        current.publish()
+        status, image = self.request(port, '/api/live/slam-preview?session=' + current.id + '&frame=orb_00000001.jpg')
+        self.assertEqual((status, image), (200, b'exact processed image'))
+        self.assertEqual(self.request(port, '/api/live/slam-preview?session=' + current.id + '&frame=orb_00000000.jpg')[0], 404)
+        self.assertEqual(self.request(port, '/api/live/tracking?session=old_session')[0], 409)
+        current.stop()
+        recorded_port = self.serve(live=None, session=current.path)
+        self.assertEqual(self.request(recorded_port, '/api/live/tracking?session=old_session')[0], 409)
+        self.assertEqual(self.request(recorded_port, '/api/live/tracking?session=' + current.id)[0], 200)
+        (current.path / 'state.json').write_text('{broken', encoding='utf-8')
+        self.assertEqual(self.request(recorded_port, '/api/live/tracking')[0], 503)
+
     def test_brief_state_file_sharing_violation_is_retried(self):
         self.manager.start(self.config)
         current = self.manager.current

@@ -40,6 +40,10 @@ export function captureError(error) {
     tello_video_timeout_check_wifi_and_udp: '드론 카메라 영상이 들어오지 않습니다. Wi-Fi 연결과 UDP 11111 수신 설정을 확인하세요.',
     tello_gateway_video_off_or_stale: '조종 사이트의 드론 영상이 꺼져 있거나 끊겼습니다. 그 사이트에서 영상을 켠 뒤 다시 시작하세요.',
     tello_gateway_stream_ended: '드론 게이트웨이 영상 연결이 종료됐습니다. 다시 연결하면 새 지도 세션을 시작합니다.',
+    tello_reconnect_timeout: '30초 동안 영상을 복구하지 못했습니다. 마지막 지도와 이전 구간을 보존했습니다. Wi-Fi·게이트웨이를 확인하세요.',
+    tello_server_reconnect_timeout: '45초 동안 서버에 다시 연결하지 못했습니다. 서버를 확인한 뒤 보존된 지도를 다시 여세요.',
+    tracker_numerical_failure: 'SLAM 수치 오류가 발생했습니다. 마지막 지도와 오류 진단을 보존했습니다.',
+    tracker_process_crashed: 'SLAM 프로세스가 중단됐습니다. 마지막 지도와 오류 진단을 보존했습니다.',
     tello_input_cleanup_pending: '이전 드론 연결을 정리하고 있습니다. 잠시 뒤 다시 시작하세요.',
     tello_detection_input_is_active: '드론 사람 탐지 입력이 실행 중입니다. 먼저 해당 입력을 종료하세요.',
     tello_gateway_session_changed: '드론 게이트웨이 실행 회차가 바뀌었습니다. 다시 연결해 새 지도 세션을 시작하세요.',
@@ -47,7 +51,7 @@ export function captureError(error) {
   };
   if (telloErrors[error.message]) return {state: 'disconnected', message: telloErrors[error.message]};
   if (error.message?.startsWith('tello_input_unavailable'))
-    return {state: 'disconnected', message: '드론 영상 연결에 실패했습니다. Wi-Fi·게이트웨이 실행 상태와 다른 드론 프로그램의 포트 사용 여부를 확인하세요. 직접 연결에는 PyAV와 Pillow가 필요합니다.'};
+    return {state: 'disconnected', message: '드론 영상 연결에 실패했습니다. Wi-Fi·게이트웨이 실행 상태와 다른 드론 프로그램의 포트 사용 여부를 확인하세요. 직접 연결에는 PyAV와 OpenCV가 필요합니다.'};
   if (error.name === 'NotAllowedError' || error.name === 'SecurityError')
     return {state: 'denied', message: '카메라 권한이 거부되었습니다. 브라우저의 이 사이트 카메라 권한을 확인한 뒤 다시 시작하세요.'};
   if (error.name === 'NotFoundError')
@@ -91,6 +95,10 @@ export function connectionStatus({reachable = true, responseOK = true, state = {
     result.map = !state.transport_ready ? row('준비 중', 'warn') :
       state.mapping_state === 'lost' || state.tracking_state === 3 ? row('추적 상실', 'warn') :
       state.map_available && state.tracking_state === 2 ? row('생성 중', 'ok') : row('초기화 중', 'warn');
+    if (state.input_state === 'reconnecting') {
+      result.video = row('재연결 중', 'warn');
+      result.map = row(state.map_available ? '지도 보존 · 복구 대기' : '영상 복구 대기', 'warn');
+    }
   } else if (pending) { result.video = row('대기'); result.map = row('준비 중', 'warn'); }
   else if (state.session_id) { result.video = row('종료'); result.map = row(state.map_available ? '기록 보존' : '생성 전'); }
   if (error === 'tello_sdk_unavailable_check_wifi') {
