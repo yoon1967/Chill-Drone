@@ -13,6 +13,7 @@ import uuid
 from PIL import Image, UnidentifiedImageError
 
 from .orbslam3 import IMAGE, SessionPublisher, atomic_json, read_json, write_settings, render_preview, camera_matrix, replace_file
+from modules.mapping.data.live_recording import SessionRecording
 
 
 def require_slam_image():
@@ -118,6 +119,8 @@ class LiveSession:
         self.previews = {}
         self.preview_progress = {}
         self.publisher.state["calibration_status"] = camera["calibration_status"]
+        self.recording = SessionRecording(self.path, camera, input_kind)
+        self.jpeg_recording = self.recording.open_part('received_jpeg', timestamp_basis) if input_kind == 'browser_camera' else None
         self.worker = threading.Thread(target=self._run, daemon=True, name=self.id)
         self.worker.start()
 
@@ -144,7 +147,8 @@ class LiveSession:
                     "frame_drops": self.dropped, "queue_depth": int(self.pending is not None),
                     "queue_capacity": 1, "stop_reason": self.reason if self.closing else None,
                     "last_input_timestamp_s": self.last_pts if self.last_pts >= 0 else None,
-                    "last_input_sequence": self.last_sequence if self.last_sequence >= 0 else None}
+                    "last_input_sequence": self.last_sequence if self.last_sequence >= 0 else None,
+                    "recording": self.recording.stats() if getattr(self, 'recording', None) else None}
 
     def offer(self, jpeg, pts, sequence):
         if not math.isfinite(pts) or not 0 <= pts <= 86400 or sequence < 0:
@@ -168,6 +172,8 @@ class LiveSession:
             self.last_pts, self.last_sequence = pts, sequence
             self.received += 1
             self.last_input = time.monotonic()
+            if getattr(self, 'jpeg_recording', None):
+                self.jpeg_recording.offer(jpeg, pts)
             self.pending = (jpeg, pts, self.last_input)
             self.condition.notify_all()
         return self.stats()
@@ -351,15 +357,22 @@ class LiveSession:
             self.done, self.ready = True, False
             if preview_worker:
                 preview_worker.join(timeout=3)
-            atomic_json(self.path / 'diagnostics.json', {'error': self.error,
-                'stop_reason': self.reason or 'tracker_eof', 'last_input_pts': self.last_pts,
-                'last_submitted_pts': self.inflight[0] if getattr(self, 'inflight', None) else None,
-                'last_ack_pts': getattr(self, 'ack', -1), 'last_valid_revision': self.publisher.revision,
-                'backend_log': 'orb.log', 'client_events': 'events.jsonl',
-                'tracking_failures': 'tracking_failures.jsonl', 'maps_preserved': True})
             self.publisher.state.update(self.stats(), status="failed" if self.error else "complete",
                                         last_error=self.error, input=getattr(self, "input_kind", "browser_camera"))
-            atomic_json(self.path / "state.json", self.publisher.state)
+            try:
+                atomic_json(self.path / 'diagnostics.json', {'error': self.error,
+                    'stop_reason': self.reason or 'tracker_eof', 'last_input_pts': self.last_pts,
+                    'last_submitted_pts': self.inflight[0] if getattr(self, 'inflight', None) else None,
+                    'last_ack_pts': getattr(self, 'ack', -1), 'last_valid_revision': self.publisher.revision,
+                    'backend_log': 'orb.log', 'client_events': 'events.jsonl',
+                    'tracking_failures': 'tracking_failures.jsonl', 'maps_preserved': True})
+                atomic_json(self.path / "state.json", self.publisher.state)
+            except OSError as error:
+                self.error = self.error or 'session_metadata_write_' + type(error).__name__
+                self.publisher.state.update(self.stats(), status='failed', last_error=self.error)
+            finally:
+                if getattr(self, 'recording', None):
+                    self.recording.finish_mapping(self.publisher.state)
 
 
 class LiveManager:
@@ -389,3 +402,5 @@ class LiveManager:
         if self.current and not self.current.done:
             self.current.stop("server_shutdown")
             self.current.worker.join(timeout=20)
+        if self.current and getattr(self.current, 'recording', None):
+            self.current.recording.wait(timeout=30)

@@ -5,6 +5,7 @@ import { connectCapture } from '/capture.js';
 import { MapSource, monitorConnections } from '/map-source.js';
 import { updatePointGrid, pointSpacingProfile, pointGridCells, displayPointCells } from '/point-grid.js';
 import { applySceneDelta } from '/map-delta.js';
+import { renderRecording } from '/recording-view.js';
 import { FrameLatency } from '/frame-latency.js';
 import { connectTrackingPreview, trackingDescription } from '/tracking-preview.js';
 const $ = (id) => document.getElementById(id);
@@ -147,6 +148,7 @@ function selectSource(next, force = false) {
 
 function liveStatus(state) {
   lastLiveState = state;
+  renderRecording(state);
   captureHandle?.update(state);
   const local = captureState.state;
   const names = {idle: '입력 전', requesting: '권한 확인 중', connecting: '연결 중', receiving: '수신 중', stopping: '종료 중',
