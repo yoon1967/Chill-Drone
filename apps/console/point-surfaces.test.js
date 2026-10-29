@@ -279,8 +279,11 @@ test('worker resynchronizes geometry after the UI skips an obsolete result', asy
   globalThis.self={postMessage:message => messages.push(message)};
   try {
     await import('./point-surface-worker.js');
-    const points=plane(4,4), observations=metadata(points), grid=pointGridCells(points,1,observations,3);
-    const send=(id,ack) => self.onmessage({data:{id,ack,points,grid,observations,settings:{spacing:1},context:context(id)}});
+    const points=plane(4,4), observations=metadata(points);
+    const send=(id,ack) => self.onmessage({data:{id,ack,interval:1,
+      update:{reset:id===1,base:id-1,version:id,points:id===1?points:[],removed:[],
+        observations:id===1?observations.frame_index_by_point:{},metadata:{schema_version:'point-observations/1.0'}},
+      settings:{spacing:1},context:{...context(id),cameras:Array.from({length:3},()=>({}))}}});
     await send(1,0); await send(2,0); await send(3,2);
     assert.ok(messages[0].result.patches.length>0);
     assert.ok(messages[1].result.reset);

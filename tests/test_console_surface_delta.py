@@ -88,7 +88,8 @@ class ConsoleDeltaTests(unittest.TestCase):
                         urlopen(base + path)
                     self.assertEqual(caught.exception.code, expected)
                     caught.exception.close()
-                for path in ("/point-surface-worker.js", "/map-delta.js", "/wide-surfaces.js"):
+                for path in ("/point-surface-worker.js", "/map-delta.js", "/wide-surfaces.js",
+                             "/point-display.js", "/point-worker-state.js", "/point-spacing-worker.js"):
                     with urlopen(base + path) as response:
                         self.assertEqual(response.status, 200)
                         self.assertIn("javascript", response.headers["Content-Type"])
