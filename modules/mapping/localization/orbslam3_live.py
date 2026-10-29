@@ -3,6 +3,7 @@ from __future__ import annotations
 
 import math
 import io
+import json
 from pathlib import Path
 import subprocess
 import threading
@@ -96,10 +97,12 @@ class LiveSession:
         self.closing = False
         self.done = False
         self.ready = False
-        self.reason = "user_stop"
+        self.reason = None
+        self.client_event_count = 0
         self.error = None
         self.last_sequence, self.last_pts, self.ack = -1, -1., -1.
         self.last_input = time.monotonic()
+        self.created = self.last_input
         self.received = self.dropped = self.submitted = 0
         self.inflight = None
         self.path.mkdir(parents=True)
@@ -169,8 +172,26 @@ class LiveSession:
             self.condition.notify_all()
         return self.stats()
 
+    def record_event(self, kind, message=""):
+        if kind not in {'client_error', 'status_retry', 'status_recovered', 'page_hidden', 'stop_requested'}:
+            raise ValueError('invalid_client_event')
+        if not isinstance(message, str) or len(message) > 1024:
+            raise ValueError('invalid_client_event_message')
+        with self.condition:
+            if self.client_event_count >= 512:
+                return
+            event = {'event': kind, 'message': message, 'elapsed_s': time.monotonic() - self.created,
+                     'input_timestamp_s': self.last_pts, 'processed_timestamp_s': self.ack}
+            with (self.path / 'events.jsonl').open('a', encoding='utf-8') as output:
+                output.write(json.dumps(event, ensure_ascii=False) + '\n')
+            self.client_event_count += 1
+
     def stop(self, reason="user_stop"):
         with self.condition:
+            # Cleanup and duplicate requests must not overwrite the first cause.
+            if self.closing or self.done:
+                return
+            self.record_event('stop_requested', reason)
             self.closing, self.reason = True, reason
             self.pending = None
             self.condition.notify_all()
@@ -330,11 +351,12 @@ class LiveSession:
             self.done, self.ready = True, False
             if preview_worker:
                 preview_worker.join(timeout=3)
-            if self.error:
-                atomic_json(self.path / 'diagnostics.json', {'error': self.error,
-                    'stop_reason': self.reason, 'last_submitted_pts': self.last_pts,
-                    'last_ack_pts': getattr(self, 'ack', -1), 'last_valid_revision': self.publisher.revision,
-                    'backend_log': 'orb.log', 'maps_preserved': True})
+            atomic_json(self.path / 'diagnostics.json', {'error': self.error,
+                'stop_reason': self.reason or 'tracker_eof', 'last_input_pts': self.last_pts,
+                'last_submitted_pts': self.inflight[0] if getattr(self, 'inflight', None) else None,
+                'last_ack_pts': getattr(self, 'ack', -1), 'last_valid_revision': self.publisher.revision,
+                'backend_log': 'orb.log', 'client_events': 'events.jsonl',
+                'tracking_failures': 'tracking_failures.jsonl', 'maps_preserved': True})
             self.publisher.state.update(self.stats(), status="failed" if self.error else "complete",
                                         last_error=self.error, input=getattr(self, "input_kind", "browser_camera"))
             atomic_json(self.path / "state.json", self.publisher.state)

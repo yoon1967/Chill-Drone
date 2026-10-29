@@ -324,6 +324,6 @@ class TelloMapInput:
 
     def shutdown(self):
         if self.session and not self.session.done:
-            self.session.stop()
+            self.session.stop('server_shutdown')
         if self.worker:
             self.worker.join(timeout=10)

@@ -7,6 +7,7 @@ import json
 from pathlib import Path
 import tempfile
 import threading
+import time
 import unittest
 from unittest.mock import Mock, patch
 import uuid
@@ -54,6 +55,8 @@ class SyntheticSession(LiveSession):
         self.condition = threading.Condition()
         self.pending, self.closing, self.done, self.ready, self.error = None, False, False, True, None
         self.reason = "user_stop"
+        self.created = self.last_input = time.monotonic()
+        self.client_event_count = 0
         self.received = self.dropped = self.submitted = 0
         self.last_sequence, self.last_pts, self.ack = -1, -1., -1.
         self.state = {"status": "receiving", "backend": "orb_slam3_monocular", "revision": 0, "map_available": False}

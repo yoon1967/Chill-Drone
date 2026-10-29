@@ -52,6 +52,12 @@ native SLAM 자체는 다음 snapshot에서 자세를 다시 최적화할 수 �
 
 `state.json`은 입력/정상 추적 수, 추적 상태, 반복 관측 수, 처리 시간 P95,
 영상 시각 대비 재생 지연과 마지막 유효 revision을 노출한다.
+`statistics_window_frames`가 있는 새 기록의 `tracking_p95_ms`·`input_lag_p95_seconds`는
+최근 최대 300프레임 기준이다. 이 필드가 없는 구 기록은 세션 누적 기준이다.
+정상 추적 비율·입력/추적 프레임 수는 계속 세션 누적 기준이다.
+선택적 `frame_tracking.detected_features`는 검출 코너 수,
+`map_candidates`는 지도점 대응 후보 수이며 기하 최적화가 수락한 inlier 수는 아니다.
+native의 선택적 `export_lock_ms`와 state의 `map_export_lock_ms`는 값 복사 중 지도 잠금 유지 시간이다.
 `initializing_frames`와 `lost_tracking_frames`를 구분하며 초기화 전 프레임을 추적 상실로 세지 않는다.
 `/api/slam-preview`는 왜곡 보정된 현재 프레임과 지도 점 ID 대응을 보여주는 로컬 이미지다.
 노랑은 직전 처리 프레임과 같은 native ID, 초록은 이번에 연결된 ID다.
@@ -73,10 +79,13 @@ native SLAM 자체는 다음 snapshot에서 자세를 다시 최적화할 수 �
 실시간 성능으로 취급하지 않는다. `performance_target_met`는 입력 30장 초과, 원래 속도,
 정상 추적 비율 90% 이상, tracking P95가 원본 프레임 간격 이하, 재생 지연 P95 2초 이하의
 동시 충족 여부다. 이는 희소 추적에만 해당하며 전체 공간 복원·비행 정확도 인증이 아니다.
-키프레임 지도 발행 후 대기는 250ms이며 웹은 상태를 250ms 간격으로 확인한다.
-snapshot·검증·전송 시간을 포함한 실제 지도 갱신율은 별도로 측정하며 4Hz를 보장하지 않는다.
+키프레임 지도 발행 후 대기는 1초이며 웹 지도 조회 간격은 750ms다.
+snapshot·검증·전송 시간을 포함한 실제 지도 갱신율은 별도로 측정하며 1Hz를 보장하지 않는다.
+추적이 지도 잠금을 사용 중이면 주기적 내보내기는 건너뛰며 최종 내보내기는 완료를 기다린다.
+지도 잠금 안에서는 값만 복사하고 JSON 조립·저장은 잠금 밖에서 수행한다.
 추적과 지도 파일 발행은 별도 스레드다. 프레임 RGB는 최근 180장만 메모리에 유지하고
-실제 선택된 키프레임만 저장한다. 미리보기는 최대 5Hz·최근 8장으로 제한한다.
+실제 선택된 키프레임만 저장한다. 미리보기는 별도 스레드에서 최대 10Hz·최근 8장,
+대기 작업 최신 1개로 제한한다.
 웹은 최근 600개 visible 렌더 프레임의 FPS·프레임 간격 P95를 별도 표시한다.
 단안 단위는 arbitrary다. IMU·깊이·실측 없이 미터로 승격하지 않는다.
 밀집 깊이·메시·텍스처와 실기체 RTSP/UDP 입력은 후속 단계다.
@@ -91,7 +100,8 @@ snapshot·검증·전송 시간을 포함한 실제 지도 갱신율은 별도�
 | `GET /api/live` | 지원 여부, 현재 세션 상태, 명시적으로 지정된 시연 영상 여부 |
 | `POST /api/live/start` | JSON `width,height,fps,camera?` 또는 `fov`; 새 고유 `session_id` 반환 |
 | `POST /api/live/frame?session=ID` | JPEG ≤2MiB, `X-Frame-Timestamp`(0부터 단조 증가 media 초), `X-Frame-Sequence`(0부터 단조 증가) |
-| `POST /api/live/stop` | JSON `session_id`; 마지막 전송 프레임 처리 후 정상 종료 요청 |
+| `POST /api/live/stop` | JSON `session_id,reason?,error?`; 최초 종료 사유를 보존하며 종료 요청 |
+| `POST /api/live/event` | JSON `session_id,event,message?`; 세션에 한정된 로컬 클라이언트 진단 |
 
 전송 이미지는 보정값과 같은 해상도·크롭이어야 한다. 내부 카메라 전송은 음성 없이 최대
 960px이며 보정 JSON이 없으면 화각 추정 상태를 노출한다. 서버 대기는 최신 1장,
@@ -104,6 +114,16 @@ Docker stdin은 처리 ACK 전까지 1장으로 제한한다. stdin 형식은 AS
 처리된 `frames_received`·초기화·추적 상실 수와 구별한다. 브라우저는 영상 콜백의
 presentedFrames를 시퀀스 기준으로 사용하고, 미지원 환경에서는 콜백 수를 기준으로 사용한다.
 파일 입력과 브라우저 입력은 같은 snapshot 발행기를 사용한다.
+
+`stop.reason`은 `user_stop`, `page_hidden`, `client_error`, `browser_media_ended`,
+`start_cancelled` 중 하나이며 생략 시 구 클라이언트 호환을 위해 `user_stop`이다.
+`error`는 선택적 문자열(최대 1024자)이다. 서버 자체 종료·입력 오류 사유는 클라이언트가 지정할 수 없다.
+`event`는 `client_error`, `status_retry`, `status_recovered`, `page_hidden`, `stop_requested` 중 하나이며,
+`message`는 최대 1024자다. 서버가 관측한 입력·처리 시각을 붙여 세션당 최대 512건 기록한다.
+상태 조회 실패만으로 클라이언트가 서버 처리를 종료하지 않으며 서버의 입력·heartbeat 기한은 유지한다.
+최초 종료 사유는 후속 정리 요청으로 덮어쓰지 않는다. 정상 종료도 `diagnostics.json`을 저장한다.
+추적 상실 전환 진단은 `tracking_failures.jsonl`에 최대 512건,
+그 전후 이미지는 `diagnostic_frames/`에 최근 8회분만 남긴다. 이 자료는 로컬 ignore 산출물이다.
 
 ## 지도 시계열 재생
 

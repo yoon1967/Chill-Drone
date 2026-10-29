@@ -240,6 +240,7 @@ class SessionPublisher:
         self.session, self.camera = session, camera
         self.revision, self.last_frame = 0, None
         self.consumed_revision = 0
+        self.native_signature = None
         self.association = FixedPoseAssociation()
         self.color_cache, self.color_map_id = {}, None
         self.entries = []
@@ -257,9 +258,20 @@ class SessionPublisher:
             if self.preview_enabled and progress.get("frame_id") != self.last_frame:
                 preview(self.session, progress, self.camera)
                 self.last_frame = progress.get("frame_id")
-            native = read_json(self.session / "native.json")
+            native = None
+            native_path = self.session / 'native.json'
+            try:
+                info = native_path.stat()
+                signature = (info.st_mtime_ns, info.st_size, info.st_ino)
+                if signature != self.native_signature:
+                    native = read_json(native_path)
+                    if native is not None:
+                        self.native_signature = signature
+            except OSError:
+                pass
             if native and native["revision"] != self.consumed_revision:
                 self.consumed_revision = native["revision"]
+                self.state['map_export_lock_ms'] = native.get('export_lock_ms')
                 if self.color_map_id != native["map_id"]:
                     self.color_cache, self.color_map_id = {}, native["map_id"]
                 try:
