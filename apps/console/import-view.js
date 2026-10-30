@@ -46,7 +46,7 @@ async function droppedFiles(items) {
   return files;
 }
 
-export function connectImport() {
+export function connectImport({profiles = null} = {}) {
   const $ = id => document.getElementById(id);
   let active = null, polling = null, uploadController = null, working = false;
   const asset = new URLSearchParams(location.search).get('asset');
@@ -59,7 +59,7 @@ export function connectImport() {
   }
   function fail(error) { $('import-status').textContent = error.name === 'AbortError' ? '전송을 취소했습니다.' : error.message; $('import-progress').hidden = true; working = false; }
   function render(job) {
-    if (active !== job.id) { $('import-confirm').checked = false; $('import-camera').value = ''; }
+    if (active !== job.id) { $('import-confirm').checked = false; $('import-camera').value = ''; profiles?.resetFileConfirmation(); }
     active = job.id;
     $('import-status').textContent = importMessage(job);
     $('import-summary').hidden = false;
@@ -155,8 +155,10 @@ export function connectImport() {
         if (file.size > 65536) throw new Error('보정 JSON은 64KB 이하여야 합니다.');
         camera = JSON.parse(await file.text());
       }
+      const profile = await profiles?.selected('file');
       const job = await request('start', {confirmed: $('import-confirm').checked,
-        sample_fps: Number($('import-sample-fps').value), frame_fps: Number($('import-frame-fps').value), camera}, '?id=' + active);
+        sample_fps: Number($('import-sample-fps').value), frame_fps: Number($('import-frame-fps').value), camera,
+        ...(profile ? {profile_selection: profile.profile_selection} : {})}, '?id=' + active);
       working = true; render(job); poll(job.id);
     } catch (error) { fail(error); }
   });

@@ -1,5 +1,6 @@
 import * as THREE from 'three';
 import { connectImport } from '/import-view.js';
+import { connectProfiles } from '/profile-view.js';
 import { OrbitControls } from '/vendor/OrbitControls.js';
 import { PlanarObjects } from '/objects.js';
 import { connectCapture } from '/capture.js';
@@ -22,7 +23,8 @@ let pollDelay = 2000;
 let pollTimer, captureState = {state: 'idle'}, captureHandle, lastLiveState = {};
 const source = new MapSource(location.hash === '#live' ? 'live' : 'saved');
 source.asset = new URLSearchParams(location.search).get('asset');
-connectImport();
+const profiles = connectProfiles();
+connectImport({profiles});
 const views = new Map();
 const savedCopy = {
   title: document.querySelector('.notes h2').innerHTML,
@@ -148,6 +150,8 @@ function selectSource(next, force = false) {
   });
   $('map-content').setAttribute('aria-labelledby', `tab-${next}`);
   $('live-panel').hidden = $('live-status').hidden = next !== 'live';
+  $(`profile-slot-${next}`).append($('camera-profile-panel'));
+  $('profile-live-context').hidden = $('profile-manual-live').hidden = next !== 'live';
   document.querySelector('.workspace').classList.toggle('slam-workspace', next === 'live');
   document.querySelector('h1').textContent = next === 'saved' ? '영상 속 공간을, 입체로.' : '영상이 들어오는 지금, 공간으로.';
   $('run-name').textContent = next === 'saved' ? '저장된 실험 결과를 불러옵니다.' : '실시간 입력과 지도 생성 상태를 확인합니다.';
@@ -1045,6 +1049,7 @@ window.addEventListener('hashchange', () => selectSource(location.hash === '#liv
 selectSource(source.source, true);
 connectTrackingPreview({source, following: () => replay.following});
 connectCapture({
+  profiles,
   onStart(id) {
     frameLatency.start(id); pendingPresentation = null; latencyStatus();
     lastLiveState = {source: 'live', session_id: id, session_status: 'starting', status: 'starting', map_available: false};

@@ -24,7 +24,7 @@ export function captureConfiguration(width, height, fps, fov, camera = null) {
   return config;
 }
 
-export async function connectCapture({onStart = () => {}, onStatus = () => {}, onReady = () => {}, onFrameTiming = () => {}} = {}) {
+export async function connectCapture({onStart = () => {}, onStatus = () => {}, onReady = () => {}, onFrameTiming = () => {}, profiles = null} = {}) {
   const $ = (id) => document.getElementById(id);
   const [info, tello] = await Promise.all([
     fetch('/api/live').then((response) => response.json()),
@@ -64,13 +64,15 @@ export async function connectCapture({onStart = () => {}, onStatus = () => {}, o
     $('camera-start').disabled = locked;
     $('camera-stop').disabled = !current;
     for (const id of ['input-source', 'camera-device', 'camera-refresh', 'camera-calibration', 'camera-fov']) $(id).disabled = locked;
+    profiles?.syncLiveKind($('input-source').value);
+    profiles?.lockLive(locked);
     $('camera-devices').hidden = $('input-source').value !== 'camera';
     $('tello-flight').hidden = $('input-source').value !== 'tello' || !tello.flight_enabled;
     $('tello-map-note').hidden = $('input-source').value !== 'tello-map';
     $('tello-map-note').textContent = info.tello_map_mode === 'gateway'
       ? '조종 사이트에서 드론 영상을 먼저 켜세요. 같은 원본 영상으로 3D 지도를 생성합니다.'
       : '노트북 Wi-Fi를 Tello / RoboMaster TT에 연결하세요. 원본 카메라로 3D 지도를 생성하며 비행 조작은 하지 않습니다.';
-    if (info.tello_camera) $('tello-map-note').textContent += ' · 기존 실측 보정값 기본 적용';
+    if (info.tello_camera) $('tello-map-note').textContent += ' · 선택한 프로필 또는 기존 실측 보정값 사용';
   }
   const post = async (url, body, headers = {}, timeout = 15000) => {
     const response = await fetch(url, {method: 'POST', headers: {'X-Mapping-Client': '1', ...headers}, body, signal: AbortSignal.timeout(timeout)});
@@ -283,6 +285,8 @@ export async function connectCapture({onStart = () => {}, onStatus = () => {}, o
       const file = $('camera-calibration').files[0];
       if (!demo && file && file.size > 65536) throw new Error('보정 JSON은 64KB 이하 파일을 사용하세요.');
       let camera = demo ? info.demo_camera : kind === 'tello-map' ? info.tello_camera || null : null;
+      const profile = !demo && profiles ? await profiles.selected('live') : null;
+      if (profile) camera = profile.camera;
       if (!demo && file) {
         try { camera = JSON.parse(await file.text()); }
         catch { throw new Error('보정 JSON을 읽지 못했습니다. 올바른 JSON 파일인지 확인하세요.'); }
@@ -295,7 +299,7 @@ export async function connectCapture({onStart = () => {}, onStatus = () => {}, o
         if (!navigator.mediaDevices?.getUserMedia) throw new Error('이 브라우저에서 카메라를 사용할 수 없습니다. localhost 또는 HTTPS에서 열어주세요.');
         message('카메라 권한을 확인하고 있습니다. 브라우저의 권한 요청을 확인하세요.', 'requesting', run);
         const device = $('camera-device').value;
-        const media = await navigator.mediaDevices.getUserMedia({video: {width: {ideal: 960}, height: {ideal: 540}, frameRate: {ideal: 30, max: 30}, ...(device ? {deviceId: {exact: device}} : {})}, audio: false});
+        const media = await navigator.mediaDevices.getUserMedia({video: {width: profile ? {exact: camera.width} : {ideal: 960}, height: profile ? {exact: camera.height} : {ideal: 540}, frameRate: {ideal: 30, max: 30}, ...(device ? {deviceId: {exact: device}} : {})}, audio: false});
         if (!owns(run)) { media.getTracks().forEach((track) => track.stop()); return; }
         run.media = media; video.srcObject = media;
         const track = media.getVideoTracks()[0];
@@ -308,10 +312,17 @@ export async function connectCapture({onStart = () => {}, onStatus = () => {}, o
       const track = run.media?.getVideoTracks()[0], settings = track?.getSettings() || {};
       const config = captureConfiguration(drone ? 960 : video.videoWidth, drone ? 720 : video.videoHeight,
         drone ? 24 : demo ? info.demo_camera?.fps || 30 : settings.frameRate || 30, Number($('camera-fov').value), camera);
+      if (profile) {
+        const width = drone ? 960 : video.videoWidth, height = drone ? 720 : video.videoHeight;
+        const applied = await profiles.selected('live', width, height);
+        if (!owns(run)) return;
+        config.profile_selection = applied.profile_selection;
+        config.source_width = width; config.source_height = height;
+      }
       canvas.width = config.width; canvas.height = config.height;
       $('camera-input-info').textContent = (drone ? 'Tello · 960×720 · 24fps 기준' :
         (demo ? '녹화 영상' : track.label || '선택한 카메라') + ' · 원본 ' + video.videoWidth + '×' + video.videoHeight +
-        ' → 전송 ' + config.width + '×' + config.height + ' · ' + config.fps.toFixed(1) + 'fps 설정값') + ' · ' + (camera ? '보정 JSON 사용' : '화각 추정 · 미보정');
+        ' → 전송 ' + config.width + '×' + config.height + ' · ' + config.fps.toFixed(1) + 'fps 설정값') + ' · ' + (profile ? `보정 프로필: ${profile.camera.profile?.name || '선택한 프로필'}` : camera ? '보정 JSON 사용' : '화각 추정 · 미보정');
       message('ORB-SLAM3 시작 중 · ' + (camera ? '카메라 보정값 사용' : '화각 추정 · 미보정') + ' · ' + canvas.width + '×' + canvas.height, 'connecting', run);
       creating = true; controls();
       try {

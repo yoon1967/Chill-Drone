@@ -43,6 +43,10 @@ PNG·전체 처리 시간은 [파일 실행 안내](../../docs/phone_mapping/vid
 
 ## PC 카메라 입력
 
+화면 위 **카메라 보정 프로필**에서 기존 보정 JSON을 등록하고 입력별로 선택·기억·내보낼 수 있다.
+실시간 입력과 파일 복원은 같은 목록을 사용한다. 사용법과 로컬 저장 위치는
+[보정 프로필 안내](../../docs/phone_mapping/camera_profiles.md)를 따른다.
+
 새 카메라 입력에는 프로젝트 Python 환경의 OpenCV·NumPy와 실행 중인 Docker Desktop이 필요하다.
 `requirements-online.txt` 설치는 [온라인 실행 안내](../../modules/mapping/localization/ONLINE.md)를 따른다.
 저장 결과 조회만 할 때와 달리 아래 옵션으로 카메라 입력을 켠다.

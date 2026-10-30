@@ -14,6 +14,7 @@ from fractions import Fraction
 from PIL import Image, ImageOps
 
 from modules.mapping.data.session_import import IMAGES, VIDEO, inside, read_json
+from modules.mapping.data.camera_profiles import validate_intrinsics
 
 
 def frame_paths(root):
@@ -80,7 +81,7 @@ def validate_options(options, summary):
     if camera is not None:
         if not isinstance(camera, dict):
             raise ValueError('invalid_camera_intrinsics')
-        camera = dict(camera)
+        camera = validate_intrinsics(camera)
         if any(type(camera.get(k)) not in (int, float) or not math.isfinite(camera[k]) for k in ('width', 'height', 'fx', 'fy', 'cx', 'cy')):
             raise ValueError('camera_values_must_be_finite_numbers')
         if (camera['width'], camera['height']) != (summary['width'], summary['height']):

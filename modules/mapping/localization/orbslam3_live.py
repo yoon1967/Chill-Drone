@@ -40,6 +40,7 @@ def require_slam_image():
 
 
 def live_camera(config):
+    from modules.mapping.data.camera_profiles import validate_intrinsics
     def number(value):
         if isinstance(value, bool) or not isinstance(value, (int, float)) or not math.isfinite(value):
             raise ValueError("camera_values_must_be_finite_numbers")
@@ -56,7 +57,7 @@ def live_camera(config):
     if supplied is not None:
         if not isinstance(supplied, dict):
             raise ValueError("invalid_camera_intrinsics")
-        camera = dict(supplied)
+        camera = validate_intrinsics(supplied)
         for key in ("width", "height", "fx", "fy", "cx", "cy"):
             camera[key] = number(camera[key])
         if min(camera[k] for k in ("width", "height", "fx", "fy")) <= 0:

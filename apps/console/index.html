@@ -25,6 +25,27 @@
         <div><dt>3D 지도</dt><dd id="connection-map" data-state="idle">대기</dd></div></dl>
       <p id="connection-note">연결 상태를 확인합니다.</p>
     </section></div>
+    <div id="profile-slot-saved">
+    <section id="camera-profile-panel" class="profile-panel" aria-label="카메라 보정 프로필">
+      <details id="profile-manager"><summary>카메라 보정 프로필 <span>등록 · 목록 · JSON 내보내기</span></summary>
+        <div id="profile-live-context"><div id="profile-live-choice" class="profile-choice"><label>이번 실행에 사용할 프로필<select id="profile-select-live"><option value="">기존 입력 설정·보정 JSON 직접 선택</option></select></label><p id="profile-info-live"></p><label id="profile-confirm-label-live" hidden><input id="profile-confirm-live" type="checkbox"> 현재 카메라·영상 방향·크롭이 선택한 프로필과 같습니다.</label></div></div>
+        <p>이 PC에 저장합니다. 같은 기체·카메라와 영상 방향·크롭에 맞는 프로필을 선택하세요. 등록은 다음 실행부터 사용하며 진행 중인 지도는 바꾸지 않습니다.</p>
+        <div class="profile-actions"><label>저장 프로필 <select id="profile-library" aria-label="저장된 보정 프로필"></select></label><button id="profile-refresh" type="button">목록 새로고침</button><a id="profile-export" hidden download>보정 JSON 내보내기 ↓</a></div>
+        <p id="profile-library-info"></p>
+        <div class="profile-actions"><label>기본 선택을 기억할 입력 <select id="profile-default-mode"><option value="tello">Tello 실시간</option><option value="camera">연결된 카메라</option><option value="file">동영상·프레임 복원</option></select></label><button id="profile-default" type="button">다음 실행의 기본 선택으로 기억</button></div>
+        <div id="profile-drop" class="profile-drop" tabindex="0" role="group" aria-label="보정 JSON 드롭 영역"><strong>기존 camera.json 또는 내보낸 보정 JSON을 놓으세요</strong><label>보정 JSON 선택<input id="profile-file" type="file" accept=".json,application/json"></label></div>
+        <div id="profile-register" hidden>
+          <p id="profile-file-info"></p>
+          <div class="profile-actions"><label>프로필 이름<input id="profile-name" maxlength="80"></label><label>기체·카메라 식별 정보<input id="profile-identity" maxlength="160" placeholder="예: 내 Tello 또는 웹캠 모델"></label></div>
+          <div class="profile-actions"><label>영상 방향·크롭<input id="profile-geometry" maxlength="160" placeholder="예: 원본 전체 · 가로 방향 · 크롭 없음"></label><label>사용할 입력<select id="profile-register-mode"><option value="tello">Tello + 파일 복원</option><option value="camera">연결된 카메라 + 파일 복원</option><option value="file">파일 복원만</option></select></label></div>
+          <label><input id="profile-register-confirm" type="checkbox"> 이 파일의 대상 카메라와 영상 설정을 확인했습니다.</label>
+          <button id="profile-save" type="button">새 프로필로 저장</button>
+        </div>
+        <p id="profile-status" role="status" aria-live="polite">보정 프로필을 읽는 중입니다.</p>
+        <details id="profile-manual-live" class="profile-manual"><summary>이번 실행만 직접 설정 <span>JSON 직접 적용 · 화각 추정</span></summary><label>보정 JSON <input id="camera-calibration" type="file" accept=".json,application/json"></label><label>수평 화각 <input id="camera-fov" type="number" min="25" max="120" value="60"> °</label><p>여기서 고른 JSON은 프로필로 저장하지 않고 이번 실행에만 적용합니다. 직접 고르면 위 프로필 선택은 해제됩니다. Tello는 별도 선택이 없으면 기존 실측값을 적용하고, 다른 카메라는 보정 파일이 없을 때 화각으로 추정합니다.</p></details>
+      </details>
+    </section>
+    </div>
     <section id="import-panel" class="import-panel" aria-label="저장 자료 불러오기">
       <details id="import-details"><summary>저장 자료 불러오기 <span>세션 ZIP · 결과 폴더 · 동영상 · 프레임</span></summary>
         <p>이 PC에서 처리합니다. 저장 지도는 바로 열고, 영상·프레임은 내용을 확인한 뒤 새로 복원합니다.</p>
@@ -39,6 +60,7 @@
         <progress id="import-progress" hidden max="100"></progress>
         <div id="import-summary" hidden><p id="import-info"></p><ul id="import-warnings"></ul>
           <div id="import-options" hidden>
+            <div class="profile-choice"><label>저장된 보정 프로필<select id="profile-select-file"><option value="">보정 JSON 직접 선택 또는 자체 추정</option></select></label><p id="profile-info-file"></p><label id="profile-confirm-label-file" hidden><input id="profile-confirm-file" type="checkbox"> 이 영상·프레임의 카메라·방향·크롭이 선택한 프로필과 같습니다.</label></div>
             <label id="import-sampling">영상 추출 FPS <input id="import-sample-fps" type="number" value="2" min="0.1" max="30" step="0.1"></label>
             <label id="import-frame-timing">프레임 촬영 FPS <input id="import-frame-fps" type="number" value="2" min="0.1" max="240" step="0.1"></label>
             <label>이 입력에 맞는 보정 JSON (선택)<input id="import-camera" type="file" accept=".json"></label>
@@ -74,7 +96,7 @@
       </div>
       <div id="camera-devices" class="live-actions"><label>카메라 장치 <select id="camera-device"><option value="">브라우저 기본 카메라</option></select></label><button id="camera-refresh" type="button">장치 새로고침</button><span id="camera-device-note">권한을 허용하면 장치 이름을 확인할 수 있습니다.</span></div>
       <p id="tello-map-note" hidden></p>
-      <details><summary>카메라 보정</summary><label>보정 JSON <input id="camera-calibration" type="file" accept=".json,application/json"></label><label>수평 화각 <input id="camera-fov" type="number" min="25" max="120" value="60"> °</label><p>Tello는 기존 실측 보정값을 기본 적용합니다. 다른 카메라는 보정 파일이 없으면 화각 추정값을 사용합니다. 단안 좌표는 실제 미터가 아닙니다. 영상은 이 PC에서만 처리·저장됩니다.</p></details>
+      <div id="profile-slot-live"></div>
       <p id="camera-input-info">웹캠으로 지도를 만들려면 같은 공간을 보며 카메라의 위치를 천천히 옮겨야 합니다. 고정 카메라는 영상 연결만 확인할 수 있습니다.</p>
       <p id="camera-status" role="status">Docker 실행 후 카메라를 연결하세요. 권한은 시작할 때 요청합니다.</p>
       <section id="tello-flight" class="tello-flight" hidden aria-label="Tello 수동 조종">
