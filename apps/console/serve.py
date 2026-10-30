@@ -21,6 +21,7 @@ sys.path.insert(0, str(APP.parents[1]))
 from modules.mapping.localization.observations import native_observations
 from modules.mapping.data.live_recording import archive_files
 from modules.mapping.data.session_import import ImportManager, inside
+from modules.mapping.data.camera_profiles import CameraProfiles
 
 
 def scene_delta(previous, current):
@@ -143,7 +144,8 @@ def result_metadata(path, modified_ns, size):
 class ViewerHandler(BaseHTTPRequestHandler):
     tello_input_lock = threading.Lock()
     def __init__(self, *args, result=None, session=None, objects=None, live=None, tello=None, tello_map=None,
-                 timeline=None, observations=None, demo=None, demo_camera=None, imports=None, **kwargs):
+                 timeline=None, observations=None, demo=None, demo_camera=None, imports=None, profiles=None, **kwargs):
+        self.profiles = profiles
         self.imports = imports
         self.imported = None
         self.saved_result = Path(result).resolve() if result else None
@@ -245,6 +247,9 @@ class ViewerHandler(BaseHTTPRequestHandler):
         if urlsplit(self.path).path.startswith('/api/import/'):
             self.import_request()
             return
+        if urlsplit(self.path).path.startswith('/api/camera-profiles'):
+            self.profile_request()
+            return
         try:
             length = int(self.headers.get("Content-Length", "0"))
             if not 0 < length <= 2097152:
@@ -301,7 +306,7 @@ class ViewerHandler(BaseHTTPRequestHandler):
                     if self.tello and self.tello.running:
                         self.json_response({"error": "tello_detection_input_is_active"}, 409)
                         return
-                    self.json_response(self.tello_map.start(json.loads(data)), 201)
+                    self.json_response(self.tello_map.start(self.profile_config(json.loads(data), 'tello')), 201)
             elif url.path == "/api/live/tello/heartbeat":
                 if not self.tello_map:
                     self.json_response({"error": "tello_mapping_input_disabled"}, 403)
@@ -310,7 +315,7 @@ class ViewerHandler(BaseHTTPRequestHandler):
             elif not self.live:
                 self.json_response({"error": "camera_input_disabled"}, 403)
             elif url.path == "/api/live/start":
-                self.json_response(self.live.start(json.loads(data)), 201)
+                self.json_response(self.live.start(self.profile_config(json.loads(data), 'camera')), 201)
             elif url.path == "/api/live/frame":
                 query = parse_qs(url.query)
                 session = self.live.require(query.get("session", [""])[0])
@@ -402,6 +407,54 @@ class ViewerHandler(BaseHTTPRequestHandler):
                 raise ValueError("invalid_object_texture")
         return collection
 
+    def profile_config(self, body, mode, size=None):
+        selection = body.get('profile_selection')
+        if selection is None:
+            return body
+        if not self.profiles:
+            raise ValueError('camera_profiles_not_enabled')
+        width, height = size or ((960, 720) if mode == 'tello' else (body.get('source_width'), body.get('source_height')))
+        camera = self.profiles.resolve(selection, mode, width, height)
+        return {**body, 'camera': camera}
+
+    def profile_request(self):
+        if not self.profiles:
+            self.json_response({'error': 'camera_profiles_not_enabled'}, 404)
+            return
+        try:
+            url = urlsplit(self.path)
+            if self.command == 'GET':
+                if url.path == '/api/camera-profiles':
+                    self.json_response(self.profiles.list())
+                elif url.path == '/api/camera-profiles/export':
+                    key = parse_qs(url.query).get('id', [''])[0]
+                    camera = self.profiles.get(key)
+                    payload = json.dumps(camera, ensure_ascii=False, indent=2, allow_nan=False).encode('utf-8')
+                    self.send_response(200)
+                    self.send_header('Content-Type', 'application/json; charset=utf-8')
+                    self.send_header('Content-Disposition', f'attachment; filename="{key}-camera.json"')
+                    self.send_header('Content-Length', str(len(payload)))
+                    self.send_header('Cache-Control', 'no-store')
+                    self.end_headers()
+                    self.write_payload(payload)
+                else:
+                    self.send_error(404)
+                return
+            length = int(self.headers.get('Content-Length', '0'))
+            if not 0 < length <= 131072:
+                raise ValueError('camera_profile_json_too_large')
+            body = json.loads(self.rfile.read(length))
+            if not isinstance(body, dict):
+                raise ValueError('invalid_profile_request')
+            if url.path == '/api/camera-profiles':
+                self.json_response(self.profiles.register(body), 201)
+            elif url.path == '/api/camera-profiles/default':
+                self.json_response(self.profiles.set_default(body['mode'], body.get('id')))
+            else:
+                self.send_error(404)
+        except (OSError, ValueError, KeyError, TypeError) as error:
+            self.json_response({'error': str(error)}, 400)
+
     def import_request(self):
         if not self.imports:
             self.json_response({'error': 'imports_not_enabled'}, 404)
@@ -443,6 +496,8 @@ class ViewerHandler(BaseHTTPRequestHandler):
             elif action == 'start':
                 if self.current and self.current.stats().get('session_status') not in {'complete', 'failed', 'stopped_or_disconnected'}:
                     raise ValueError('stop_live_mapping_before_reconstruction')
+                summary = self.imports.job(key).get('summary', {})
+                body = self.profile_config(body, 'file', (summary.get('width'), summary.get('height')))
                 value = self.imports.start(key, body)
             elif action == 'cancel':
                 value = self.imports.cancel(key)
@@ -461,6 +516,9 @@ class ViewerHandler(BaseHTTPRequestHandler):
             return
         url = urlsplit(self.path)
         path = unquote(url.path)
+        if path.startswith('/api/camera-profiles'):
+            self.profile_request()
+            return
         if path.startswith('/api/import/'):
             self.import_request()
             return
@@ -701,6 +759,7 @@ class ViewerHandler(BaseHTTPRequestHandler):
                   "/point-display.js": APP / "point-display.js", "/point-worker-state.js": APP / "point-worker-state.js",
                   "/point-spacing-worker.js": APP / "point-spacing-worker.js",
                   "/tracking-preview.js": APP / "tracking-preview.js",
+                  '/profile-view.js': APP / 'profile-view.js',
                   "/vendor/three.module.js": APP / "node_modules/three/build/three.module.js",
                   "/vendor/three.core.js": APP / "node_modules/three/build/three.core.js",
                   "/vendor/OrbitControls.js": APP / "node_modules/three/examples/jsm/controls/OrbitControls.js"}
@@ -798,6 +857,7 @@ def main():
                         help="Ultralytics person-segmentation model name or local .pt path")
     parser.add_argument("--tello-confidence", type=float, default=.25)
     parser.add_argument("--live-root", type=Path, default=APP.parents[1] / "output/phone_mapping")
+    parser.add_argument('--profiles-root', type=Path, default=APP.parents[1] / 'output/camera_profiles')
     parser.add_argument("--demo-source", type=Path, help="One local MP4 explicitly exposed for streaming demonstration")
     calibration = parser.add_mutually_exclusive_group()
     calibration.add_argument("--demo-camera", type=Path, help="Intrinsics JSON for this exact demo camera/crop")
@@ -842,11 +902,12 @@ def main():
         except (OSError, ValueError, KeyError, TypeError) as error:
             parser.error(str(error))
     imports = ImportManager(args.live_root)
+    profiles = CameraProfiles(args.profiles_root)
     if args.import_source:
         initial = imports.add_local(args.import_source)
         imports.initial = initial
         print(f'Import selected: {initial}', flush=True)
-    server = ViewerServer(("127.0.0.1", args.port), partial(ViewerHandler, result=result, imports=imports,
+    server = ViewerServer(("127.0.0.1", args.port), partial(ViewerHandler, result=result, imports=imports, profiles=profiles,
         session=args.session, objects=args.objects, live=live, tello=tello, tello_map=tello_map, timeline=Timeline(), observations=ObservationCache(),
         demo=demo, demo_camera=demo_camera))
     print(f"Phone mapping viewer: http://127.0.0.1:{args.port}/", flush=True)

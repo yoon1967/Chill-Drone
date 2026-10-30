@@ -80,6 +80,41 @@ test('page/device enumeration is lazy; denial never starts SLAM and can be retri
   assert.equal(f.get('camera-start').disabled, false);
 });
 
+test('selected profile requests original geometry and pins the server-side profile for the new session', async (t) => {
+  const f = fixture(t);
+  const camera = {width: 960, height: 540, fx: 700, fy: 700, cx: 480, cy: 270, distortion: [0, 0, 0, 0]};
+  const calls = [];
+  const profile_selection = {id: 'profile_test', version: 1, camera_sha256: 'hash', confirmed: true};
+  const profiles = {syncLiveKind() {}, lockLive(value) { calls.push(value); }, async selected(context, width, height) {
+    if (width !== undefined) assert.deepEqual([width, height], [960, 540]);
+    return {camera, profile_selection};
+  }};
+  await f.connect({profiles});
+  await f.get('camera-start').handlers.click();
+  assert.deepEqual(f.constraints[0].video.width, {exact: 960});
+  const body = JSON.parse(f.requests.find(r => r.url === '/api/live/start').options.body);
+  assert.deepEqual(body.profile_selection, profile_selection);
+  assert.deepEqual([body.source_width, body.source_height], [960, 540]);
+  assert.ok(calls.includes(true));
+});
+
+test('cancelling while a profile is being confirmed never starts a late server session', async (t) => {
+  const f = fixture(t), confirming = deferred(), finish = deferred();
+  const camera = {width: 960, height: 540, fx: 700, fy: 700, cx: 480, cy: 270};
+  const value = {camera, profile_selection: {id: 'profile_test'}};
+  const profiles = {syncLiveKind() {}, lockLive() {}, async selected(context, width) {
+    if (width !== undefined) { confirming.resolve(); return finish.promise; }
+    return value;
+  }};
+  await f.connect({profiles});
+  const pending = f.get('camera-start').handlers.click();
+  await confirming.promise;
+  await f.get('camera-stop').handlers.click();
+  finish.resolve(value); await pending;
+  assert.equal(f.requests.some(r => r.url === '/api/live/start'), false);
+  assert.equal(f.media.track.stops, 1);
+});
+
 test('selected video device is requested exactly, microphone stays off, device list refreshes', async (t) => {
   const devices = [{kind: 'audioinput', deviceId: 'mic'}, {kind: 'videoinput', deviceId: 'camera-a', label: 'Built-in'}];
   const f = fixture(t, {devices}); await f.connect();
