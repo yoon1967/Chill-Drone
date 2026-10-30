@@ -1,6 +1,7 @@
 import * as THREE from 'three';
 import { connectImport } from '/import-view.js';
 import { connectProfiles } from '/profile-view.js';
+import { connectCalibration } from '/calibration-view.js';
 import { OrbitControls } from '/vendor/OrbitControls.js';
 import { PlanarObjects } from '/objects.js';
 import { connectCapture } from '/capture.js';
@@ -24,6 +25,11 @@ let pollTimer, captureState = {state: 'idle'}, captureHandle, lastLiveState = {}
 const source = new MapSource(location.hash === '#live' ? 'live' : 'saved');
 source.asset = new URLSearchParams(location.search).get('asset');
 const profiles = connectProfiles();
+const inputGate = {calibrating: false};
+const calibrationTutorial = connectCalibration({profiles, onBusy(value) {
+  inputGate.calibrating = value;
+  captureHandle?.update(lastLiveState);
+}});
 connectImport({profiles});
 const views = new Map();
 const savedCopy = {
@@ -129,6 +135,8 @@ function resetReplay() {
 
 function selectSource(next, force = false) {
   if (!force && next === source.source) return;
+  if (next !== source.source && calibrationTutorial.active)
+    void calibrationTutorial.stop(undefined, '지도 탭을 바꿔 보정 촬영을 종료했습니다. 다시 시작하면 새로 수집합니다.');
   if (run) views.set(source.source, {session: run.input_run_id, segment: run.segment_id, mode,
     frame: run.cameras[currentIndex]?.frame_id, position: camera.position.clone(), up: camera.up.clone(),
     target: controls.target.clone(), fov: camera.fov, view: document.querySelector('[data-view].active')?.dataset.view});
@@ -152,6 +160,8 @@ function selectSource(next, force = false) {
   $('live-panel').hidden = $('live-status').hidden = next !== 'live';
   $(`profile-slot-${next}`).append($('camera-profile-panel'));
   $('profile-live-context').hidden = $('profile-manual-live').hidden = next !== 'live';
+  $('profile-file-context').hidden = next !== 'saved';
+  profiles.setContext(next);
   document.querySelector('.workspace').classList.toggle('slam-workspace', next === 'live');
   document.querySelector('h1').textContent = next === 'saved' ? '영상 속 공간을, 입체로.' : '영상이 들어오는 지금, 공간으로.';
   $('run-name').textContent = next === 'saved' ? '저장된 실험 결과를 불러옵니다.' : '실시간 입력과 지도 생성 상태를 확인합니다.';
@@ -1050,6 +1060,7 @@ selectSource(source.source, true);
 connectTrackingPreview({source, following: () => replay.following});
 connectCapture({
   profiles,
+  inputGate,
   onStart(id) {
     frameLatency.start(id); pendingPresentation = null; latencyStatus();
     lastLiveState = {source: 'live', session_id: id, session_status: 'starting', status: 'starting', map_available: false};

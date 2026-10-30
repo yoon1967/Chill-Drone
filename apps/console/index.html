@@ -27,21 +27,63 @@
     </section></div>
     <div id="profile-slot-saved">
     <section id="camera-profile-panel" class="profile-panel" aria-label="카메라 보정 프로필">
-      <details id="profile-manager"><summary>카메라 보정 프로필 <span>등록 · 목록 · JSON 내보내기</span></summary>
-        <div id="profile-live-context"><div id="profile-live-choice" class="profile-choice"><label>이번 실행에 사용할 프로필<select id="profile-select-live"><option value="">기존 입력 설정·보정 JSON 직접 선택</option></select></label><p id="profile-info-live"></p><label id="profile-confirm-label-live" hidden><input id="profile-confirm-live" type="checkbox"> 현재 카메라·영상 방향·크롭이 선택한 프로필과 같습니다.</label></div></div>
-        <p>이 PC에 저장합니다. 같은 기체·카메라와 영상 방향·크롭에 맞는 프로필을 선택하세요. 등록은 다음 실행부터 사용하며 진행 중인 지도는 바꾸지 않습니다.</p>
-        <div class="profile-actions"><label>저장 프로필 <select id="profile-library" aria-label="저장된 보정 프로필"></select></label><button id="profile-refresh" type="button">목록 새로고침</button><a id="profile-export" hidden download>보정 JSON 내보내기 ↓</a></div>
-        <p id="profile-library-info"></p>
-        <div class="profile-actions"><label>기본 선택을 기억할 입력 <select id="profile-default-mode"><option value="tello">Tello 실시간</option><option value="camera">연결된 카메라</option><option value="file">동영상·프레임 복원</option></select></label><button id="profile-default" type="button">다음 실행의 기본 선택으로 기억</button></div>
-        <div id="profile-drop" class="profile-drop" tabindex="0" role="group" aria-label="보정 JSON 드롭 영역"><strong>기존 camera.json 또는 내보낸 보정 JSON을 놓으세요</strong><label>보정 JSON 선택<input id="profile-file" type="file" accept=".json,application/json"></label></div>
-        <div id="profile-register" hidden>
-          <p id="profile-file-info"></p>
-          <div class="profile-actions"><label>프로필 이름<input id="profile-name" maxlength="80"></label><label>기체·카메라 식별 정보<input id="profile-identity" maxlength="160" placeholder="예: 내 Tello 또는 웹캠 모델"></label></div>
-          <div class="profile-actions"><label>영상 방향·크롭<input id="profile-geometry" maxlength="160" placeholder="예: 원본 전체 · 가로 방향 · 크롭 없음"></label><label>사용할 입력<select id="profile-register-mode"><option value="tello">Tello + 파일 복원</option><option value="camera">연결된 카메라 + 파일 복원</option><option value="file">파일 복원만</option></select></label></div>
-          <label><input id="profile-register-confirm" type="checkbox"> 이 파일의 대상 카메라와 영상 설정을 확인했습니다.</label>
-          <button id="profile-save" type="button">새 프로필로 저장</button>
-        </div>
+      <details id="profile-manager"><summary>카메라 보정 프로필 <span>보정값 선택 · 가져오기</span></summary>
+        <div id="profile-live-context"><div id="profile-live-choice" class="profile-choice">
+          <div class="profile-selection"><label>사용할 보정 프로필<select id="profile-select-live"><option value="">기존 입력 설정 사용</option></select></label><button id="profile-manage-live" type="button" aria-controls="profile-tools" aria-expanded="false">관리</button></div>
+          <label class="profile-check"><input id="profile-remember-live" type="checkbox" disabled> 이 입력의 기본 프로필로 기억</label>
+          <p id="profile-info-live"></p><details id="profile-detail-live" class="profile-detail" hidden><summary>보정값 상세 보기</summary><p id="profile-values-live"></p></details>
+          <label id="profile-confirm-label-live" class="profile-check" hidden><input id="profile-confirm-live" type="checkbox"> 현재 카메라·영상 방향·크롭이 선택한 프로필과 같습니다.</label>
+        </div></div>
+        <div id="profile-file-context" hidden><div id="profile-file-choice" class="profile-choice">
+          <div class="profile-selection"><label>복원에 사용할 보정 프로필<select id="profile-select-file"><option value="">보정 프로필 없이 복원</option></select></label><button id="profile-manage-file" type="button" aria-controls="profile-tools" aria-expanded="false">관리</button></div>
+          <label class="profile-check"><input id="profile-remember-file" type="checkbox" disabled> 파일 복원의 기본 프로필로 기억</label>
+          <p id="profile-info-file"></p><details id="profile-detail-file" class="profile-detail" hidden><summary>보정값 상세 보기</summary><p id="profile-values-file"></p></details>
+          <label id="profile-confirm-label-file" class="profile-check" hidden><input id="profile-confirm-file" type="checkbox"> 이 영상·프레임의 카메라·방향·크롭이 선택한 프로필과 같습니다.</label>
+        </div></div>
+        <div class="profile-entry-actions"><button id="profile-import-open" type="button" aria-controls="profile-import" aria-expanded="false">보정 JSON 가져오기</button></div>
+        <section id="profile-tools" class="profile-subpanel" hidden aria-label="보정 프로필 관리">
+          <div class="profile-subheading"><strong>저장된 프로필 관리</strong><button id="profile-tools-close" type="button">닫기</button></div>
+          <div class="profile-actions"><label>관리할 프로필<select id="profile-library" aria-label="관리할 보정 프로필"></select></label><button id="profile-refresh" type="button">목록 새로고침</button><a id="profile-export" hidden download>보정 JSON 내보내기 ↓</a><button id="profile-use" type="button">현재 입력에 선택</button></div>
+          <p id="profile-use-note"></p><details class="profile-detail"><summary>프로필 상세 정보</summary><p id="profile-library-info"></p></details>
+        </section>
+        <section id="profile-import" class="profile-subpanel" hidden aria-label="새 보정 프로필 등록">
+          <div class="profile-subheading"><strong>보정 JSON 가져오기</strong><button id="profile-import-close" type="button">닫기</button></div>
+          <p>같은 카메라·해상도·영상 설정의 보정 파일을 이 PC에 등록합니다. 진행 중인 지도는 바꾸지 않습니다.</p>
+          <div id="profile-drop" class="profile-drop" tabindex="0" role="group" aria-label="보정 JSON 드롭 영역"><strong>보정 JSON 파일을 여기에 놓으세요</strong><label>파일 선택<input id="profile-file" type="file" accept=".json,application/json"></label></div>
+          <div id="profile-register" hidden>
+            <p id="profile-file-info"></p><div class="profile-actions"><label>프로필 이름<input id="profile-name" maxlength="80"></label></div>
+            <p id="profile-registration-summary"></p>
+            <details id="profile-advanced" class="profile-detail"><summary>상세 설정 <span>대상 카메라 · 촬영 설정 · 사용 범위</span></summary>
+              <div class="profile-actions"><label>기체·카메라 식별 정보<input id="profile-identity" maxlength="160" placeholder="예: 기체 이름 · 카메라 모델 · 관리 번호"></label><label>영상 방향·크롭<input id="profile-geometry" maxlength="160" placeholder="예: 원본 전체 · 가로 방향 · 크롭 없음"></label><label>사용할 입력 경로<select id="profile-register-mode" aria-describedby="profile-mode-note"><option value="tello">드론 영상 수신 + 파일 복원</option><option value="camera">브라우저 카메라 + 파일 복원</option><option value="file">파일 복원만</option></select></label></div>
+              <p id="profile-mode-note">프로필을 선택할 수 있는 입력 경로입니다. 드론 수신은 현재 Tello 연결을 지원합니다.</p>
+            </details>
+            <details id="profile-file-values" class="profile-detail"><summary>가져온 보정값 상세 보기</summary><p id="profile-file-details"></p></details>
+            <label class="profile-check"><input id="profile-register-confirm" type="checkbox"> 위 카메라·촬영 설정·사용 범위에 맞는 보정 파일임을 확인했습니다.</label>
+            <button id="profile-save" type="button">새 프로필로 저장</button>
+          </div>
+        </section>
         <p id="profile-status" role="status" aria-live="polite">보정 프로필을 읽는 중입니다.</p>
+        <details id="calibration-tutorial" class="calibration-tutorial"><summary>처음 사용하는 카메라 보정하기 <span>체크보드 촬영 튜토리얼</span></summary>
+          <ol class="tutorial-steps" aria-label="카메라 보정 단계"><li>1. 체크보드 준비</li><li>2. 카메라 연결·수집</li><li>3. 계산·결과 저장</li></ol>
+          <p>사진을 따로 찍어 올리지 않아도 됩니다. 사용할 카메라로 종이를 비추면 이 PC에서 코너를 찾아 유효한 장면을 자동 수집합니다. 지도 수신은 먼저 종료하세요.</p>
+          <div id="calibration-settings" class="profile-actions">
+            <label>가로 내부 교차점<input id="calibration-columns" type="number" value="9" min="4" max="12" step="1"></label><label>세로 내부 교차점<input id="calibration-rows" type="number" value="6" min="4" max="10" step="1"></label><label>한 칸 크기 (mm)<input id="calibration-square" type="number" value="25" min="5" max="60" step="0.1"></label>
+          </div>
+          <p id="calibration-board-note">9×6은 칸 수가 아닌 안쪽 교차점 수입니다. 검정·흰색 칸은 10×7개입니다.</p>
+          <a id="calibration-board" class="tutorial-link" href="/api/calibration/board.svg" download="checkerboard.svg">체크보드 인쇄용 SVG ↓</a>
+          <p>100% 실제 크기로 인쇄하고 자로 한 칸을 확인하세요. 평평한 판에 붙이고 흰 여백을 남기세요. 인쇄물과 아래 교차점 수가 같아야 합니다. 용지에 맞춤·자동 크기 조절을 끄세요.</p>
+          <div class="profile-actions"><label>보정할 영상 입력<select id="calibration-source"><option value="camera">연결된 카메라</option><option value="tello">Tello 원본 영상 · 비행 안 함</option></select></label><label id="calibration-device-label">카메라 장치<select id="calibration-device"><option value="">브라우저 기본 카메라</option></select></label><button id="calibration-devices" type="button">장치 목록 새로고침</button><label id="calibration-size-label">요청 해상도<select id="calibration-size"><option value="960x720">960×720</option><option value="640x480">640×480</option><option value="1280x720">1280×720</option><option value="1920x1080">1920×1080</option></select></label></div>
+          <p id="calibration-source-note">초점·줌·회전·크롭을 고정하고 실제 매핑에 쓸 설정으로 촬영하세요. 실제 수신 해상도를 결과에 기록합니다.</p>
+          <label class="tutorial-confirm"><input id="calibration-confirm" type="checkbox"> 사용할 카메라·인쇄물의 내부 교차점 수·실측 칸 크기를 확인했습니다. Tello는 비행하지 않고 기체와 프로펠러를 안전하게 고정했습니다.</label>
+          <div class="profile-actions"><button id="calibration-start" type="button">튜토리얼 카메라 연결</button><button id="calibration-stop" type="button" disabled>중단·카메라 해제</button></div>
+          <div id="calibration-preview-area" hidden><video id="calibration-video" muted playsinline hidden aria-label="보정 중인 카메라 원본 영상"></video><img id="calibration-preview" hidden alt="현재 수집 후보와 검출한 체크보드 코너"><p>미리보기는 크기에 맞춰 표시하며, 원본 픽셀로 코너를 계산합니다. 점이 보이는 영상은 마지막으로 분석한 장면입니다.</p></div>
+          <p id="calibration-status" role="status" aria-live="polite">체크보드를 준비한 뒤 카메라를 연결하세요.</p>
+          <progress id="calibration-progress" value="0" max="18" aria-label="유효한 체크보드 장면 수집"></progress>
+          <ul id="calibration-coverage" class="tutorial-coverage"></ul>
+          <p id="calibration-guide">정면에서 시작해 왼쪽·오른쪽·위·아래, 가까이·멀리, 좌우·상하 기울임 순서로 보여 주세요. 각 자세에서 잠시 멈춥니다.</p>
+          <div class="profile-actions"><button id="calibration-undo" type="button" disabled>마지막 수집 장면 제외</button><button id="calibration-solve" type="button" disabled>모은 장면으로 보정값 계산</button></div>
+          <div id="calibration-result" hidden><strong>보정값 계산 결과</strong><p id="calibration-result-info"></p><p>검증용 장면은 내부 파라미터 계산에서 제외하고 자세만 추정해 오차를 확인합니다. 이 수치는 실제 치수 정확도나 3D 지도의 미터 단위를 보장하지 않습니다. 같은 카메라·초점·해상도·방향·크롭에서 재사용하세요.</p><div class="profile-actions"><a id="calibration-download" download>계산한 보정 JSON ↓</a><button id="calibration-register" type="button">이 결과를 새 프로필로 등록 준비</button></div></div>
+        </details>
         <details id="profile-manual-live" class="profile-manual"><summary>이번 실행만 직접 설정 <span>JSON 직접 적용 · 화각 추정</span></summary><label>보정 JSON <input id="camera-calibration" type="file" accept=".json,application/json"></label><label>수평 화각 <input id="camera-fov" type="number" min="25" max="120" value="60"> °</label><p>여기서 고른 JSON은 프로필로 저장하지 않고 이번 실행에만 적용합니다. 직접 고르면 위 프로필 선택은 해제됩니다. Tello는 별도 선택이 없으면 기존 실측값을 적용하고, 다른 카메라는 보정 파일이 없을 때 화각으로 추정합니다.</p></details>
       </details>
     </section>
@@ -60,7 +102,7 @@
         <progress id="import-progress" hidden max="100"></progress>
         <div id="import-summary" hidden><p id="import-info"></p><ul id="import-warnings"></ul>
           <div id="import-options" hidden>
-            <div class="profile-choice"><label>저장된 보정 프로필<select id="profile-select-file"><option value="">보정 JSON 직접 선택 또는 자체 추정</option></select></label><p id="profile-info-file"></p><label id="profile-confirm-label-file" hidden><input id="profile-confirm-file" type="checkbox"> 이 영상·프레임의 카메라·방향·크롭이 선택한 프로필과 같습니다.</label></div>
+            <p>복원에 사용할 보정 프로필은 위 카메라 보정 프로필 패널에서 선택하세요.</p>
             <label id="import-sampling">영상 추출 FPS <input id="import-sample-fps" type="number" value="2" min="0.1" max="30" step="0.1"></label>
             <label id="import-frame-timing">프레임 촬영 FPS <input id="import-frame-fps" type="number" value="2" min="0.1" max="240" step="0.1"></label>
             <label>이 입력에 맞는 보정 JSON (선택)<input id="import-camera" type="file" accept=".json"></label>

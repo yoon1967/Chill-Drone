@@ -69,6 +69,18 @@ test('new session is announced before status callbacks feed the selected state b
   assert.equal(f.requests.some(r => r.url === '/api/live/stop'), false);
 });
 
+test('calibration owns camera input until the tutorial releases the gate', async (t) => {
+  const f = fixture(t), inputGate = {calibrating: true};
+  const handle = await f.connect({inputGate});
+  await f.get('camera-start').handlers.click();
+  assert.equal(f.permissions(), 0);
+  inputGate.calibrating = false;
+  handle.update({});
+  await f.get('camera-start').handlers.click();
+  assert.equal(f.permissions(), 1);
+  await f.get('camera-stop').handlers.click();
+});
+
 test('page/device enumeration is lazy; denial never starts SLAM and can be retried', async (t) => {
   const f = fixture(t, {denied: true}); await f.connect();
   assert.equal(f.permissions(), 0);

@@ -24,7 +24,7 @@ export function captureConfiguration(width, height, fps, fov, camera = null) {
   return config;
 }
 
-export async function connectCapture({onStart = () => {}, onStatus = () => {}, onReady = () => {}, onFrameTiming = () => {}, profiles = null} = {}) {
+export async function connectCapture({onStart = () => {}, onStatus = () => {}, onReady = () => {}, onFrameTiming = () => {}, profiles = null, inputGate = null} = {}) {
   const $ = (id) => document.getElementById(id);
   const [info, tello] = await Promise.all([
     fetch('/api/live').then((response) => response.json()),
@@ -60,7 +60,7 @@ export async function connectCapture({onStart = () => {}, onStatus = () => {}, o
   };
   function controls() {
     const occupied = serverState.session_id && !terminal(serverState);
-    const locked = Boolean(current) || creating || Boolean(occupied);
+    const locked = Boolean(current) || creating || Boolean(occupied) || Boolean(inputGate?.calibrating);
     $('camera-start').disabled = locked;
     $('camera-stop').disabled = !current;
     for (const id of ['input-source', 'camera-device', 'camera-refresh', 'camera-calibration', 'camera-fov']) $(id).disabled = locked;
@@ -257,7 +257,7 @@ export async function connectCapture({onStart = () => {}, onStatus = () => {}, o
     finally { run.sending = false; }
   }
   $('camera-start').addEventListener('click', async () => {
-    if ($('camera-start').disabled) return;
+    if ($('camera-start').disabled || inputGate?.calibrating) return;
     const kind = $('input-source').value;
     const run = {kind, controller: new AbortController(), session: null, media: null, cancelled: false, active: false, base: null, sourceBase: null, lastMedia: -1, sequence: 0, sent: 0, skipped: 0};
     current = run; controls();
