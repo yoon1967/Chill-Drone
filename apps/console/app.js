@@ -10,7 +10,7 @@ import { PointDisplay, PointBuffer } from '/point-display.js';
 import { applySceneDelta } from '/map-delta.js';
 import { renderRecording } from '/recording-view.js';
 import { FrameLatency } from '/frame-latency.js';
-import { connectTrackingPreview, trackingDescription } from '/tracking-preview.js';
+import { connectTrackingPreview, liveTrackingNotices, trackingDescription } from '/tracking-preview.js';
 const $ = (id) => document.getElementById(id);
 const connections = monitorConnections();
 const number = (n) => Number(n).toLocaleString('ko-KR');
@@ -188,9 +188,16 @@ function liveStatus(state) {
   $('tracking-state').textContent = !state.session_id ? '대기 중' : lifecycle === 'failed' ? '추적 중단' :
     lifecycle === 'complete' ? '추적 종료' : lifecycle === 'stopping' ? '추적 종료 중' : trackingNames[state.tracking_state] || '초기화 중';
   $('tracking-detail').textContent = state.session_id ? `정상 추적 ${number(state.tracked_frames || 0)}장 · 초기화 ${number(state.initializing_frames || 0)}장 · 추적 상실 ${number(state.lost_tracking_frames || 0)}장` : '아직 받은 영상이 없습니다.';
+  const notices = liveTrackingNotices(state);
+  for (const [id, notice] of [['tracking-alert', notices.tracking], ['segment-alert', notices.segment]]) {
+    const target = $(id);
+    target.hidden = !notice;
+    const message = notice ? `${notice.title} · ${notice.detail}` : '';
+    if (target.textContent !== message) target.textContent = message;
+  }
   const available = state.map_available;
-  $('map-state').textContent = available ? !replay.following ? '기록 재생' : lifecycle === 'failed' ? '마지막 지도 유지' : lifecycle === 'complete' ? '최종 지도' : lifecycle === 'stopping' ? '지도 마무리 중' : '지도 갱신 중' : lifecycle === 'failed' ? '생성 실패' : lifecycle === 'complete' ? '생성 전 종료' : state.session_id ? '초기화 대기' : '생성 전';
-  $('map-detail').textContent = available ? `최신 지도 ${state.revision}회 갱신 · ${run?.source === 'live' ? `${$('points').textContent}점 표시` : '점군 불러오는 중'}${!replay.following ? ` · 기록 버전 ${replay.applied ?? 0}` : ''} · ${state.scale?.unit === 'm' ? '미터 단위' : '임의 단위'}` :
+  $('map-state').textContent = available ? !replay.following ? '기록 재생' : notices.tracking ? notices.tracking.title : notices.segment ? '새 지도 구간 · 이전 지도와 미정렬' : lifecycle === 'failed' ? '마지막 지도 유지' : lifecycle === 'complete' ? '최종 지도' : lifecycle === 'stopping' ? '지도 마무리 중' : '지도 갱신 중' : lifecycle === 'failed' ? '생성 실패' : lifecycle === 'complete' ? '생성 전 종료' : state.session_id ? '초기화 대기' : '생성 전';
+  $('map-detail').textContent = available && replay.following && notices.tracking ? notices.tracking.detail : available && replay.following && notices.segment ? notices.segment.detail : available ? `최신 지도 ${state.revision}회 갱신 · ${run?.source === 'live' ? `${$('points').textContent}점 표시` : '점군 불러오는 중'}${!replay.following ? ` · 기록 버전 ${replay.applied ?? 0}` : ''} · ${state.scale?.unit === 'm' ? '미터 단위' : '임의 단위'}` :
     lifecycle === 'failed' ? '유효한 3D 지도가 생성되지 않았습니다. 입력과 카메라 보정값을 확인한 뒤 다시 시작하세요.' : lifecycle === 'complete' ? '영상 입력은 종료됐지만 유효한 지도를 초기화하지 못했습니다. 다음 시험에서는 같은 공간을 보며 카메라 위치를 옮겨 주세요.' : '카메라가 움직이며 충분한 시차와 관측점이 모이면 점이 표시됩니다.';
   $('session-detail').textContent = state.session_id ? `세션 ${state.session_id}${state.last_error ? ' · 처리 오류 발생' : ''}` : '현재 연결된 실시간 세션이 없습니다.';
 }
@@ -824,7 +831,9 @@ function showState(state) {
     const description = trackingDescription(state);
     $('slam-timing').textContent = replay.following ? description.detail : '기록 재생 · 선택한 지도 버전의 촬영 키프레임';
     $('slam-tracking-state').textContent = replay.following ? description.label : '기록 재생';
-    $('slam-preview-note').textContent = replay.following ?
+    const notices = state.source === 'live' ? liveTrackingNotices(state) : {tracking: null};
+    $('slam-preview-note').textContent = replay.following && notices.tracking ?
+      `${notices.tracking.detail} 영상이 계속 들어와도 이 지도는 갱신되지 않을 수 있습니다.` : replay.following ?
       '노란 점: 직전 처리 프레임과 같은 지도 점 · 초록 점: 이번에 연결된 지도 점 · 숫자: 지도 점 ID' :
       '선택한 지도 버전의 촬영 키프레임입니다. 점군·경로는 그 시점에 실제로 저장된 지도 전체로 교체합니다.';
     if (state.recorded) {
