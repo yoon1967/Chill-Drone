@@ -22,6 +22,7 @@ from modules.mapping.localization.observations import native_observations
 from modules.mapping.data.live_recording import archive_files
 from modules.mapping.data.session_import import ImportManager, inside
 from modules.mapping.data.camera_profiles import CameraProfiles
+from modules.mapping.data.calibration_tutorial import CalibrationTutorial, board_svg
 
 
 def scene_delta(previous, current):
@@ -144,7 +145,8 @@ def result_metadata(path, modified_ns, size):
 class ViewerHandler(BaseHTTPRequestHandler):
     tello_input_lock = threading.Lock()
     def __init__(self, *args, result=None, session=None, objects=None, live=None, tello=None, tello_map=None,
-                 timeline=None, observations=None, demo=None, demo_camera=None, imports=None, profiles=None, **kwargs):
+                 timeline=None, observations=None, demo=None, demo_camera=None, imports=None, profiles=None, calibrations=None, **kwargs):
+        self.calibrations = calibrations
         self.profiles = profiles
         self.imports = imports
         self.imported = None
@@ -250,6 +252,9 @@ class ViewerHandler(BaseHTTPRequestHandler):
         if urlsplit(self.path).path.startswith('/api/camera-profiles'):
             self.profile_request()
             return
+        if urlsplit(self.path).path.startswith('/api/calibration'):
+            self.calibration_request()
+            return
         try:
             length = int(self.headers.get("Content-Length", "0"))
             if not 0 < length <= 2097152:
@@ -265,6 +270,8 @@ class ViewerHandler(BaseHTTPRequestHandler):
                     self.json_response({"error": "tello_input_disabled"}, 403)
                     return
                 with self.tello_input_lock:
+                    if self.calibrations and self.calibrations.busy:
+                        raise RuntimeError('calibration_input_is_active')
                     if self.tello_map and self.tello_map.busy:
                         self.json_response({"error": "tello_mapping_input_is_active"}, 409)
                         return
@@ -303,6 +310,8 @@ class ViewerHandler(BaseHTTPRequestHandler):
                     self.json_response({"error": "tello_mapping_input_disabled"}, 403)
                     return
                 with self.tello_input_lock:
+                    if self.calibrations and self.calibrations.busy:
+                        raise RuntimeError('calibration_input_is_active')
                     if self.tello and self.tello.running:
                         self.json_response({"error": "tello_detection_input_is_active"}, 409)
                         return
@@ -315,7 +324,10 @@ class ViewerHandler(BaseHTTPRequestHandler):
             elif not self.live:
                 self.json_response({"error": "camera_input_disabled"}, 403)
             elif url.path == "/api/live/start":
-                self.json_response(self.live.start(self.profile_config(json.loads(data), 'camera')), 201)
+                with self.tello_input_lock:
+                    if self.calibrations and self.calibrations.busy:
+                        raise RuntimeError('calibration_input_is_active')
+                    self.json_response(self.live.start(self.profile_config(json.loads(data), 'camera')), 201)
             elif url.path == "/api/live/frame":
                 query = parse_qs(url.query)
                 session = self.live.require(query.get("session", [""])[0])
@@ -349,6 +361,8 @@ class ViewerHandler(BaseHTTPRequestHandler):
 
     def log_message(self, format, *args):
         # Frame/status polling is operational traffic; avoid an unbounded terminal log.
+        if args and re.search(r'/api/calibration/(?:state|preview|frame)', str(args[0])):
+            return
         if args and re.search(r"/api/(?:(?:saved|live)/)?(?:state|run|timeline|frame|tracking|slam-preview|tello-preview|tello/heartbeat)", str(args[0])):
             return
         super().log_message(format, *args)
@@ -406,6 +420,98 @@ class ViewerHandler(BaseHTTPRequestHandler):
                    for o in collection["objects"]):
                 raise ValueError("invalid_object_texture")
         return collection
+
+    def calibration_request(self):
+        if not self.calibrations:
+            self.json_response({'error': 'calibration_not_enabled'}, 404)
+            return
+        try:
+            url = urlsplit(self.path)
+            action = url.path.removeprefix('/api/calibration').strip('/')
+            query = parse_qs(url.query)
+            if self.command == 'GET' and not action:
+                self.json_response({'enabled': bool(self.live), 'tello_enabled': bool(self.tello_map),
+                    'busy': self.calibrations.busy})
+                return
+            if self.command == 'GET' and action == 'board.svg':
+                payload = board_svg({k: float(query[k][0]) if k == 'square_mm' else int(query[k][0])
+                                     for k in ('columns', 'rows', 'square_mm') if k in query})
+                self.send_response(200)
+                self.send_header('Content-Type', 'image/svg+xml')
+                self.send_header('Content-Disposition', 'attachment; filename="checkerboard.svg"')
+                self.send_header('Content-Length', str(len(payload)))
+                self.end_headers()
+                self.write_payload(payload)
+                return
+            if self.command == 'GET':
+                session = self.calibrations.require(query.get('id', [''])[0], touch=action == 'state')
+                if action == 'state':
+                    self.json_response(session.snapshot())
+                elif action in {'preview', 'camera.json'}:
+                    with session.lock:
+                        payload = (json.dumps(session.result, ensure_ascii=False, indent=2, allow_nan=False).encode()
+                                   if action == 'camera.json' and session.result else session.preview if action == 'preview' else None)
+                    if not payload:
+                        raise ValueError('calibration_result_not_ready')
+                    self.send_response(200)
+                    self.send_header('Content-Type', 'application/json; charset=utf-8' if action == 'camera.json' else 'image/jpeg')
+                    self.send_header('Cache-Control', 'no-store')
+                    if action == 'camera.json':
+                        self.send_header('Content-Disposition', 'attachment; filename="calibrated-camera.json"')
+                    self.send_header('Content-Length', str(len(payload)))
+                    self.end_headers()
+                    self.write_payload(payload)
+                else:
+                    self.send_error(404)
+                return
+            length = int(self.headers.get('Content-Length', '0'))
+            if not 0 < length <= (2097152 if action == 'frame' else 16384):
+                raise ValueError('calibration_body_size_out_of_range')
+            self.connection.settimeout(10)
+            raw = self.rfile.read(length)
+            if len(raw) != length:
+                raise ValueError('incomplete_body')
+            if action == 'frame':
+                session = self.calibrations.require(query.get('id', [''])[0], touch=True)
+                if session.source != 'camera':
+                    raise ValueError('calibration_frame_owned_by_tello')
+                self.json_response(session.feed(raw), 202)
+                return
+            body = json.loads(raw)
+            if not isinstance(body, dict):
+                raise ValueError('invalid_calibration_request')
+            if action == 'start':
+                with self.tello_input_lock:
+                    if not self.live:
+                        raise ValueError('calibration_not_enabled')
+                    if ((self.live.current and not self.live.current.done) or (self.tello_map and self.tello_map.busy)
+                            or (self.tello and self.tello.running)):
+                        raise RuntimeError('mapping_input_is_active_stop_before_calibration')
+                    self.json_response(self.calibrations.start(body), 201)
+                return
+            session = self.calibrations.require(body.get('id'), touch=True)
+            if action == 'solve':
+                self.json_response(session.solve(), 202)
+            elif action == 'stop':
+                session.stop()
+                self.json_response(session.snapshot())
+            elif action == 'undo':
+                with session.lock:
+                    if session.status != 'collecting' or session.cancel.is_set():
+                        raise ValueError('calibration_not_collecting')
+                    if session.points:
+                        session.points.pop()
+                    session.reason = 'last_view_removed'
+                self.json_response(session.snapshot())
+            else:
+                self.send_error(404)
+        except (ValueError, KeyError, TypeError, OSError) as error:
+            self.json_response({'error': str(error)}, 400)
+        except RuntimeError as error:
+            self.json_response({'error': str(error)}, 409)
+
+        except Exception:
+            self.json_response({'error': 'calibration_processing_failed_check_input'}, 503)
 
     def profile_config(self, body, mode, size=None):
         selection = body.get('profile_selection')
@@ -516,6 +622,9 @@ class ViewerHandler(BaseHTTPRequestHandler):
             return
         url = urlsplit(self.path)
         path = unquote(url.path)
+        if path.startswith('/api/calibration'):
+            self.calibration_request()
+            return
         if path.startswith('/api/camera-profiles'):
             self.profile_request()
             return
@@ -760,6 +869,7 @@ class ViewerHandler(BaseHTTPRequestHandler):
                   "/point-spacing-worker.js": APP / "point-spacing-worker.js",
                   "/tracking-preview.js": APP / "tracking-preview.js",
                   '/profile-view.js': APP / 'profile-view.js',
+                  '/calibration-view.js': APP / 'calibration-view.js',
                   "/vendor/three.module.js": APP / "node_modules/three/build/three.module.js",
                   "/vendor/three.core.js": APP / "node_modules/three/build/three.core.js",
                   "/vendor/OrbitControls.js": APP / "node_modules/three/examples/jsm/controls/OrbitControls.js"}
@@ -903,11 +1013,12 @@ def main():
             parser.error(str(error))
     imports = ImportManager(args.live_root)
     profiles = CameraProfiles(args.profiles_root)
+    calibrations = CalibrationTutorial(tello_map.source_factory if tello_map else None)
     if args.import_source:
         initial = imports.add_local(args.import_source)
         imports.initial = initial
         print(f'Import selected: {initial}', flush=True)
-    server = ViewerServer(("127.0.0.1", args.port), partial(ViewerHandler, result=result, imports=imports, profiles=profiles,
+    server = ViewerServer(("127.0.0.1", args.port), partial(ViewerHandler, result=result, imports=imports, profiles=profiles, calibrations=calibrations,
         session=args.session, objects=args.objects, live=live, tello=tello, tello_map=tello_map, timeline=Timeline(), observations=ObservationCache(),
         demo=demo, demo_camera=demo_camera))
     print(f"Phone mapping viewer: http://127.0.0.1:{args.port}/", flush=True)
@@ -917,6 +1028,7 @@ def main():
         pass
     finally:
         server.server_close()
+        calibrations.shutdown()
         imports.shutdown()
         if tello_map:
             tello_map.shutdown()

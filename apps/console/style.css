@@ -106,10 +106,41 @@
 .profile-choice>label{display:flex;align-items:center;gap:8px;flex-wrap:wrap}
 .profile-choice>label:has(input[type=checkbox]){display:block}
 .profile-choice select{margin:0}
+.profile-selection{display:flex;align-items:end;gap:8px 12px;flex-wrap:wrap}
+.profile-panel .profile-selection>label{display:grid;gap:6px;min-width:0;max-width:100%}
+.profile-panel .profile-check{display:block;margin-top:10px;line-height:1.8}
+.profile-entry-actions{display:flex;gap:8px;flex-wrap:wrap;margin-top:12px}
+.profile-subpanel{margin-top:14px;padding:14px;border:1px solid #d9dfd4;border-radius:8px;background:#f6f8f4}
+.profile-subheading{display:flex;justify-content:space-between;align-items:center;gap:12px;margin-bottom:10px}
+.profile-panel .profile-subheading>strong{font-size:12px;color:#35583d}
+.profile-panel .profile-detail{margin-top:10px;padding-top:8px;border-top:1px solid #e5e8df}
+.profile-panel .profile-detail>summary{font-size:11px;color:#64745d}
+.profile-panel .profile-detail>p{font-variant-numeric:tabular-nums}
+.profile-subpanel .profile-drop{background:#fcfdf8}
+#profile-registration-summary{padding:10px 12px;border-radius:6px;background:#fcfdf8}
 #profile-register{border-top:1px solid #e5e8df;margin-top:16px;padding-top:2px}
 #profile-register>label{display:block;margin:14px 0}
 .profile-panel .profile-manual{border-top:1px solid #e5e8df;margin-top:16px;padding-top:12px}
 .profile-panel .profile-manual summary{font-size:11px;color:#64745d}
 .profile-panel .profile-manual label{display:inline-flex;align-items:center;gap:6px;margin:10px 14px 0 0;max-width:100%;flex-wrap:wrap}
 .profile-panel .profile-manual input[type=number]{width:65px}
+.profile-panel .calibration-tutorial{border-top:1px solid #e5e8df;margin-top:16px;padding-top:12px}
+.profile-panel .calibration-tutorial>summary{font-size:13px}
+.tutorial-steps{display:flex;gap:8px 18px;flex-wrap:wrap;list-style:none;padding:0;margin:14px 0;color:#35583d;font-size:11px;font-weight:600}
+.tutorial-steps li{padding:7px 10px;border-radius:6px;color:#788372;background:#f6f8f4}
+.tutorial-steps [data-current=true]{background:#eaf0e4;color:#244d3b;box-shadow:inset 0 0 0 1px #bed0b8}
+.profile-panel .calibration-tutorial label{margin:0}
+.profile-panel .calibration-tutorial .profile-actions label{display:grid;gap:6px}
+.calibration-tutorial input[type=number]{width:100px}
+.profile-panel .tutorial-confirm{display:block;line-height:1.8;padding:10px 12px;border:1px solid #d9dfd4;border-radius:6px;background:#f6f8f4}
+.tutorial-link{display:inline-block;padding:9px 12px;border:1px solid #bed0b8;border-radius:6px;color:#355a3e;background:#fff;font-size:11px}
+.profile-panel #calibration-start,.profile-panel #calibration-solve{background:#244d3b;color:#fff;border-color:#244d3b}
+#calibration-preview-area{display:grid;grid-template-columns:repeat(auto-fit,minmax(min(220px,100%),1fr));gap:10px;margin-top:12px}
+#calibration-preview-area p{grid-column:1/-1}
+.profile-panel #calibration-video,.profile-panel #calibration-preview{width:100%;max-height:360px;object-fit:contain;background:#101d22;border-radius:8px}
+#calibration-progress{width:100%;height:10px;accent-color:#4c7350}
+.tutorial-coverage{display:flex;gap:8px 16px;flex-wrap:wrap;list-style:none;padding:0;color:#788372;font-size:11px;line-height:1.6}
+.tutorial-coverage [data-done=true]{color:#287447}
+#calibration-result{padding:14px;margin-top:14px;border:1px solid #bed0b8;border-radius:8px;background:#eaf0e4}
+.profile-panel #calibration-result>strong{font-size:13px;color:#35583d}
 @media(max-width:600px){.profile-panel{padding:16px}.profile-panel summary span{display:block;margin:4px 0 0}.profile-actions{align-items:stretch}.profile-actions label{flex:1 1 100%}.profile-panel select,.profile-panel input:not([type=checkbox]):not([type=file]),.profile-choice select{width:100%}.profile-actions button,.profile-actions a{max-width:100%}.profile-choice>label{align-items:flex-start;flex-direction:column}}
