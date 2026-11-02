@@ -8,7 +8,7 @@ if not exist ".venv\Scripts\python.exe" (
     popd
     exit /b 1
 )
-".venv\Scripts\python.exe" -B "%~dp0autonomy_web_launcher.py" wsl %*
+".venv\Scripts\python.exe" -B "%~dp0..\infra\autonomy-web\launcher.py" wsl %*
 set "TEAM_AUTONOMY_EXIT=%ERRORLEVEL%"
 if not "%TEAM_AUTONOMY_EXIT%"=="0" pause
 popd

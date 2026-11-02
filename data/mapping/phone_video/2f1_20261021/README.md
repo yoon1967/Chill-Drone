@@ -3,9 +3,9 @@
 `run_manifest.json`이 활성 파일·버전·해시의 기준이다. `features_v1/`은 자동 좌표/매칭,
 `measurements_v2_floor/`는 수동 기준점이다. 기존 파일은 전달 ZIP과 바이트가 같다.
 
-Git 전용 검사: `python -B scripts/phone_mapping/shared_inputs.py`
+Git 전용 검사: `python -B modules/mapping/data/phone_mapping/shared_inputs.py`
 
-외부 자료 연결: `python -B scripts/phone_mapping/shared_inputs.py --package-root "압축을 푼 패키지 루트"`
+외부 자료 연결: `python -B modules/mapping/data/phone_mapping/shared_inputs.py --package-root "압축을 푼 패키지 루트"`
 
 패키지 루트는 `handoff_manifest.json`이 있는 위치다. 저장소나 자료 폴더를 다른 위치로 옮겨도
 `--run-dir`, `--package-root`를 지정하면 된다. Python API는 `shared_inputs.load_run()`을 사용한다.

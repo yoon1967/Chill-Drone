@@ -1,6 +1,8 @@
 # 허병우 팀원 자율비행 웹 서버 실행
 
-두 CMD 모두 저장소 `.venv` Python과 Git을 사용하며 추가 Python 패키지는 필요 없다.
+`scripts/start_team_autonomy_docker.cmd`와 `scripts/start_team_autonomy_wsl.cmd`는
+`infra/autonomy-web/launcher.py`를 호출한다. 두 CMD 모두 저장소 `.venv` Python과 Git을 사용하며
+추가 Python 패키지는 필요 없다.
 `origin/feature/tello-ros-driver`의 `modules/autonomy/autonomy_web` 코드를 임시 폴더에서 실행한다.
 실행 전에 `git fetch origin feature/tello-ros-driver`로 팀원 코드를 갱신한다.
 다른 브랜치로 전환하거나 팀원의 전체 코드를 병합하지 않는다. 종료 시 임시 소스는 정리한다.

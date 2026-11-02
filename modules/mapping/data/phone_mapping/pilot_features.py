@@ -18,7 +18,7 @@ import numpy as np
 from path_options import writable_output
 
 
-ROOT = Path(__file__).resolve().parents[2]
+ROOT = Path(__file__).resolve().parents[4]
 INPUT = ROOT / "output" / "phone_mapping" / "2f1_20261021"
 OUTPUT = ROOT / "output" / "phone_mapping" / "2f1_20261021_features_v1" / "pilot"
 FRAME_IDS = ("frame_0034.jpg", "frame_0035.jpg", "frame_0036.jpg")

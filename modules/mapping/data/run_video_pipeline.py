@@ -19,7 +19,7 @@ ROOT = Path(__file__).resolve().parents[3]
 SCHEMA = "phone-video-pipeline/1.0"
 SCRIPTS = {
     "input": ROOT / "modules/mapping/data/video_input.py",
-    "features": ROOT / "scripts/phone_mapping/full_features.py",
+    "features": ROOT / "modules/mapping/data/phone_mapping/full_features.py",
     "reconstruction": ROOT / "modules/mapping/localization/reconstruct.py",
     "preview": ROOT / "modules/mapping/data/render_preview.py",
 }

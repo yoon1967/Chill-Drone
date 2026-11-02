@@ -18,7 +18,7 @@ import pycolmap
 from scipy.optimize import least_squares
 
 ROOT = Path(__file__).resolve().parents[3]
-sys.path.insert(0, str(ROOT / "scripts/phone_mapping"))
+sys.path.insert(0, str(ROOT / "modules/mapping/data/phone_mapping"))
 from shared_inputs import DEFAULT_RUN, check_file, load_run, read_json, require, sha256, validate
 from feature_input import load_feature_input
 from path_options import writable_output

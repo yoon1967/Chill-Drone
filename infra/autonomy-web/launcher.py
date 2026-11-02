@@ -11,7 +11,7 @@ from urllib.request import ProxyHandler, build_opener
 import uuid
 import webbrowser
 
-ROOT = Path(__file__).resolve().parent.parent
+ROOT = Path(__file__).resolve().parents[2]
 SOURCE = 'modules/autonomy/autonomy_web/'
 IMAGE = 'ssafy-autonomy-web:jazzy'
 
@@ -66,10 +66,10 @@ def main():
                 linux_path = run([*prefix, 'wslpath', '-a', '-u', str(directory)],
                                  capture_output=True, timeout=15).stdout.decode('utf-8').strip()
             except subprocess.CalledProcessError:
-                raise RuntimeError(f'Cannot access WSL distro {args.distro}. Check wsl --list --verbose; see scripts/AUTONOMY_WEB.md.') from None
+                raise RuntimeError(f'Cannot access WSL distro {args.distro}. Check wsl --list --verbose; see docs/autonomy/WEB_LAUNCHERS.md.') from None
             # Paths and options are positional parameters, never interpolated into shell code.
             script = ('set -e; test -f /opt/ros/jazzy/setup.bash || '
-                      '{ echo "ROS 2 Jazzy missing; see scripts/AUTONOMY_WEB.md" >&2; exit 1; }; '
+                      '{ echo "ROS 2 Jazzy missing; see docs/autonomy/WEB_LAUNCHERS.md" >&2; exit 1; }; '
                       'source /opt/ros/jazzy/setup.bash; export ROS_DOMAIN_ID="$1"; '
                       'shift; printf "%s" "$$" > "$1"; shift; exec python3 -B "$@"')
             command = [*prefix, 'bash', '-c', script, 'autonomy-web', str(args.domain_id),
@@ -132,5 +132,5 @@ if __name__ == '__main__':
         sys.exit(main())
     except (OSError, RuntimeError, subprocess.SubprocessError) as error:
         print('[ERROR] ' + str(error), file=sys.stderr)
-        print('See scripts/AUTONOMY_WEB.md for setup. Fetch the teammate branch if source is missing.', file=sys.stderr)
+        print('See docs/autonomy/WEB_LAUNCHERS.md for setup. Fetch the teammate branch if source is missing.', file=sys.stderr)
         sys.exit(1)

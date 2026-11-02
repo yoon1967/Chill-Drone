@@ -137,7 +137,7 @@ class SessionImportTests(unittest.TestCase):
             ImportedMap(root)
 
     def test_frame_adapter_orders_numerically_and_passes_existing_feature_validator(self):
-        from scripts.phone_mapping.feature_input import load_feature_input
+        from modules.mapping.data.phone_mapping.feature_input import load_feature_input
         source = self.root / 'photos'
         source.mkdir()
         for name in ('img10.png', 'img2.png', 'img1.png'):

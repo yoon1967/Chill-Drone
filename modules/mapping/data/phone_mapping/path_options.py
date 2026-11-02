@@ -5,7 +5,7 @@ import os
 
 def writable_output(path: Path) -> Path:
     result = path.resolve()
-    data_root = Path(__file__).resolve().parents[2] / "data"
+    data_root = Path(__file__).resolve().parents[4] / "data"
     if result.is_relative_to(data_root.resolve()):
         raise ValueError("Do not regenerate inside tracked data/. Choose a new output/ or external work directory.")
     return result
