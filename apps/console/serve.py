@@ -23,6 +23,7 @@ from modules.mapping.data.live_recording import archive_files
 from modules.mapping.data.session_import import ImportManager, ImportedMap, inside
 from modules.mapping.data.camera_profiles import CameraProfiles
 from modules.mapping.data.calibration_tutorial import CalibrationTutorial, board_svg
+from modules.mapping.data.calibration_report import calibration_report_pdf
 
 
 def scene_delta(previous, current):
@@ -540,17 +541,22 @@ class ViewerHandler(BaseHTTPRequestHandler):
                 session = self.calibrations.require(query.get('id', [''])[0], touch=action == 'state')
                 if action == 'state':
                     self.json_response(session.snapshot())
-                elif action in {'preview', 'camera.json'}:
+                elif action in {'preview', 'camera.json', 'report.pdf'}:
                     with session.lock:
                         payload = (json.dumps(session.result, ensure_ascii=False, indent=2, allow_nan=False).encode()
-                                   if action == 'camera.json' and session.result else session.preview if action == 'preview' else None)
+                                   if action == 'camera.json' and session.result else
+                                   calibration_report_pdf(session.result) if action == 'report.pdf' and session.result else
+                                   session.preview if action == 'preview' else None)
                     if not payload:
                         raise ValueError('calibration_result_not_ready')
                     self.send_response(200)
-                    self.send_header('Content-Type', 'application/json; charset=utf-8' if action == 'camera.json' else 'image/jpeg')
+                    self.send_header('Content-Type', 'application/json; charset=utf-8' if action == 'camera.json' else
+                                     'application/pdf' if action == 'report.pdf' else 'image/jpeg')
                     self.send_header('Cache-Control', 'no-store')
                     if action == 'camera.json':
                         self.send_header('Content-Disposition', 'attachment; filename="calibrated-camera.json"')
+                    elif action == 'report.pdf':
+                        self.send_header('Content-Disposition', 'attachment; filename="camera-calibration-report.pdf"')
                     self.send_header('Content-Length', str(len(payload)))
                     self.end_headers()
                     self.write_payload(payload)
@@ -566,7 +572,7 @@ class ViewerHandler(BaseHTTPRequestHandler):
                 raise ValueError('incomplete_body')
             if action == 'frame':
                 session = self.calibrations.require(query.get('id', [''])[0], touch=True)
-                if session.source != 'camera':
+                if session.source not in {'camera', 'file'}:
                     raise ValueError('calibration_frame_owned_by_tello')
                 self.json_response(session.feed(raw), 202)
                 return
@@ -1033,6 +1039,7 @@ class ViewerHandler(BaseHTTPRequestHandler):
                   "/tracking-preview.js": APP / "tracking-preview.js",
                   '/profile-view.js': APP / 'profile-view.js',
                   '/calibration-view.js': APP / 'calibration-view.js',
+                  '/calibration-files.js': APP / 'calibration-files.js',
                   '/drone-view.js': APP / 'drone-view.js',
                   '/map-save.js': APP / 'map-save.js',
                   "/vendor/three.module.js": APP / "node_modules/three/build/three.module.js",

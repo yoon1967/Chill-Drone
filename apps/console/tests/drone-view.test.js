@@ -31,23 +31,30 @@ function fixture(t) {
 const settle = () => new Promise(resolve => setImmediate(resolve));
 
 test('live reconstruction content stays hidden until mapping starts; saved tab remains usable', () => {
-  const stage = {};
-  const render = (source, state) => renderDroneStages(source, state, () => stage);
-  render('live', {}); assert.equal(stage.hidden, true);
-  render('live', {connected: true}); assert.equal(stage.hidden, true);
-  render('live', {connected: true, mapping_active: true}); assert.equal(stage.hidden, false);
-  render('live', {finalizing: true}); assert.equal(stage.hidden, false);
-  render('live', {mapping_session_id: 'finished', map_available: true}); assert.equal(stage.hidden, false);
-  render('live', {connected: true, mapping_session_id: null}); assert.equal(stage.hidden, true);
-  render('saved', {}); assert.equal(stage.hidden, false);
-  render('live', {}); assert.equal(stage.hidden, true);
+  const elements = {'reconstruction-stage': {}, 'live-map-placeholder': {}};
+  const render = (source, state) => renderDroneStages(source, state, id => elements[id]);
+  render('live', {}); assert.equal(elements['reconstruction-stage'].hidden, true);
+  assert.equal(elements['live-map-placeholder'].hidden, false);
+  render('live', {connected: true}); assert.equal(elements['live-map-placeholder'].hidden, false);
+  render('live', {connected: true, mapping_active: true}); assert.equal(elements['reconstruction-stage'].hidden, false);
+  assert.equal(elements['live-map-placeholder'].hidden, true);
+  render('live', {finalizing: true}); assert.equal(elements['reconstruction-stage'].hidden, false);
+  render('live', {mapping_session_id: 'finished', map_available: true}); assert.equal(elements['reconstruction-stage'].hidden, false);
+  render('live', {connected: true, mapping_session_id: null}); assert.equal(elements['live-map-placeholder'].hidden, false);
+  render('saved', {}); assert.equal(elements['reconstruction-stage'].hidden, false);
+  assert.equal(elements['live-map-placeholder'].hidden, true);
 });
 
 test('scan reveals a Wi-Fi list, a single click selects, double click connects only once', async t => {
   const f = fixture(t);
+  f.state.connected = false;
   await settle();
+  assert.equal(f.get('drone-wifi-status').hidden, true);
+  assert.equal(f.get('drone-wifi-signal').hidden, true);
   await f.handle.action('scan');
   assert.equal(f.get('drone-wifi-results').hidden, false);
+  assert.equal(f.get('drone-wifi-status').hidden, false);
+  assert.equal(f.get('drone-wifi-signal').hidden, false);
   const rows = f.get('drone-list').children;
   assert.equal(rows.length, 2);
   assert.equal(rows[1].children[0].textContent, '<Home>');

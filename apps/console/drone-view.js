@@ -3,6 +3,7 @@ export function renderDroneStages(source, state, element = id => document.getEle
   const started = state.mapping_active === true || state.finalizing === true ||
     Boolean(state.mapping_session_id && state.map_available);
   element('reconstruction-stage').hidden = source === 'live' && !started;
+  element('live-map-placeholder').hidden = source !== 'live' || started;
 }
 export function wifiSignal(wifi) {
   if (wifi?.status === 'pending') return '신호 조회 중…';
@@ -27,6 +28,7 @@ export function connectDrones({element = id => document.getElementById(id), fetc
   schedule = setTimeout, onState = () => {}, onDisconnected = async () => {}, onMapStart = async () => {}} = {}) {
   let pending = false, connected = false, open = false, preview = false;
   let lastState = {}, epoch = 0;
+  let wifiVisible = false;
   let selectedWifi = null;
   const wifiRows = new Map();
   function chooseWifi(id) {
@@ -44,7 +46,7 @@ export function connectDrones({element = id => document.getElementById(id), fetc
       const label = document.createElement('span'), signal = document.createElement('span');
       label.textContent = item.ssid;
       signal.textContent = item.kind === 'current' ? 'OS에서 직접 연결한 드론 확인' :
-        `${item.signal_pct == null ? '신호 미확인' : '검색 시 ' + item.signal_pct + '%'} · ${item.drone_candidate ? 'Tello / TT 후보' : 'SDK 미확인 Wi-Fi'}`;
+        `${item.signal_pct == null ? '신호 미확인' : '검색 시 ' + item.signal_pct + '%'} · ${item.drone_candidate ? '드론 후보' : 'SDK 미확인 Wi-Fi'}`;
       row.baseSignal = signal.textContent;
       row.append(label, signal);
       row.signalLabel = signal;
@@ -61,11 +63,12 @@ export function connectDrones({element = id => document.getElementById(id), fetc
     }
     element('drone-wifi-results').hidden = false;
   }
-  const message = value => { element('drone-status').textContent = value; };
+  const message = value => { element('drone-status').textContent = value; element('drone-status').hidden = !value; };
   function render(state) {
     lastState = state;
     connected = state.connected;
     const wifi = state.wifi;
+    element('drone-wifi-status').hidden = element('drone-wifi-signal').hidden = !wifiVisible && !connected;
     element('drone-wifi-status').textContent = wifi?.status === 'pending' ? 'PC Wi-Fi 상태 조회 중…' : wifi?.status === 'ok' ?
       wifi.connected ? `PC Wi-Fi 연결됨 · ${wifi.ssid}` : 'PC Wi-Fi 연결 안 됨' : 'PC Wi-Fi 상태 확인 불가 · OS 권한/어댑터를 확인하세요.';
     element('drone-wifi-signal').textContent = `연결 신호 · ${wifiSignal(wifi)}${wifi?.age_s != null ? ` · ${wifi.age_s}초 전 측정` : ''}`;
@@ -106,6 +109,7 @@ export function connectDrones({element = id => document.getElementById(id), fetc
   }
   async function action(path, body = {}) {
     if (pending) return;
+    if (path === 'scan' || path === 'connect') wifiVisible = true;
     pending = true;
     if (path === 'connect') onState({can_save: false, connected: false});
     epoch++;

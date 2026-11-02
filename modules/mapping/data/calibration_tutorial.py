@@ -103,10 +103,11 @@ class CalibrationSession:
         self.id = 'calibration_' + uuid.uuid4().hex[:16]
         self.board = board_options(options)
         self.source = options.get('source')
-        if self.source not in {'camera', 'tello'} or options.get('confirmed') is not True:
+        if self.source not in {'camera', 'tello', 'file'} or options.get('confirmed') is not True:
             raise ValueError('confirm_calibration_camera_and_board')
         from .camera_profiles import text
-        self.identity = text(options.get('camera_identity', 'Tello 촬영 기체' if self.source == 'tello' else '연결된 카메라'), 'camera_identity')
+        self.identity = text(options.get('camera_identity', '드론 촬영 기체' if self.source == 'tello' else
+                             '업로드한 촬영 자료' if self.source == 'file' else '연결된 카메라'), 'camera_identity')
         self.lock, self.frame_lock = threading.RLock(), threading.Lock()
         self.cancel = threading.Event()
         self.status, self.error, self.reason = 'collecting', None, 'show_checkerboard'

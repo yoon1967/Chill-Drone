@@ -26,15 +26,21 @@ let pollDelay = 2000;
 let pollTimer, captureState = {state: 'idle'}, captureHandle, lastLiveState = {};
 const source = new MapSource(location.hash === '#live' ? 'live' : 'saved');
 source.asset = new URLSearchParams(location.search).get('asset');
+function closeDroneWorkspace(focus = true) {
+  $('drone-workspace').open = false;
+  if (focus && source.source === 'live') $('drone-open').focus();
+}
+$('calibration-open').addEventListener('click', () => closeDroneWorkspace(false));
 let droneState = {can_save: false};
 const mapSaver = connectMapSave({source, scene: () => run, allowed: () =>
   droneState.can_save === true && source.source === 'live' && run?.stream?.session_id === droneState.save_session_id});
 connectDrones({
-  onState(state) { droneState = state; mapSaver.update(); renderDroneStages(source.source, droneState); },
+  onState(state) { droneState = state; connections.drone(state); mapSaver.update(); renderDroneStages(source.source, droneState); },
   async onMapStart() {
     if (!captureHandle?.startDroneMapping) throw new Error('영상 입력 준비 중입니다. 잠시 뒤 다시 시도하세요.');
     location.hash = 'live';
     await captureHandle.startDroneMapping();
+    closeDroneWorkspace(false);
   },
   async onDisconnected() { location.hash = 'live'; await captureHandle?.stopDrone?.(); },
 });
@@ -171,6 +177,8 @@ function selectSource(next, force = false) {
     tab.tabIndex = selected ? 0 : -1;
   });
   $('map-content').setAttribute('aria-labelledby', `tab-${next}`);
+  $('camera-actions').hidden = next !== 'live';
+  if (next !== 'live') closeDroneWorkspace(false);
   renderDroneStages(next, droneState);
   mapSaver.update();
   $('live-panel').hidden = $('live-status').hidden = next !== 'live';
@@ -179,7 +187,7 @@ function selectSource(next, force = false) {
   $('profile-file-context').hidden = next !== 'saved';
   profiles.setContext(next);
   document.querySelector('.workspace').classList.toggle('slam-workspace', next === 'live');
-  document.querySelector('h1').textContent = next === 'saved' ? '영상 속 공간을, 입체로.' : '영상이 들어오는 지금, 공간으로.';
+  document.querySelector('#map-content .heading h1').textContent = next === 'saved' ? '영상 속 공간을, 입체로.' : '영상이 들어오는 지금, 공간으로.';
   $('run-name').textContent = next === 'saved' ? '저장된 실험 결과를 불러옵니다.' : '실시간 입력과 지도 생성 상태를 확인합니다.';
   document.querySelector('footer > span').textContent = next === 'saved' ? 'COLMAP · OFFLINE RECONSTRUCTION' : 'ORB-SLAM3 · MONOCULAR TRACKING';
   poll();
