@@ -1,6 +1,6 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
-import {connectDrones, renderDroneStages} from '../drone-view.js';
+import {connectDrones, renderDroneStages, wifiSignal} from '../drone-view.js';
 
 function fixture(t) {
   const original = Object.getOwnPropertyDescriptor(globalThis, 'document');
@@ -22,7 +22,9 @@ function fixture(t) {
   const handle = connectDrones({element: get, schedule: fn => timers.push(fn), fetcher: async (url, options) => {
     requests.push({url, options});
     if (fail) throw new Error('offline');
-    return {ok: true, json: async () => structuredClone(state)};
+    return {ok: true, json: async () => url.endsWith('/scan') ? {items: [
+      {id: 'TELLO-test', ssid: 'TELLO-test', kind: 'wifi', signal_pct: 75, drone_candidate: true},
+      {id: 'home', ssid: '<Home>', kind: 'wifi', signal_pct: 45}]} : structuredClone(state)};
   }});
   return {handle, get, requests, timers, state, setFail: () => { fail = true; }};
 }
@@ -39,6 +41,44 @@ test('live reconstruction content stays hidden until mapping starts; saved tab r
   render('live', {connected: true, mapping_session_id: null}); assert.equal(stage.hidden, true);
   render('saved', {}); assert.equal(stage.hidden, false);
   render('live', {}); assert.equal(stage.hidden, true);
+});
+
+test('scan reveals a Wi-Fi list, a single click selects, double click connects only once', async t => {
+  const f = fixture(t);
+  await settle();
+  await f.handle.action('scan');
+  assert.equal(f.get('drone-wifi-results').hidden, false);
+  const rows = f.get('drone-list').children;
+  assert.equal(rows.length, 2);
+  assert.equal(rows[1].children[0].textContent, '<Home>');
+  rows[0].handlers.click();
+  assert.equal(f.requests.some(r => r.url.endsWith('/connect')), false);
+  assert.equal(rows[0].attrs['aria-selected'], 'true');
+  rows[0].handlers.dblclick(); rows[0].handlers.dblclick();
+  await settle();
+  const connects = f.requests.filter(r => r.url.endsWith('/connect'));
+  assert.equal(connects.length, 1);
+  assert.deepEqual(JSON.parse(connects[0].options.body), {id: 'TELLO-test'});
+});
+
+test('keyboard connection and live signal changes remain separate from SDK state', async t => {
+  const f = fixture(t);
+  await settle(); await f.handle.action('scan');
+  f.get('drone-list').children[0].handlers.keydown({key: 'Enter', preventDefault() {}});
+  await settle();
+  assert.ok(f.requests.some(r => r.url.endsWith('/connect')));
+  f.state.wifi = {status: 'ok', ssid: 'TELLO-test', connected: true, signal_pct: 83, age_s: 1};
+  await f.timers.shift()();
+  assert.match(f.get('drone-wifi-signal').textContent, /83%.*강함/);
+  f.state.wifi.signal_pct = 18;
+  await f.timers.shift()();
+  assert.match(f.get('drone-wifi-signal').textContent, /18%.*약함/);
+  f.state.wifi = {status: 'unavailable', connected: null};
+  await f.timers.shift()();
+  assert.match(f.get('drone-wifi-signal').textContent, /확인 불가/);
+  assert.doesNotMatch(f.get('drone-list').children[0].signalLabel.textContent, /Wi-Fi 연결됨/);
+  assert.equal(wifiSignal({status: 'ok', connected: true, signal_pct: 0}), '0% · 약함');
+  assert.match(wifiSignal({status: 'stale', signal_pct: 90}), /오래된/);
 });
 
 test('connected state never opens the panel or probes resources until details is clicked', async t => {

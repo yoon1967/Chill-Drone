@@ -4,6 +4,14 @@ export function renderDroneStages(source, state, element = id => document.getEle
     Boolean(state.mapping_session_id && state.map_available);
   element('reconstruction-stage').hidden = source === 'live' && !started;
 }
+export function wifiSignal(wifi) {
+  if (wifi?.status === 'pending') return '신호 조회 중…';
+  if (!wifi || wifi.status !== 'ok') return wifi?.status === 'stale' ? '신호 확인 지연 · 오래된 값' : '신호 확인 불가';
+  if (!wifi.connected) return 'Wi-Fi 연결 안 됨';
+  const signal = wifi.signal_pct;
+  if (!Number.isFinite(signal) || signal < 0 || signal > 100) return '신호 강도 미확인';
+  return `${signal}% · ${signal >= 75 ? '강함' : signal >= 40 ? '보통' : '약함'}`;
+}
 const errors = {
   drone_input_is_active: '영상·보정 입력이 사용 중입니다. 입력을 종료한 뒤 연결을 시도하세요.',
   scan_and_select_a_drone_first: '목록을 검색하고 드론을 선택하세요.',
@@ -19,10 +27,54 @@ export function connectDrones({element = id => document.getElementById(id), fetc
   schedule = setTimeout, onState = () => {}, onDisconnected = async () => {}, onMapStart = async () => {}} = {}) {
   let pending = false, connected = false, open = false, preview = false;
   let lastState = {}, epoch = 0;
+  let selectedWifi = null;
+  const wifiRows = new Map();
+  function chooseWifi(id) {
+    selectedWifi = id;
+    for (const [key, row] of wifiRows) row.setAttribute('aria-selected', String(key === id));
+    element('drone-connect').disabled = pending || !id;
+  }
+  function renderWifi(items) {
+    const list = element('drone-list'); list.replaceChildren(); wifiRows.clear();
+    chooseWifi(null);
+    for (const item of items) {
+      const row = document.createElement('button');
+      row.type = 'button'; row.className = 'wifi-row'; row.setAttribute('role', 'option');
+      row.setAttribute('aria-selected', 'false');
+      const label = document.createElement('span'), signal = document.createElement('span');
+      label.textContent = item.ssid;
+      signal.textContent = item.kind === 'current' ? 'OS에서 직접 연결한 드론 확인' :
+        `${item.signal_pct == null ? '신호 미확인' : '검색 시 ' + item.signal_pct + '%'} · ${item.drone_candidate ? 'Tello / TT 후보' : 'SDK 미확인 Wi-Fi'}`;
+      row.baseSignal = signal.textContent;
+      row.append(label, signal);
+      row.signalLabel = signal;
+      row.addEventListener('click', () => { if (!pending) chooseWifi(item.id); });
+      row.addEventListener('dblclick', () => {
+        if (pending) return;
+        chooseWifi(item.id); void action('connect', {id: item.id});
+      });
+      row.addEventListener('keydown', event => {
+        if (event.key !== 'Enter' || pending) return;
+        event.preventDefault(); chooseWifi(item.id); void action('connect', {id: item.id});
+      });
+      wifiRows.set(item.id, row); list.append(row);
+    }
+    element('drone-wifi-results').hidden = false;
+  }
   const message = value => { element('drone-status').textContent = value; };
   function render(state) {
     lastState = state;
     connected = state.connected;
+    const wifi = state.wifi;
+    element('drone-wifi-status').textContent = wifi?.status === 'pending' ? 'PC Wi-Fi 상태 조회 중…' : wifi?.status === 'ok' ?
+      wifi.connected ? `PC Wi-Fi 연결됨 · ${wifi.ssid}` : 'PC Wi-Fi 연결 안 됨' : 'PC Wi-Fi 상태 확인 불가 · OS 권한/어댑터를 확인하세요.';
+    element('drone-wifi-signal').textContent = `연결 신호 · ${wifiSignal(wifi)}${wifi?.age_s != null ? ` · ${wifi.age_s}초 전 측정` : ''}`;
+    for (const [id, row] of wifiRows) {
+      row.setAttribute('data-connected', String(wifi?.status === 'ok' && wifi?.ssid === id && wifi?.connected));
+      if (wifi?.status === 'ok' && wifi.connected && wifi.ssid === id)
+        row.signalLabel.textContent = `Wi-Fi 연결됨 · ${wifiSignal(wifi)}`;
+      else row.signalLabel.textContent = row.baseSignal;
+    }
     onState(state);
     element('drone-camera-panel').hidden = !connected;
     element('drone-map-start').disabled = pending || !connected || state.mapping_active;
@@ -64,13 +116,8 @@ export function connectDrones({element = id => document.getElementById(id), fetc
       const state = await response.json();
       if (!response.ok) throw new Error(errors[state.error] || state.error || '드론 요청에 실패했습니다.');
       if (path === 'scan') {
-        const select = element('drone-list'); select.replaceChildren();
-        for (const item of state.items) {
-          const option = document.createElement('option'); option.value = item.id;
-          option.textContent = `${item.ssid} · ${item.kind === 'wifi' ? 'Wi-Fi 후보 / 연결 전' : 'SDK 연결 시도'}`;
-          select.append(option);
-        }
-        message(`${state.items.filter(item => item.kind === 'wifi').length}개 Wi-Fi 후보. ${state.warning ? 'OS 검색 제한: Wi-Fi 권한·어댑터를 확인하세요. ' : ''}후보 선택 후 연결을 누르세요.`);
+        renderWifi(state.items);
+        message(`${state.items.filter(item => item.kind === 'wifi').length}개 Wi-Fi. ${state.warning ? 'OS 검색 제한: Wi-Fi 권한·어댑터를 확인하세요. ' : ''}연결할 항목을 더블클릭하세요. 드론은 SDK 응답까지 확인합니다.`);
       } else {
         if (path === 'preview/start') preview = !state.video?.error;
         if (path === 'preview/stop') preview = false;
@@ -84,7 +131,8 @@ export function connectDrones({element = id => document.getElementById(id), fetc
     } catch (error) { message(error.message); }
     finally {
       pending = false;
-      for (const id of ['drone-scan', 'drone-connect', 'drone-resource-refresh', 'drone-video-start']) element(id).disabled = false;
+      for (const id of ['drone-scan', 'drone-resource-refresh', 'drone-video-start']) element(id).disabled = false;
+      element('drone-connect').disabled = !selectedWifi;
       element('drone-details').disabled = !connected;
       await poll(false);
       if (path === 'connect' && connected) await action('preview/start');
@@ -107,6 +155,8 @@ export function connectDrones({element = id => document.getElementById(id), fetc
           preview = false;
           element('drone-resource-image').hidden = true;
           element('drone-link-state').textContent = '확인 불가 · 서버 연결 실패';
+          element('drone-wifi-status').textContent = '서버 연결 실패 · Wi-Fi 상태 확인 불가';
+          element('drone-wifi-signal').textContent = '신호 확인 불가';
           element('drone-details').disabled = element('drone-disconnect').disabled = true;
           message('서버에 연결할 수 없어 드론 상태를 확인하지 못했습니다.');
         }
@@ -115,7 +165,7 @@ export function connectDrones({element = id => document.getElementById(id), fetc
     if (repeat) schedule(poll, 3000);
   }
   element('drone-scan').addEventListener('click', () => action('scan'));
-  element('drone-connect').addEventListener('click', () => action('connect', {id: element('drone-list').value}));
+  element('drone-connect').addEventListener('click', () => { if (selectedWifi) void action('connect', {id: selectedWifi}); });
   element('drone-disconnect').addEventListener('click', () => action('disconnect', {session_id: lastState.mapping_session_id}));
   element('drone-map-start').addEventListener('click', async () => {
     if (pending || !connected || lastState.mapping_active) return;

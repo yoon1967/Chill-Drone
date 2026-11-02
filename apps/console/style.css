@@ -158,3 +158,7 @@
 #drone-resource-image { max-width: 100%; max-height: 420px; border-radius: 8px; }
 #drone-camera-panel { margin-top: 16px; padding: 16px; background: #edf1e9; border-radius: 8px; }
 .map-save-bar { display: flex; align-items: center; flex-wrap: wrap; gap: 12px; margin-block: 14px; font-size: 13px; }
+.wifi-row { display: flex; width: 100%; justify-content: space-between; gap: 16px; text-align: left; padding: 12px; border: 1px solid #c9d4c9; background: #fff; border-radius: 7px; margin: 6px 0; overflow-wrap: anywhere; }
+.wifi-row[aria-selected=true] { background: #e5efde; border-color: #527f43; }
+.wifi-row[data-connected=true] { box-shadow: inset 4px 0 #527f43; }
+.wifi-row > span:last-child { font-size: 12px; color: #52624b; }
