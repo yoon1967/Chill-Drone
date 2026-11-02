@@ -13,6 +13,7 @@ import threading
 import time
 
 from .tello_link import TelloLink
+from .wifi import scan_wifi, current_wifi
 
 
 def run_os(args):
@@ -25,17 +26,7 @@ def run_os(args):
 
 
 def wifi_candidates(runner=run_os, platform=None):
-    platform = platform or sys.platform
-    if platform == 'win32':
-        output = runner(['netsh', 'wlan', 'show', 'networks', 'mode=bssid'])
-        names = re.findall(r'^\s*SSID\s+\d+\s*:\s*(.+?)\s*$', output, re.M)
-    elif platform.startswith('linux'):
-        output = runner(['nmcli', '-t', '--escape', 'no', '-f', 'SSID', 'device', 'wifi', 'list', '--rescan', 'yes'])
-        names = output.splitlines()
-    else:
-        raise RuntimeError('wifi_scan_not_supported_on_this_os')
-    return [{'id': name, 'ssid': name, 'kind': 'wifi', 'verified': False}
-            for name in sorted(set(names)) if re.match(r'^(TELLO|RMTT|ROBOMASTER)', name, re.I)]
+    return scan_wifi(runner, platform)
 
 
 QUERIES = [
@@ -70,6 +61,40 @@ class DroneDiscovery:
         self.manual_disconnected = False
         self.disconnected_session = None
         self.mapping_session = None
+        self.wifi_lock = threading.Lock()
+        self.wifi_sample = {'status': 'pending', 'connected': None, 'ssid': None, 'signal_pct': None}
+        self.wifi_checked = -float('inf')
+        self.wifi_worker = None
+
+    def refresh_wifi(self, force=False):
+        # OS commands may take seconds: never delay camera/state polling or bind
+        # the drone command ports just to inspect Wi-Fi signal.
+        with self.wifi_lock:
+            if self.wifi_worker and self.wifi_worker.is_alive():
+                return
+            if not force and time.monotonic() - self.wifi_checked < 3:
+                return
+            preferred = (self.selected or {}).get('ssid')
+            def update():
+                try:
+                    sample = {**current_wifi(self.runner, preferred=preferred), 'status': 'ok'}
+                except (OSError, RuntimeError, subprocess.TimeoutExpired):
+                    sample = {'status': 'unavailable', 'connected': None, 'ssid': None, 'signal_pct': None}
+                with self.wifi_lock:
+                    self.wifi_sample = sample
+                    self.wifi_checked = time.monotonic()
+            self.wifi_worker = threading.Thread(target=update, daemon=True, name='wifi-observation')
+            self.wifi_worker.start()
+
+    def wifi_state(self):
+        self.refresh_wifi()
+        with self.wifi_lock:
+            age = time.monotonic() - self.wifi_checked
+            value = dict(self.wifi_sample)
+            value['age_s'] = round(age, 1) if age != float('inf') else None
+            if age > 10 and value['status'] == 'ok':
+                value.update(status='stale', connected=None, signal_pct=None)
+            return value
 
     def scan(self):
         try:
@@ -82,6 +107,7 @@ class DroneDiscovery:
                       'kind': 'current', 'verified': False})
         with self.lock:
             self.candidates = {item['id']: item for item in items}
+        self.refresh_wifi(force=True)
         return {'items': items, 'warning': warning}
 
     def release(self):
@@ -197,7 +223,7 @@ class DroneDiscovery:
             connected = bool(link and (fresh or (not borrowed and recent)))
             observed = [{'name': key, 'value': value, 'status': 'observed' if fresh else 'stale',
                          'unit': 'SDK 원시값'} for key, value in (sample or {}).get('raw', {}).items()]
-            return {'connected': connected, 'selected': self.selected,
+            return {'connected': connected, 'selected': self.selected, 'wifi': self.wifi_state(),
                     'owner': 'video-input' if borrowed else 'discovery',
                     'checked_at': self.checked_at, 'telemetry_age_s': (sample or {}).get('age_s'),
                     'resources': copy.deepcopy(self.resources if not borrowed else []) + observed,

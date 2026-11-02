@@ -22,14 +22,15 @@ class DiscoveryTests(unittest.TestCase):
         self.link.send.side_effect = lambda cmd, **kw: SimpleNamespace(ok=True, response={
             'ext version?': 'unknown command', 'ext tof?': None}.get(cmd, 'ok' if cmd == 'command' else '79'))
         self.factory = Mock(return_value=self.link)
-        self.manager = DroneDiscovery(link_factory=self.factory)
+        self.manager = DroneDiscovery(link_factory=self.factory, runner=lambda args: '')
 
-    def test_scan_parses_localized_windows_and_linux_and_filters_other_wifi(self):
+    def test_scan_parses_windows_and_linux_and_marks_drone_candidates(self):
         runner = Mock(return_value='SSID 1 : Home\nSSID 2 : TELLO-ABC\n    BSSID 1 : aa:bb\nSSID 3 : RMTT-TEST\n')
         values = wifi_candidates(runner, 'win32')
-        self.assertEqual([i['ssid'] for i in values], ['RMTT-TEST', 'TELLO-ABC'])
+        self.assertEqual([i['ssid'] for i in values], ['Home', 'RMTT-TEST', 'TELLO-ABC'])
+        self.assertFalse(values[0]['drone_candidate'])
         self.assertTrue(all(not i['verified'] for i in values))
-        self.assertEqual(wifi_candidates(lambda args: 'TELLO-a\nHome\nTELLO-a\n', 'linux')[0]['ssid'], 'TELLO-a')
+        self.assertEqual(wifi_candidates(lambda args: ':TELLO-a:80\n:Home:20\n:TELLO-a:70\n', 'linux')[0]['signal_pct'], 80)
 
     def test_connect_queries_resources_and_distinguishes_unknown_from_no_response(self):
         self.manager.scan()
