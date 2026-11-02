@@ -311,9 +311,9 @@ test('Tello mapping receives on the server, asks for no media, heartbeats and st
     if (url.startsWith('/api/live/state') || url.startsWith('/api/live/tracking')) { polling.resolve(); return reply({session_id: 'drone_map', transport_ready: true, session_status: 'receiving', last_input_sequence: 2}); }
     return reply(value);
   }});
-  await f.connect(); f.get('input-source').value = 'tello-map'; f.get('input-source').handlers.change();
+  const handle = await f.connect();
+  const pending = handle.startDroneMapping(); await polling.promise;
   assert.match(f.get('camera-start').textContent, /드론 연결 · 지도/);
-  const pending = f.get('camera-start').handlers.click(); await polling.promise;
   await new Promise((resolve) => setImmediate(resolve));
   assert.equal(f.permissions(), 0);
   const config = JSON.parse(f.requests.find((r) => r.url === '/api/live/tello/start').options.body);
@@ -323,7 +323,7 @@ test('Tello mapping receives on the server, asks for no media, heartbeats and st
   assert.equal(f.requests.some(r => r.url === '/api/live/stop'), false);
   assert.ok(f.requests.some((r) => r.url === '/api/live/tello/heartbeat'));
   assert.equal(f.requests.some((r) => r.url.startsWith('/api/live/frame')), false);
-  await f.get('camera-stop').handlers.click(); await pending;
+  await handle.stopDrone(); await pending;
   assert.deepEqual(JSON.parse(f.requests.find((r) => r.url === '/api/live/stop').options.body), {session_id: 'drone_map', reason: 'user_stop'});
   assert.equal(f.get('tello-map-preview').hidden, true);
 });

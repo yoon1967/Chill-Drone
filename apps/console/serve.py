@@ -20,7 +20,7 @@ APP = Path(__file__).resolve().parent
 sys.path.insert(0, str(APP.parents[1]))
 from modules.mapping.localization.observations import native_observations
 from modules.mapping.data.live_recording import archive_files
-from modules.mapping.data.session_import import ImportManager, inside
+from modules.mapping.data.session_import import ImportManager, ImportedMap, inside
 from modules.mapping.data.camera_profiles import CameraProfiles
 from modules.mapping.data.calibration_tutorial import CalibrationTutorial, board_svg
 
@@ -145,7 +145,8 @@ def result_metadata(path, modified_ns, size):
 class ViewerHandler(BaseHTTPRequestHandler):
     tello_input_lock = threading.Lock()
     def __init__(self, *args, result=None, session=None, objects=None, live=None, tello=None, tello_map=None,
-                 timeline=None, observations=None, demo=None, demo_camera=None, imports=None, profiles=None, calibrations=None, **kwargs):
+                 timeline=None, observations=None, demo=None, demo_camera=None, imports=None, profiles=None, calibrations=None, drones=None, **kwargs):
+        self.drones = drones
         self.calibrations = calibrations
         self.profiles = profiles
         self.imports = imports
@@ -265,7 +266,47 @@ class ViewerHandler(BaseHTTPRequestHandler):
             if len(data) != length:
                 raise ValueError("incomplete_body")
             url = urlsplit(self.path)
-            if url.path == "/api/tello/start":
+            if url.path.startswith('/api/drones/'):
+                if not self.drones:
+                    self.json_response({'error': 'drone_discovery_disabled'}, 404)
+                    return
+                body = json.loads(data)
+                with self.tello_input_lock:
+                    if url.path == '/api/drones/scan':
+                        value = self.drones.scan()
+                    elif url.path == '/api/drones/connect':
+                        value = self.drones.connect(body['id'])
+                    elif url.path == '/api/drones/explore':
+                        value = self.drones.explore()
+                    elif url.path == '/api/drones/disconnect':
+                        session = self.drone_session()
+                        if session and body.get('session_id') != session.id:
+                            raise RuntimeError('camera_session_mismatch')
+                        if self.calibrations and self.calibrations.busy:
+                            raise RuntimeError('calibration_input_is_active')
+                        if self.tello and self.tello.running:
+                            flight = self.tello.stats().get('flight') or {}
+                            if flight.get('flying') or flight.get('busy'):
+                                raise RuntimeError('land_before_disconnect')
+                            self.tello.stop()
+                        if session:
+                            session.stop('user_stop')
+                        self.drones.release()
+                        self.drones.manual_disconnected = True
+                        self.drones.disconnected_session = session.id if session else None
+                        value = self.drone_state()
+                    elif url.path == '/api/drones/preview/start':
+                        value = self.drone_state() if self.drone_state().get('mapping_active') else self.drones.start_preview()
+                    elif url.path == '/api/drones/preview/stop':
+                        self.drones.stop_preview()
+                        value = self.drones.state()
+                    else:
+                        self.send_error(404)
+                        return
+                    if url.path != '/api/drones/scan':
+                        value = self.drone_state()
+                self.json_response(value)
+            elif url.path == "/api/tello/start":
                 if not self.tello:
                     self.json_response({"error": "tello_input_disabled"}, 403)
                     return
@@ -275,6 +316,10 @@ class ViewerHandler(BaseHTTPRequestHandler):
                     if self.tello_map and self.tello_map.busy:
                         self.json_response({"error": "tello_mapping_input_is_active"}, 409)
                         return
+                    if self.drones:
+                        self.drones.release()
+                        self.drones.manual_disconnected = False
+                        self.drones.disconnected_session = self.drones.mapping_session = None
                     self.json_response(self.tello.start(), 201)
             elif url.path == "/api/tello/stop":
                 if not self.tello:
@@ -315,7 +360,14 @@ class ViewerHandler(BaseHTTPRequestHandler):
                     if self.tello and self.tello.running:
                         self.json_response({"error": "tello_detection_input_is_active"}, 409)
                         return
-                    self.json_response(self.tello_map.start(self.profile_config(json.loads(data), 'tello')), 201)
+                    if self.drones:
+                        self.drones.release()
+                    started = self.tello_map.start(self.profile_config(json.loads(data), 'tello'))
+                    if self.drones:
+                        self.drones.manual_disconnected = False
+                        self.drones.disconnected_session = None
+                        self.drones.mapping_session = started['session_id']
+                    self.json_response(started, 201)
             elif url.path == "/api/live/tello/heartbeat":
                 if not self.tello_map:
                     self.json_response({"error": "tello_mapping_input_disabled"}, 403)
@@ -361,11 +413,52 @@ class ViewerHandler(BaseHTTPRequestHandler):
 
     def log_message(self, format, *args):
         # Frame/status polling is operational traffic; avoid an unbounded terminal log.
+        if args and re.search(r'/api/drones/(?:state|preview.jpg)', str(args[0])):
+            return
         if args and re.search(r'/api/calibration/(?:state|preview|frame)', str(args[0])):
             return
         if args and re.search(r"/api/(?:(?:saved|live)/)?(?:state|run|timeline|frame|tracking|slam-preview|tello-preview|tello/heartbeat)", str(args[0])):
             return
         super().log_message(format, *args)
+
+    def drone_session(self):
+        session = self.current
+        if (session and session.input_kind == 'tello_camera' and
+                (not session.done or (self.drones and session.id in {
+                    self.drones.disconnected_session, self.drones.mapping_session}))):
+            return session
+        return None
+
+    def drone_state(self):
+        if not self.drones:
+            return {'connected': False, 'enabled': False, 'can_save': False}
+        value = self.drones.state()
+        session = self.drone_session()
+        active = bool(self.tello_map and self.tello_map.busy)
+        manual = self.drones.manual_disconnected is True
+        same = bool(session and self.drones.disconnected_session == session.id)
+        try:
+            stats = load_json(session.path / 'state.json') if session else {}
+        except (OSError, ValueError):
+            stats = {}
+        done = bool(session and session.done and not active)
+        runtime = session.stats() if session else {}
+        age = runtime.get('input_age_s')
+        if (session and not session.done and not manual and runtime.get('input_state') == 'receiving'
+                and runtime.get('input_origin') == 'gateway_reported_tello'
+                and isinstance(age, (int, float)) and 0 <= age < 2):
+            value.update(connected=True, owner='video-input')
+        value.update(mapping_session_id=session.id if session else None,
+            disconnect_available=bool(self.drones.link or (session and not manual) or (self.tello and self.tello.running)),
+            mapping_active=bool(session and (not session.done or active)),
+            manual_disconnected=manual, finalizing=bool(manual and same and not done),
+            can_save=bool(manual and same and done and stats.get('map_available')),
+            save_session_id=session.id if same else None,
+            map_available=bool(stats.get('map_available')))
+        # Once explicitly stopped, lingering packets during cleanup are not a new connection.
+        if manual and same:
+            value['connected'] = False
+        return value
 
     def source_video(self):
         if not self.demo or not self.demo.is_file():
@@ -487,6 +580,8 @@ class ViewerHandler(BaseHTTPRequestHandler):
                     if ((self.live.current and not self.live.current.done) or (self.tello_map and self.tello_map.busy)
                             or (self.tello and self.tello.running)):
                         raise RuntimeError('mapping_input_is_active_stop_before_calibration')
+                    if self.drones and body.get('source') == 'tello':
+                        self.drones.release()
                     self.json_response(self.calibrations.start(body), 201)
                 return
             session = self.calibrations.require(body.get('id'), touch=True)
@@ -622,6 +717,23 @@ class ViewerHandler(BaseHTTPRequestHandler):
             return
         url = urlsplit(self.path)
         path = unquote(url.path)
+        if path == '/api/drones/state':
+            self.json_response(self.drone_state())
+            return
+        if path == '/api/drones/preview.jpg':
+            image = self.drones.preview() if self.drones else None
+            if image is None and self.tello_map and self.current:
+                image = self.tello_map.latest(self.current.id)
+            if image is None:
+                self.json_response({'error': 'video_frame_not_available'}, 404)
+                return
+            self.send_response(200)
+            self.send_header('Content-Type', 'image/jpeg')
+            self.send_header('Content-Length', str(len(image)))
+            self.send_header('Cache-Control', 'no-store')
+            self.end_headers()
+            self.write_payload(image)
+            return
         if path.startswith('/api/calibration'):
             self.calibration_request()
             return
@@ -820,6 +932,57 @@ class ViewerHandler(BaseHTTPRequestHandler):
             self.json_response({**self.timeline.read(self.session, state), "source": self.source,
                                 "session_id": self.session.name if self.session else None})
             return
+        if path == '/api/map.zip':
+            if self.source == 'live' and self.current and self.current.input_kind == 'tello_camera' and not self.drone_state().get('can_save'):
+                self.json_response({'error': 'disconnect_drone_and_wait_for_map'}, 409)
+                return
+            names = ('scene.json', 'status.json', 'points.ply', 'poses.json', 'trajectory.csv', 'manifest.json')
+            files, metadata = [], {}
+            if self.session:
+                # Freeze the published revision list before streaming. New revisions
+                # can continue to arrive without changing this download's history.
+                try:
+                    history = ImportedMap(self.session)
+                    if not history.revisions:
+                        raise ValueError('map_not_available')
+                    latest = next(reversed(history.revisions))
+                    metadata['state.json'] = {**history.state, 'revision': int(latest),
+                        'revision_path': 'revisions/' + latest}
+                    metadata['timeline.json'] = {'schema_version': 'orb-map-timeline/1.0',
+                        'session_id': history.state['session_id'], 'entries': history.entries}
+                    for version, folder in history.revisions.items():
+                        for name in names:
+                            file = folder / name
+                            if file.is_file():
+                                files.append((file, 'revisions/' + version + '/' + name))
+                except (OSError, ValueError, KeyError, TypeError):
+                    self.json_response({'error': 'map_history_not_available'}, 409)
+                    return
+            else:
+                if result is None or not (result / 'status.json').is_file() or load_json(result / 'status.json').get('status') not in {'complete', 'partial'}:
+                    self.json_response({'error': 'map_not_available'}, 409)
+                    return
+                if not (result / 'scene.json').is_file():
+                    self.json_response({'error': 'map_not_available'}, 409)
+                    return
+                files = [(result / name, name) for name in names if (result / name).is_file()]
+            self.send_response(200)
+            self.send_header('Content-Type', 'application/zip')
+            self.send_header('Content-Disposition', 'attachment; filename="3d-map-history.zip"')
+            self.send_header('Cache-Control', 'no-store')
+            self.send_header('Connection', 'close')
+            self.end_headers()
+            self.close_connection = True
+            try:
+                # Bounded memory, including long histories; no temporary ZIP copy.
+                with zipfile.ZipFile(self.wfile, 'w', compression=zipfile.ZIP_DEFLATED) as archive:
+                    for file, name in files:
+                        archive.write(file, name)
+                    for name, value in metadata.items():
+                        archive.writestr(name, json.dumps(value, ensure_ascii=False, allow_nan=False))
+            except (BrokenPipeError, ConnectionResetError, ConnectionAbortedError, OSError):
+                pass
+            return
         if path == "/api/run":
             if result is None or not (result / "status.json").is_file() or json.loads(
                     (result / "status.json").read_text(encoding="utf-8")).get("status") not in {"complete", "partial"}:
@@ -870,6 +1033,8 @@ class ViewerHandler(BaseHTTPRequestHandler):
                   "/tracking-preview.js": APP / "tracking-preview.js",
                   '/profile-view.js': APP / 'profile-view.js',
                   '/calibration-view.js': APP / 'calibration-view.js',
+                  '/drone-view.js': APP / 'drone-view.js',
+                  '/map-save.js': APP / 'map-save.js',
                   "/vendor/three.module.js": APP / "node_modules/three/build/three.module.js",
                   "/vendor/three.core.js": APP / "node_modules/three/build/three.core.js",
                   "/vendor/OrbitControls.js": APP / "node_modules/three/examples/jsm/controls/OrbitControls.js"}
@@ -1014,11 +1179,20 @@ def main():
     imports = ImportManager(args.live_root)
     profiles = CameraProfiles(args.profiles_root)
     calibrations = CalibrationTutorial(tello_map.source_factory if tello_map else None)
+    from modules.autonomy.tello_link.discovery import DroneDiscovery
+    def borrowed_link():
+        active = getattr(tello_map, 'active_source', None)
+        return getattr(active, 'link', None) or (tello.link if tello and tello.running else None)
+    def borrowed_video():
+        active = getattr(tello_map, 'active_source', None)
+        return getattr(active, 'video', None) or (tello.video if tello and tello.running else None)
+    drones = DroneDiscovery(borrowed=borrowed_link, borrowed_video=borrowed_video, busy=lambda: bool(
+        (tello_map and tello_map.busy) or (tello and tello.running) or calibrations.busy))
     if args.import_source:
         initial = imports.add_local(args.import_source)
         imports.initial = initial
         print(f'Import selected: {initial}', flush=True)
-    server = ViewerServer(("127.0.0.1", args.port), partial(ViewerHandler, result=result, imports=imports, profiles=profiles, calibrations=calibrations,
+    server = ViewerServer(("127.0.0.1", args.port), partial(ViewerHandler, result=result, imports=imports, profiles=profiles, calibrations=calibrations, drones=drones,
         session=args.session, objects=args.objects, live=live, tello=tello, tello_map=tello_map, timeline=Timeline(), observations=ObservationCache(),
         demo=demo, demo_camera=demo_camera))
     print(f"Phone mapping viewer: http://127.0.0.1:{args.port}/", flush=True)
@@ -1028,6 +1202,7 @@ def main():
         pass
     finally:
         server.server_close()
+        drones.release()
         calibrations.shutdown()
         imports.shutdown()
         if tello_map:

@@ -256,7 +256,7 @@ export async function connectCapture({onStart = () => {}, onStatus = () => {}, o
     }
     finally { run.sending = false; }
   }
-  $('camera-start').addEventListener('click', async () => {
+  async function start() {
     if ($('camera-start').disabled || inputGate?.calibrating) return;
     const kind = $('input-source').value;
     const run = {kind, controller: new AbortController(), session: null, media: null, cancelled: false, active: false, base: null, sourceBase: null, lastMedia: -1, sequence: 0, sent: 0, skipped: 0};
@@ -377,7 +377,8 @@ export async function connectCapture({onStart = () => {}, onStatus = () => {}, o
       if (owns(run)) { run.lastError = error.message; const failure = captureError(error); await stop(run, failure.message, failure.state, 'client_error'); }
     }
     finally { controls(); }
-  });
+  }
+  $('camera-start').addEventListener('click', start);
   $('camera-stop').addEventListener('click', () => stop());
   $('flight-confirm').addEventListener('change', (event) => flightAction('confirm', {confirmed: event.target.checked}).catch((error) => message(error.message, 'failed')));
   $('flight-takeoff').addEventListener('click', () => { if (confirm('이륙할까요? 주변 3m와 프로펠러 가드를 다시 확인하세요.')) flightAction('takeoff').catch((error) => message(error.message, 'failed')); });
@@ -425,5 +426,14 @@ export async function connectCapture({onStart = () => {}, onStatus = () => {}, o
   controls();
   sourceChanged();
   await refreshDevices();
-  return {update};
+  return {update,
+    async startDroneMapping() {
+      if (!info.tello_map_enabled) throw new Error('드론 지도 입력이 비활성화되어 있습니다. 실행기를 다시 실행하세요.');
+      if (current) throw new Error('현재 영상 입력을 먼저 종료하세요.');
+      $('input-source').value = 'tello-map'; sourceChanged();
+      await start();
+    },
+    async stopDrone() {
+      if (current && ['tello', 'tello-map'].includes(current.kind)) await stop();
+    }};
 }

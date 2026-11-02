@@ -224,6 +224,7 @@ class TelloMapInput:
         self.source_factory = source_factory or (lambda: GatewayCamera(self.gateway) if self.gateway else DirectCamera())
         self.lock = threading.Lock()
         self.worker = self.session = None
+        self.active_source = None
         self.preview = None
         self.lease_until = 0
         self.camera = json.loads(DEFAULT_CAMERA.read_text(encoding='utf-8')) if camera is None else camera
@@ -275,6 +276,7 @@ class TelloMapInput:
                     if hasattr(source, 'set_recording'):
                         source.set_recording(getattr(session, 'recording', None))
                     source.open(cancelled)
+                    self.active_source = source
                     if cancelled():
                         break
                     session.input_origin = getattr(source, "source_label", "test_source")
@@ -322,6 +324,7 @@ class TelloMapInput:
                     if time.monotonic() - missing_since >= self.recovery_seconds:
                         raise InputError('tello_reconnect_timeout') from error
                 finally:
+                    self.active_source = None
                     source.close()
                 # Cancelable backoff; never create a second receiver while the old one owns ports.
                 until = time.monotonic() + .25
@@ -334,6 +337,7 @@ class TelloMapInput:
                 session.error = str(error) if isinstance(error, InputError) else "tello_input_unavailable: " + type(error).__name__
                 session.stop("tello_input_disconnected")
         finally:
+            self.active_source = None
             try:
                 source.close()
             except Exception:
