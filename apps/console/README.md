@@ -35,6 +35,17 @@ Docker가 꺼져 있거나 빌드가 실패하면 원인과 재실행 방법을 
 실시간 지도의 **드론 카메라 연결**은 지도 위에서 펼쳐지며 연결·카메라 확인·지도 시작을 진행한다.
 [카메라 보정 안내](../../docs/phone_mapping/calibration_tutorial.md)에 자료 조건·촬영·검증 순서를 설명한다.
 
+보정 화면의 부모 영역까지 숨겨지는 회귀는 실제 브라우저로 검사한다. 테스트용 서버를 실행한 뒤
+Playwright를 사용할 수 있는 환경에서 아래 명령을 실행한다. `MAPPING_PLAYWRIGHT_MODULE`은
+Playwright가 프로젝트 밖에 설치된 경우 모듈 경로로 지정하며, 프로젝트에서 import할 수 있으면 생략한다.
+서버 URL을 지정하지 않으면 이 브라우저 검사만 생략한다. 검사는 보정 촬영이나 기체 연결을 시작하지 않는다.
+
+```powershell
+$env:MAPPING_TEST_URL = 'http://127.0.0.1:8790'
+$env:MAPPING_BROWSER_CHANNEL = 'msedge'
+node --test apps/console/tests/calibration-layout.browser.test.js
+```
+
 원격 develop 머지만으로 다른 PC의 파일이 갱신되지는 않는다. 로컬 develop을 업데이트한 뒤
 CMD를 다시 실행한다. 실행 중인 이전 CMD/브라우저 페이지에는 변경이 소급 적용되지 않는다.
 실행기 자체는 브랜치를 바꾸거나 git pull을 수행하지 않는다.
