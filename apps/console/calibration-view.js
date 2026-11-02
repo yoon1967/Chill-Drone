@@ -1,3 +1,5 @@
+import {feedCalibrationFiles, validateCalibrationFiles} from './calibration-files.js';
+
 const messages = {
   show_checkerboard: '체크보드 전체와 흰 여백이 보이게 비춰 주세요.',
   checkerboard_not_found: '교차점을 찾지 못했습니다. 내부 교차점 수·조명·전체 보임을 확인하세요.',
@@ -15,10 +17,10 @@ const messages = {
   calibration_input_is_active: '다른 보정 작업이 실행 중이거나 장치를 정리 중입니다. 중단 후 잠시 기다려 주세요.',
   mapping_input_is_active_stop_before_calibration: '지도·탐지 영상 수신을 먼저 종료한 뒤 보정을 시작하세요.',
   calibration_not_enabled: '이 서버에서 보정 촬영을 지원하지 않습니다. 새 CMD 실행기로 다시 여세요.',
-  calibration_tello_not_enabled: 'Tello 영상 입력이 활성화된 실행기로 여세요.',
-  tello_sdk_unavailable_check_wifi: 'Tello에 연결하지 못했습니다. 노트북 Wi-Fi 연결과 기체 전원을 확인하세요.',
-  tello_streamon_failed: 'Tello 영상 시작에 실패했습니다. 다른 영상 수신 프로그램을 종료하세요.',
-  tello_video_timeout_check_wifi_and_udp: 'Tello 영상이 끊겼습니다. Wi-Fi·전원·UDP 수신을 확인하고 다시 수집하세요.',
+  calibration_tello_not_enabled: '드론 영상 입력이 활성화된 실행기로 여세요.',
+  tello_sdk_unavailable_check_wifi: '드론에 연결하지 못했습니다. 노트북 Wi-Fi 연결과 기체 전원을 확인하세요.',
+  tello_streamon_failed: '드론 영상 시작에 실패했습니다. 다른 영상 수신 프로그램을 종료하세요.',
+  tello_video_timeout_check_wifi_and_udp: '드론 영상이 끊겼습니다. Wi-Fi·전원·UDP 수신을 확인하고 다시 수집하세요.',
   calibration_session_mismatch: '보정 세션이 바뀌었습니다. 현재 카메라를 해제하고 다시 시작하세요.',
 };
 export const calibrationMessage = value => messages[value] || value;
@@ -30,7 +32,7 @@ export function coverageGuide(coverage) {
 
 export function connectCalibration({profiles, onBusy = () => {}} = {}) {
   const $ = id => document.getElementById(id);
-  let active = null, result = null, resultSource = null;
+  let active = null, result = null, resultSource = null, method = null, selection = null;
   const video = $('calibration-video'), preview = $('calibration-preview');
   const canvas = document.createElement('canvas'), context = canvas.getContext('2d');
   const owns = run => active === run && !run.cancelled;
@@ -40,6 +42,47 @@ export function connectCalibration({profiles, onBusy = () => {}} = {}) {
       item.setAttribute('aria-current', index + 1 === number ? 'step' : 'false');
     });
   }
+  function stage(name) {
+    for (const id of ['method', 'media', 'setup', 'collect', 'result'])
+      $('calibration-' + id).hidden = id !== name;
+    step({method: 1, media: 2, setup: 3, collect: 3, result: 4}[name]);
+  }
+  function open() {
+    $('calibration-workspace').hidden = false;
+    document.querySelector('main').classList.add('calibration-open');
+    stage('method'); $('calibration-close').focus();
+  }
+  async function close() {
+    if (active) await stop();
+    $('calibration-workspace').hidden = true;
+    document.querySelector('main').classList.remove('calibration-open');
+    $(`profile-slot-${location.hash === '#live' ? 'live' : 'saved'}`).append($('camera-profile-panel'));
+    $('calibration-open').focus();
+  }
+  $('calibration-open').addEventListener('click', open);
+  $('calibration-close').addEventListener('click', () => { void close(); });
+  for (const value of ['file', 'live']) $('calibration-method-' + value).addEventListener('click', () => {
+    method = value; selection = null;
+    $('calibration-media-title').textContent = value === 'file' ? '촬영 자료를 선택해 주세요' : '촬영할 카메라를 선택해 주세요';
+    $('calibration-media-error').hidden = true;
+    $('calibration-file-controls').hidden = value !== 'file';
+    $('calibration-live-controls').hidden = value !== 'live';
+    $('calibration-start').textContent = value === 'file' ? '파일 분석·보정 시작' : '촬영 시작';
+    $('calibration-collect-title').textContent = value === 'file' ? '파일을 분석하고 있어요' : '체크보드 장면을 모으고 있어요';
+    $('calibration-confirm-text').textContent = value === 'file' || $('calibration-source').value !== 'tello' ?
+      '실제 체크보드의 교차점 수·한 칸 크기와 입력값이 같습니다.' :
+      '체크보드 수치가 맞고, 비행하지 않는 드론의 기체와 프로펠러를 고정했습니다.';
+    stage('media');
+  });
+  $('calibration-media-back').addEventListener('click', () => stage('method'));
+  $('calibration-media-next').addEventListener('click', () => {
+    try {
+      if (method === 'file') selection = validateCalibrationFiles($('calibration-files').files);
+      $('calibration-media-error').hidden = true;
+      $('calibration-confirm').checked = false; stage('setup');
+    } catch (error) { $('calibration-media-error').textContent = error.message; $('calibration-media-error').hidden = false; }
+  });
+  $('calibration-setup-back').addEventListener('click', () => stage('media'));
   async function request(action, body, options = {}) {
     const response = await fetch('/api/calibration' + (action ? '/' + action : ''), {
       signal: AbortSignal.timeout(15000), cache: 'no-store', ...options,
@@ -56,7 +99,7 @@ export function connectCalibration({profiles, onBusy = () => {}} = {}) {
     $('calibration-start').disabled = value;
     $('calibration-stop').disabled = !value;
     for (const id of ['calibration-columns', 'calibration-rows', 'calibration-square', 'calibration-source',
-      'calibration-device', 'calibration-size', 'calibration-confirm', 'calibration-devices']) $(id).disabled = value;
+      'calibration-device', 'calibration-size', 'calibration-confirm', 'calibration-devices', 'calibration-files']) $(id).disabled = value;
   }
   function release(run) {
     clearTimeout(run.frameTimer); clearTimeout(run.pollTimer);
@@ -68,8 +111,9 @@ export function connectCalibration({profiles, onBusy = () => {}} = {}) {
     run.cancelled = true;
     release(run); active = null; busy(false);
     $('calibration-solve').disabled = $('calibration-undo').disabled = true;
+    $('calibration-retry').hidden = false;
     status(text);
-    step(1);
+    if (!$('calibration-workspace').hidden) stage('collect');
     if (run.id) {
       try { await request('stop', {id: run.id}); }
       catch { if (!active) status(text + ' 서버에 중단을 전달하지 못했습니다. 수신은 45초 이내 자동 해제됩니다.'); }
@@ -82,14 +126,15 @@ export function connectCalibration({profiles, onBusy = () => {}} = {}) {
       const li = document.createElement('li'); li.textContent = `${item.done ? '✓' : '○'} ${item.label}`;
       li.dataset.done = String(item.done); return li;
     }));
-    $('calibration-solve').disabled = state.status !== 'collecting' || !state.coverage.ready;
+    $('calibration-solve').disabled = state.status !== 'collecting' || !state.coverage.ready || run.processing || run.solving;
     $('calibration-undo').disabled = state.status !== 'collecting' || !state.accepted;
     if (run.solving && state.status === 'collecting' && state.error) {
       run.solving = false;
       if (run.source === 'camera') void frame(run);
+      if (run.source === 'file') $('calibration-additional').hidden = false;
     }
     const geometry = state.size ? `${state.size[0]}×${state.size[1]} 원본 · ` : '';
-    step(state.status === 'calculating' || state.status === 'complete' ? 3 : 2);
+    if (state.status === 'calculating') stage('collect');
     const checks = state.coverage?.checks || {};
     $('calibration-guide').textContent = !checks.views ? '정면부터 시작해 위치·거리·기울기를 바꾸며 18장 이상 모으세요. 각 자세에서 잠시 멈춥니다.' :
       !checks.positions ? '체크보드를 화면의 왼쪽·오른쪽·위·아래로 옮겨 주세요. 흰 여백과 전체 무늬는 화면 안에 둡니다.' :
@@ -106,13 +151,14 @@ export function connectCalibration({profiles, onBusy = () => {}} = {}) {
       resultSource = run.source;
       release(run); active = null; busy(false);
       $('calibration-solve').disabled = $('calibration-undo').disabled = true;
-      $('calibration-result').hidden = false;
+      stage('result');
       const s = result.calibration_summary;
-      $('calibration-result-info').textContent = `${result.width}×${result.height} · ${s.views}장 ` +
-        `(계산 ${s.training_views}장 / 별도 검증 ${s.validation_views}장) · 계산 RMS ${s.training_rms_px.toFixed(3)}px · ` +
-        `검증 RMS ${s.validation_rms_px.toFixed(3)}px · fx ${result.fx.toFixed(3)}, fy ${result.fy.toFixed(3)}, ` +
-        `cx ${result.cx.toFixed(3)}, cy ${result.cy.toFixed(3)} · 왜곡 ${result.distortion.map(x=>x.toFixed(6)).join(', ')}`;
+      $('calibration-result-info').textContent = `${result.width}×${result.height} · 유효 ${s.views}장 · 검증 오차 ${s.validation_rms_px.toFixed(3)}px`;
+      $('calibration-result-values').textContent = `계산 ${s.training_views}장 / 별도 검증 ${s.validation_views}장 · 계산 RMS ${s.training_rms_px.toFixed(3)}px · ` +
+        `fx ${result.fx.toFixed(3)}, fy ${result.fy.toFixed(3)}, cx ${result.cx.toFixed(3)}, cy ${result.cy.toFixed(3)} · ` +
+        `왜곡 ${result.distortion.map(x => x.toFixed(6)).join(', ')}`;
       $('calibration-download').href = '/api/calibration/camera.json?id=' + encodeURIComponent(run.id);
+      $('calibration-report-download').href = '/api/calibration/report.pdf?id=' + encodeURIComponent(run.id);
       status('계산과 검증을 통과했습니다. JSON을 내려받거나 카메라 정보를 확인해 새 프로필로 등록하세요.');
     }
   }
@@ -155,9 +201,57 @@ export function connectCalibration({profiles, onBusy = () => {}} = {}) {
     }
     if (owns(run) && !run.solving) run.frameTimer = setTimeout(() => frame(run), 800);
   }
+  async function files(run, selected) {
+    if (!owns(run) || run.processing) return;
+    let autoSolve = false;
+    run.processing = true;
+    $('calibration-additional').hidden = true;
+    $('calibration-add-files').disabled = true;
+    $('calibration-solve').disabled = true;
+    try {
+      run.fileSize = await feedCalibrationFiles(selected, {canvas, context, expectedSize: run.fileSize,
+        isCurrent: () => owns(run) && !run.solving,
+        onFrame: jpeg => request('frame?id=' + run.id, jpeg),
+        onProgress: (index, total, state) => {
+          if (!owns(run)) return;
+          render(run, state);
+          status(`${total}개 장면 중 ${index}개 분석 · 유효 ${state.accepted}장 · ${calibrationMessage(state.reason)}`);
+          preview.src = '/api/calibration/preview?id=' + run.id + '&t=' + Date.now(); preview.hidden = false;
+        }});
+      if (owns(run)) {
+        const state = await request('state?id=' + run.id);
+        if (!owns(run)) return;
+        render(run, state);
+        $('calibration-additional').hidden = state.coverage.ready;
+        autoSolve = state.coverage.ready;
+        status(autoSolve ? '파일 분석을 마쳤습니다. 보정값을 계산하고 검증합니다.' :
+          `유효 ${state.accepted}장 · ${$('calibration-guide').textContent} 부족한 장면을 추가할 수 있습니다.`);
+      }
+    } catch (error) {
+      if (owns(run)) {
+        const state = await request('state?id=' + run.id).catch(() => null);
+        run.fileSize = state?.size || run.fileSize;
+        status(`파일 분석을 멈췄습니다. ${error.message} 다른 자료를 추가하거나 중단하세요.`);
+        $('calibration-additional').hidden = false;
+      }
+    } finally {
+      run.processing = false;
+      $('calibration-add-files').disabled = false;
+      if (owns(run)) {
+        const state = await request('state?id=' + run.id).catch(() => null);
+        if (state && owns(run)) $('calibration-solve').disabled = autoSolve || !state.coverage.ready;
+      }
+    }
+    if (autoSolve && owns(run)) await solve(run);
+  }
   function options() {
     return {columns: Number($('calibration-columns').value), rows: Number($('calibration-rows').value),
       square_mm: Number($('calibration-square').value)};
+  }
+  function validBoard(board) {
+    return Number.isInteger(board.columns) && board.columns >= 4 && board.columns <= 12 &&
+      Number.isInteger(board.rows) && board.rows >= 4 && board.rows <= 10 &&
+      Number.isFinite(board.square_mm) && board.square_mm >= 5 && board.square_mm <= 60;
   }
   function boardLink() {
     const b = options();
@@ -170,8 +264,11 @@ export function connectCalibration({profiles, onBusy = () => {}} = {}) {
     const tello = $('calibration-source').value === 'tello';
     $('calibration-device-label').hidden = $('calibration-size-label').hidden = $('calibration-devices').hidden = tello;
     $('calibration-confirm').checked = false;
-    $('calibration-source-note').textContent = tello ? 'Tello Wi-Fi에 연결하고 다른 영상 수신을 종료하세요. 원본 영상을 수집하며 비행 명령은 보내지 않습니다. 기체는 움직이지 말고 종이를 움직여 주세요.' :
-      '초점·줌·회전·크롭을 고정하고 실제 매핑에 쓸 설정으로 촬영하세요. 실제 수신 해상도를 결과에 기록합니다.';
+    $('calibration-confirm-text').textContent = tello ?
+      '체크보드 수치가 맞고, 비행하지 않는 드론의 기체와 프로펠러를 고정했습니다.' :
+      '실제 체크보드의 교차점 수·한 칸 크기와 입력값이 같습니다.';
+    $('calibration-source-note').hidden = tello;
+    $('calibration-source-note').textContent = tello ? '' : '지도에 사용할 초점·줌·방향·크롭을 유지하며 촬영하세요.';
   }
   $('calibration-source').addEventListener('change', sourceChanged);
   for (const id of ['calibration-device', 'calibration-size']) $(id).addEventListener('change', () => { $('calibration-confirm').checked = false; });
@@ -183,12 +280,22 @@ export function connectCalibration({profiles, onBusy = () => {}} = {}) {
     $('calibration-device').value = selected;
   }
   $('calibration-devices').addEventListener('click', () => devices().catch(error=>status(error.message)));
+  $('calibration-add-files').addEventListener('click', () => {
+    try { void files(active, validateCalibrationFiles($('calibration-extra-files').files, {additional: true})); }
+    catch (error) { status(error.message); }
+  });
+  $('calibration-retry').addEventListener('click', () => stage('setup'));
   $('calibration-start').addEventListener('click', async () => {
     if (active) return;
-    if (!$('calibration-confirm').checked) { status('카메라·체크보드와 칸 크기를 확인하고 확인란을 체크하세요.'); return; }
-    const run = {id: null, source: $('calibration-source').value, cancelled: false, failures: 0, solving: false};
+    const error = !validBoard(options()) ? '체크보드 교차점 수와 한 칸 크기를 확인하세요.' :
+      !$('calibration-confirm').checked ? '실제 체크보드 수치를 확인하고 확인란을 체크하세요.' : '';
+    if (error) { $('calibration-setup-error').textContent = error; $('calibration-setup-error').hidden = false; status(error); return; }
+    $('calibration-setup-error').hidden = true;
+    const run = {id: null, source: method === 'file' ? 'file' : $('calibration-source').value,
+      cancelled: false, failures: 0, solving: false, processing: false};
     active = run; result = null; busy(true);
-    $('calibration-result').hidden = true; $('calibration-preview-area').hidden = false;
+    stage('collect'); $('calibration-preview-area').hidden = false; $('calibration-additional').hidden = true;
+    $('calibration-retry').hidden = true;
     preview.hidden = true; preview.removeAttribute('src');
     $('calibration-progress').value = 0; $('calibration-coverage').replaceChildren();
     try {
@@ -208,11 +315,12 @@ export function connectCalibration({profiles, onBusy = () => {}} = {}) {
         await video.play();
         if (!owns(run)) return;
         void devices().catch(()=>{});
-      } else run.identity = 'Tello · 튜토리얼 촬영 기체';
+      } else run.identity = run.source === 'file' ? '업로드한 촬영 자료' : '드론 카메라 · 튜토리얼 촬영 기체';
       const state = await request('start', {...options(), source: run.source, camera_identity: run.identity, confirmed: true});
       if (!owns(run)) { await request('stop', {id: state.id}); return; }
       run.id = state.id; render(run, state);
       void poll(run); if (run.source === 'camera') void frame(run);
+      if (run.source === 'file') void files(run, selection);
     } catch (error) {
       if (owns(run)) await stop(run, error.name === 'NotAllowedError' ? '카메라 권한이 거부됐습니다. 브라우저 권한을 허용한 뒤 다시 시작하세요.' : error.message);
     }
@@ -222,17 +330,21 @@ export function connectCalibration({profiles, onBusy = () => {}} = {}) {
     const run = active; if (!run?.id) return;
     try { render(run, await request('undo', {id: run.id})); } catch (error) { if (owns(run)) status(error.message); }
   });
-  $('calibration-solve').addEventListener('click', async () => {
-    const run = active; if (!run?.id || run.solving) return;
+  async function solve(run) {
+    if (!run?.id || !owns(run) || run.solving || run.processing) return;
     run.solving = true; clearTimeout(run.frameTimer); $('calibration-solve').disabled = true;
     try { render(run, await request('solve', {id: run.id})); }
-    catch (error) { if (owns(run)) { run.solving = false; status(error.message); if (run.source === 'camera') void frame(run); } }
-  });
+    catch (error) { if (owns(run)) { run.solving = false; status(error.message); if (run.source === 'camera') void frame(run);
+      if (run.source === 'file') $('calibration-additional').hidden = false; } }
+  }
+  $('calibration-solve').addEventListener('click', () => { void solve(active); });
   $('calibration-register').addEventListener('click', async () => {
     if (!result) return;
     try {
+      $('profile-slot-registration').append($('camera-profile-panel'));
       await profiles.prepareCamera(result, {mode: resultSource});
-      status('위 등록 폼에 결과를 채웠습니다. 프로필 이름·실제 기체·방향/크롭을 확인하고 새 프로필로 저장하세요.');
+      $('profile-slot-registration').scrollIntoView?.({behavior: 'smooth', block: 'start'});
+      status('아래에서 프로필 이름과 촬영 설정을 확인한 뒤 저장하세요.');
     } catch (error) { status(`프로필 등록 준비 실패: ${error.message}`); }
   });
   window.addEventListener('pagehide', () => {

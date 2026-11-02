@@ -40,7 +40,7 @@ export function captureError(error) {
   const telloErrors = {
     slam_image_missing: 'SLAM 실행 이미지가 없습니다. 실행 안내의 docker build 명령으로 ssafy-orbslam3:local 이미지를 준비한 뒤 다시 시작하세요.',
     slam_docker_unavailable: 'Docker에 연결하지 못했습니다. Docker Desktop의 Linux 엔진이 실행된 뒤 다시 시작하세요.',
-    tello_sdk_unavailable_check_wifi: 'Tello에 연결하지 못했습니다. 노트북의 드론 Wi-Fi 연결과 다른 드론 수신 프로그램 실행 여부를 확인하세요.',
+    tello_sdk_unavailable_check_wifi: '드론에 연결하지 못했습니다. 노트북의 드론 Wi-Fi 연결과 다른 드론 수신 프로그램 실행 여부를 확인하세요.',
     tello_streamon_failed: '드론 카메라를 켜지 못했습니다. 드론 연결을 확인한 뒤 다시 시작하세요.',
     tello_video_timeout_check_wifi_and_udp: '드론 카메라 영상이 들어오지 않습니다. Wi-Fi 연결과 UDP 11111 수신 설정을 확인하세요.',
     tello_gateway_video_off_or_stale: '조종 사이트의 드론 영상이 꺼져 있거나 끊겼습니다. 그 사이트에서 영상을 켠 뒤 다시 시작하세요.',
@@ -52,7 +52,7 @@ export function captureError(error) {
     tello_input_cleanup_pending: '이전 드론 연결을 정리하고 있습니다. 잠시 뒤 다시 시작하세요.',
     tello_detection_input_is_active: '드론 사람 탐지 입력이 실행 중입니다. 먼저 해당 입력을 종료하세요.',
     tello_gateway_session_changed: '드론 게이트웨이 실행 회차가 바뀌었습니다. 다시 연결해 새 지도 세션을 시작하세요.',
-    frame_dimensions_do_not_match_calibration: '영상 크기가 Tello 지도 설정(960×720)과 다릅니다. 원본 영상 크기와 보정값을 확인하세요.',
+    frame_dimensions_do_not_match_calibration: '영상 크기가 드론 지도 설정(960×720)과 다릅니다. 원본 영상 크기와 보정값을 확인하세요.',
   };
   if (telloErrors[error.message]) return {state: 'disconnected', message: telloErrors[error.message]};
   if (error.message?.startsWith('tello_input_unavailable'))
@@ -71,7 +71,7 @@ export function captureError(error) {
 // Read-only status: a browser/server failure never proves that the drone is offline.
 export function connectionStatus({reachable = true, responseOK = true, state = {}, capture = {}, fresh = true} = {}) {
   const row = (text, tone = 'idle') => ({text, tone});
-  const result = {server: row('연결됨', 'ok'), drone: row('연결 전'), video: row('대기'), map: row('대기'), note: ''};
+  const result = {server: row('연결됨', 'ok'), drone: row('연결 전'), video: row('대기'), map: row('대기'), note: '', camera: null};
   if (!reachable || !responseOK) {
     result.server = row(reachable ? '응답 오류' : '연결 실패', 'error');
     for (const key of ['drone', 'video', 'map']) result[key] = row('확인 불가');
@@ -88,6 +88,13 @@ export function connectionStatus({reachable = true, responseOK = true, state = {
   const error = ownCapture && capture.error || (!pending && state.last_error) || '';
   const status = pending ? 'starting' : state.session_status || state.status;
   const active = !pending && !['idle', 'complete', 'failed', 'stopped_or_disconnected', 'stopping'].includes(status) && Boolean(state.session_id);
+  if (active && state.input === 'tello_camera' && state.camera &&
+      ['fx', 'fy', 'cx', 'cy'].every(key => Number.isFinite(state.camera[key]))) {
+    const camera = state.camera;
+    const source = camera.profile?.name || (camera.calibration_status?.includes('estimated') ? '추정값' :
+      camera.calibration_status?.includes('user_supplied') ? '직접 입력값' : '보정값');
+    result.camera = `${source} · ${camera.width}×${camera.height} · fx ${camera.fx.toFixed(1)} · fy ${camera.fy.toFixed(1)} · cx ${camera.cx.toFixed(1)} · cy ${camera.cy.toFixed(1)}`;
+  }
   const drone = (pending ? capture.kind === 'tello-map' : state.input === 'tello_camera') || capture.kind === 'tello';
   const connected = !pending && state.input_origin && !['not_connected', 'local_camera'].includes(state.input_origin);
   if (!drone) result.drone = row('해당 없음');
@@ -124,7 +131,7 @@ export function connectionStatus({reachable = true, responseOK = true, state = {
 
 export function monitorConnections({element = (id) => document.getElementById(id), fetcher = fetch,
   clock = Date.now, schedule = setTimeout, cancel = clearTimeout} = {}) {
-  let capture = {}, state = {}, reachable = false, responseOK = true, timer, closed = false;
+  let capture = {}, state = {}, droneState = {}, reachable = false, responseOK = true, timer, closed = false;
   let session, count = -1, advancedAt = 0;
   function render() {
     const status = connectionStatus({reachable, responseOK, state, capture, fresh: clock() - advancedAt < 5000});
@@ -133,6 +140,10 @@ export function monitorConnections({element = (id) => document.getElementById(id
       node.textContent = status[key].text; node.dataset.state = status[key].tone;
     }
     element('connection-note').textContent = status.note;
+    element('connection-camera').hidden = !status.camera && !droneState.connected;
+    const cameraText = status.camera || (droneState.connected ? '지도 시작 후 실제 적용값을 표시합니다.' : '');
+    if (element('connection-camera-values').textContent !== cameraText)
+      element('connection-camera-values').textContent = cameraText;
   }
   async function poll() {
     let responded = false;
@@ -158,5 +169,6 @@ export function monitorConnections({element = (id) => document.getElementById(id
   function visibility() { element('connection-monitor').hidden = location.hash !== '#live'; }
   window.addEventListener('hashchange', visibility); visibility(); poll();
   return {capture(value) { capture = value; render(); },
+    drone(value) { droneState = value; render(); },
     close() { closed = true; cancel(timer); window.removeEventListener('hashchange', visibility); }};
 }

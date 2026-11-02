@@ -13,10 +13,10 @@
     <span class="local"><i></i> 로컬 자료 · 비공개</span>
   </header>
   <main>
-    <div class="source-bar"><nav class="source-tabs" role="tablist" aria-label="지도 선택">
+    <div class="source-bar"><div class="source-primary"><nav class="source-tabs" role="tablist" aria-label="지도 선택">
       <button id="tab-saved" role="tab" data-source="saved" aria-selected="true" aria-controls="map-content">저장 지도</button>
       <button id="tab-live" role="tab" data-source="live" aria-selected="false" aria-controls="map-content" tabindex="-1">실시간 지도 <span id="live-tab-indicator" aria-hidden="true"></span></button>
-    </nav>
+    </nav></div>
     <section id="connection-monitor" class="connection-monitor" hidden role="status" aria-live="polite" aria-label="연결 상태">
       <strong>연결 상태 <small id="connection-checked">확인 중</small></strong>
       <dl><div><dt>서버</dt><dd id="connection-server" data-state="idle">확인 중</dd></div>
@@ -24,33 +24,64 @@
         <div><dt>영상</dt><dd id="connection-video" data-state="idle">대기</dd></div>
         <div><dt>3D 지도</dt><dd id="connection-map" data-state="idle">대기</dd></div></dl>
       <p id="connection-note">연결 상태를 확인합니다.</p>
+      <div id="connection-camera" class="connection-camera" hidden><strong>카메라 파라미터</strong><p id="connection-camera-values"></p></div>
     </section></div>
-    <section class="profile-panel drone-panel" aria-label="Wi-Fi 드론 연결">
-      <div class="profile-actions"><strong>Wi-Fi 드론</strong><button id="drone-scan" type="button">드론 검색</button>
-        <button id="drone-connect" type="button" disabled>선택한 Wi-Fi 연결</button><button id="drone-disconnect" type="button" disabled>드론 연결 해제</button>
-        <button id="drone-details" type="button" disabled aria-expanded="false" aria-controls="drone-resource-panel">자세히 보기</button></div>
-      <p id="drone-link-state" role="status">연결 전</p>
-      <p id="drone-status" role="status">PC Wi-Fi의 Tello / RoboMaster TT 후보를 검색합니다. 다른 제조사 드론은 별도 어댑터가 필요합니다.</p>
-      <section id="drone-wifi-results" hidden aria-label="검색한 Wi-Fi 목록">
-        <p>항목을 더블클릭하거나 선택 후 Enter를 눌러 연결하세요. 터치 화면에서는 선택한 Wi-Fi 연결 버튼을 사용하세요.</p>
-        <div id="drone-list" role="listbox" aria-label="연결할 Wi-Fi"></div>
-      </section>
-      <p id="drone-wifi-status" role="status">Wi-Fi 연결 상태 확인 중…</p>
-      <p id="drone-wifi-signal" role="status">신호 강도 확인 중…</p>
-      <p class="muted">Wi-Fi 후보는 SDK 연결 성공과 다릅니다. Windows에서는 OS에서 해당 Wi-Fi에 한 번 연결해 저장된 프로필을 만들어 주세요. 연결 시 PC의 Wi-Fi가 전환될 수 있습니다.</p>
-      <section id="drone-resource-panel" hidden aria-label="드론 지원 자원">
-        <div class="profile-actions"><h2>드론 지원 자원</h2><button id="drone-resource-refresh" type="button">자원 다시 탐색</button></div>
-        <p>영상 입력 중에는 수신된 센서만 표시합니다. 미응답은 미지원 확정이 아닙니다.</p>
-        <dl id="drone-resources"></dl><p id="drone-video-resource"></p>
-      </section>
-      <section id="drone-camera-panel" hidden aria-label="연결된 드론 카메라">
-        <h2>드론 카메라</h2><p>연결 → 카메라 확인·지도 생성 → 드론 연결 해제 → 전체 지도 이력 저장</p>
-        <div id="profile-slot-live"></div>
-        <div class="profile-actions"><button id="drone-video-start" type="button">카메라 확인·재시도</button><button id="drone-map-start" type="button">3D 지도 생성 시작</button></div>
-        <p id="drone-image-status" role="status">카메라 영상을 준비하고 있습니다.</p>
-        <img id="drone-resource-image" hidden alt="연결된 드론의 현재 카메라 이미지">
-      </section>
-      <p id="drone-flow-status" role="status">먼저 드론을 연결하세요. 연결 후 카메라 영역이 표시됩니다.</p>
+    <div id="camera-actions" class="camera-actions" hidden>
+      <button id="calibration-open" type="button">새 카메라 보정</button>
+      <details id="drone-workspace" class="drone-disclosure" aria-label="드론 카메라 연결">
+        <summary id="drone-open">드론 카메라 연결</summary>
+        <section class="profile-panel drone-panel" aria-label="Wi-Fi 드론 연결">
+          <div class="profile-actions"><button id="drone-scan" type="button">드론 검색</button>
+            <button id="drone-connect" type="button" disabled>선택한 Wi-Fi 연결</button><button id="drone-disconnect" type="button" disabled>드론 연결 해제</button>
+            <button id="drone-details" type="button" disabled aria-expanded="false" aria-controls="drone-resource-panel">자세히 보기</button></div>
+          <p id="drone-link-state" role="status">연결 전 · SDK 응답을 확인하세요</p>
+          <p id="drone-status" role="status" hidden></p>
+          <section id="drone-wifi-results" hidden aria-label="검색한 Wi-Fi 목록">
+            <p>항목을 더블클릭하거나 선택 후 Enter를 눌러 연결하세요. 터치 화면에서는 선택한 Wi-Fi 연결 버튼을 사용하세요.</p>
+            <div id="drone-list" role="listbox" aria-label="연결할 Wi-Fi"></div>
+          </section>
+          <p id="drone-wifi-status" role="status" hidden></p>
+          <p id="drone-wifi-signal" role="status" hidden></p>
+          <section id="drone-resource-panel" hidden aria-label="드론 지원 자원">
+            <div class="profile-actions"><h2>드론 지원 자원</h2><button id="drone-resource-refresh" type="button">자원 다시 탐색</button></div>
+            <p>영상 입력 중에는 수신된 센서만 표시합니다. 미응답은 미지원 확정이 아닙니다.</p>
+            <dl id="drone-resources"></dl><p id="drone-video-resource"></p>
+          </section>
+          <section id="drone-camera-panel" hidden aria-label="연결된 드론 카메라">
+            <h2>드론 카메라</h2><p>연결 → 카메라 확인·지도 생성 → 드론 연결 해제 → 전체 지도 이력 저장</p>
+            <div id="profile-slot-live"></div>
+            <div class="profile-actions"><button id="drone-video-start" type="button">카메라 확인·재시도</button><button id="drone-map-start" type="button">3D 지도 생성 시작</button></div>
+            <p id="drone-image-status" role="status">카메라 영상을 준비하고 있습니다.</p>
+            <img id="drone-resource-image" hidden alt="연결된 드론의 현재 카메라 이미지">
+          </section>
+          <p id="drone-flow-status" role="status">먼저 드론을 연결하세요.</p>
+        </section>
+      </details>
+    </div>
+    <section id="calibration-workspace" class="calibration-workspace" hidden aria-label="카메라 보정">
+      <div class="calibration-heading"><div><p class="eyebrow">CAMERA CALIBRATION</p><h1>카메라 보정</h1></div><button id="calibration-close" type="button">← 지도로 돌아가기</button></div>
+      <ol class="tutorial-steps" aria-label="카메라 보정 단계"><li>1. 방법 선택</li><li>2. 입력 준비</li><li>3. 보드·장면 수집</li><li>4. 결과</li></ol>
+      <div id="calibration-method" class="calibration-stage"><h2>어떻게 보정할까요?</h2><p>체크보드가 보이는 여러 장면이 필요합니다.</p><div class="calibration-methods"><button id="calibration-method-file" type="button"><strong>촬영한 파일 사용</strong><span>동영상 1개 또는 사진 여러 장</span></button><button id="calibration-method-live" type="button"><strong>지금 카메라로 촬영</strong><span>PC/USB 카메라 또는 드론 카메라</span></button></div></div>
+      <div id="calibration-media" class="calibration-stage" hidden><h2 id="calibration-media-title">촬영 자료 선택</h2>
+        <div id="calibration-file-controls"><label>동영상 1개 또는 사진 여러 장<input id="calibration-files" type="file" accept="image/jpeg,image/png,image/webp,video/mp4,video/webm,video/quicktime" multiple></label><p>같은 카메라·방향·크롭으로 촬영한 자료를 선택하세요. 사진 한 장만으로는 보정할 수 없습니다.</p></div>
+        <div id="calibration-live-controls" hidden><label>촬영 카메라<select id="calibration-source"><option value="camera">PC/USB 카메라</option><option value="tello">드론 카메라</option></select></label><label id="calibration-device-label">카메라 장치<select id="calibration-device"><option value="">브라우저 기본 카메라</option></select></label><button id="calibration-devices" type="button">장치 목록 새로고침</button><label id="calibration-size-label">요청 해상도<select id="calibration-size"><option value="960x720">960×720</option><option value="640x480">640×480</option><option value="1280x720">1280×720</option><option value="1920x1080">1920×1080</option></select></label><p id="calibration-source-note">실제 지도에 쓸 초점·줌·방향·크롭 설정을 유지하세요.</p></div>
+        <p id="calibration-media-error" role="alert" hidden></p><div class="calibration-nav"><button id="calibration-media-back" type="button">이전</button><button id="calibration-media-next" type="button">다음: 체크보드 확인</button></div></div>
+      <div id="calibration-setup" class="calibration-stage" hidden><h2>사용한 체크보드를 확인해 주세요</h2><p>보드의 안쪽 교차점 수와 실측 한 칸 크기를 입력합니다.</p>
+        <div id="calibration-settings" class="profile-actions"><label>가로 내부 교차점<input id="calibration-columns" type="number" value="9" min="4" max="12" step="1"></label><label>세로 내부 교차점<input id="calibration-rows" type="number" value="6" min="4" max="10" step="1"></label><label>한 칸 크기 (mm)<input id="calibration-square" type="number" value="25" min="5" max="60" step="0.1"></label></div>
+        <p id="calibration-board-note">9×6은 안쪽 교차점 수이며 칸은 10×7개입니다.</p><a id="calibration-board" class="tutorial-link" href="/api/calibration/board.svg" download="checkerboard.svg">체크보드가 없다면 인쇄용 SVG 받기 ↓</a>
+        <details id="calibration-print-help"><summary>인쇄할 때 주의할 점</summary><p>100% 실제 크기로 인쇄해 한 칸을 자로 확인하세요.</p></details>
+        <label class="tutorial-confirm"><input id="calibration-confirm" type="checkbox"> <span id="calibration-confirm-text">실제 체크보드의 교차점 수·한 칸 크기와 입력값이 같습니다.</span></label>
+        <p id="calibration-setup-error" role="alert" hidden></p>
+        <div class="calibration-nav"><button id="calibration-setup-back" type="button">이전</button><button id="calibration-start" type="button">보정 시작</button></div></div>
+      <div id="calibration-collect" class="calibration-stage" hidden><h2 id="calibration-collect-title">체크보드 장면을 모으고 있어요</h2><p id="calibration-status" role="status" aria-live="polite">장면을 준비하고 있습니다.</p>
+        <div id="calibration-preview-area" hidden><video id="calibration-video" muted playsinline hidden aria-label="보정 중인 카메라 원본 영상"></video><img id="calibration-preview" hidden alt="검출한 체크보드 코너"></div>
+        <progress id="calibration-progress" value="0" max="18" aria-label="유효한 체크보드 장면 수집"></progress><ul id="calibration-coverage" class="tutorial-coverage"></ul><p id="calibration-guide">정면부터 시작해 위치·거리·기울기를 바꿔 주세요.</p>
+        <div id="calibration-additional" hidden><label>부족한 장면 추가하기<input id="calibration-extra-files" type="file" accept="image/jpeg,image/png,image/webp,video/mp4,video/webm,video/quicktime" multiple></label><button id="calibration-add-files" type="button">추가 자료 분석</button></div>
+        <div class="calibration-nav"><button id="calibration-stop" type="button" disabled>중단</button><button id="calibration-retry" type="button" hidden>다시 시도</button><button id="calibration-undo" type="button" disabled>마지막 장면 제외</button><button id="calibration-solve" type="button" disabled>보정값 계산</button></div></div>
+      <div id="calibration-result" class="calibration-stage" hidden><h2>보정이 완료됐어요</h2><p id="calibration-result-info"></p><details><summary>파라미터 자세히 보기</summary><p id="calibration-result-values"></p></details><p>같은 카메라·해상도·초점·방향·크롭에서 사용하세요. 이 결과만으로 지도의 실제 길이 단위가 정해지지는 않습니다.</p><div class="calibration-nav"><a id="calibration-download" download>적용용 JSON ↓</a><a id="calibration-report-download" download>결과 요약 PDF ↓</a><button id="calibration-register" type="button">프로필로 저장</button></div><div id="profile-slot-registration"></div></div>
+    </section>
+    <section id="live-map-placeholder" class="live-map-placeholder" hidden aria-label="실시간 지도 대기">
+      <strong>실시간 지도</strong><div class="live-map-placeholder-frame">지도 생성을 시작하면 여기에 3D 공간이 표시됩니다.</div>
     </section>
     <section id="map-save-bar" class="map-save-bar" hidden aria-label="3D 지도 저장"><button id="map-save" type="button" disabled aria-keyshortcuts="Control+s Meta+s">3D 지도 저장 ↓</button><kbd>Ctrl / ⌘ + S</kbd><span id="map-save-status" role="status">선택한 세션의 모든 지도 버전과 타임라인을 ZIP으로 저장합니다.</span></section>
     <div id="reconstruction-stage" hidden>
@@ -84,7 +115,7 @@
             <p id="profile-registration-summary"></p>
             <details id="profile-advanced" class="profile-detail"><summary>상세 설정 <span>대상 카메라 · 촬영 설정 · 사용 범위</span></summary>
               <div class="profile-actions"><label>기체·카메라 식별 정보<input id="profile-identity" maxlength="160" placeholder="예: 기체 이름 · 카메라 모델 · 관리 번호"></label><label>영상 방향·크롭<input id="profile-geometry" maxlength="160" placeholder="예: 원본 전체 · 가로 방향 · 크롭 없음"></label><label>사용할 입력 경로<select id="profile-register-mode" aria-describedby="profile-mode-note"><option value="tello">드론 영상 수신 + 파일 복원</option><option value="camera">브라우저 카메라 + 파일 복원</option><option value="file">파일 복원만</option></select></label></div>
-              <p id="profile-mode-note">프로필을 선택할 수 있는 입력 경로입니다. 드론 수신은 현재 Tello 연결을 지원합니다.</p>
+              <p id="profile-mode-note">프로필을 선택할 수 있는 입력 경로입니다. 드론 수신은 연결된 드론에서 사용할 수 있습니다.</p>
             </details>
             <details id="profile-file-values" class="profile-detail"><summary>가져온 보정값 상세 보기</summary><p id="profile-file-details"></p></details>
             <label class="profile-check"><input id="profile-register-confirm" type="checkbox"> 위 카메라·촬영 설정·사용 범위에 맞는 보정 파일임을 확인했습니다.</label>
@@ -92,28 +123,7 @@
           </div>
         </section>
         <p id="profile-status" role="status" aria-live="polite">보정 프로필을 읽는 중입니다.</p>
-        <details id="calibration-tutorial" class="calibration-tutorial"><summary>처음 사용하는 카메라 보정하기 <span>체크보드 촬영 튜토리얼</span></summary>
-          <ol class="tutorial-steps" aria-label="카메라 보정 단계"><li>1. 체크보드 준비</li><li>2. 카메라 연결·수집</li><li>3. 계산·결과 저장</li></ol>
-          <p>사진을 따로 찍어 올리지 않아도 됩니다. 사용할 카메라로 종이를 비추면 이 PC에서 코너를 찾아 유효한 장면을 자동 수집합니다. 지도 수신은 먼저 종료하세요.</p>
-          <div id="calibration-settings" class="profile-actions">
-            <label>가로 내부 교차점<input id="calibration-columns" type="number" value="9" min="4" max="12" step="1"></label><label>세로 내부 교차점<input id="calibration-rows" type="number" value="6" min="4" max="10" step="1"></label><label>한 칸 크기 (mm)<input id="calibration-square" type="number" value="25" min="5" max="60" step="0.1"></label>
-          </div>
-          <p id="calibration-board-note">9×6은 칸 수가 아닌 안쪽 교차점 수입니다. 검정·흰색 칸은 10×7개입니다.</p>
-          <a id="calibration-board" class="tutorial-link" href="/api/calibration/board.svg" download="checkerboard.svg">체크보드 인쇄용 SVG ↓</a>
-          <p>100% 실제 크기로 인쇄하고 자로 한 칸을 확인하세요. 평평한 판에 붙이고 흰 여백을 남기세요. 인쇄물과 아래 교차점 수가 같아야 합니다. 용지에 맞춤·자동 크기 조절을 끄세요.</p>
-          <div class="profile-actions"><label>보정할 영상 입력<select id="calibration-source"><option value="camera">연결된 카메라</option><option value="tello">Tello 원본 영상 · 비행 안 함</option></select></label><label id="calibration-device-label">카메라 장치<select id="calibration-device"><option value="">브라우저 기본 카메라</option></select></label><button id="calibration-devices" type="button">장치 목록 새로고침</button><label id="calibration-size-label">요청 해상도<select id="calibration-size"><option value="960x720">960×720</option><option value="640x480">640×480</option><option value="1280x720">1280×720</option><option value="1920x1080">1920×1080</option></select></label></div>
-          <p id="calibration-source-note">초점·줌·회전·크롭을 고정하고 실제 매핑에 쓸 설정으로 촬영하세요. 실제 수신 해상도를 결과에 기록합니다.</p>
-          <label class="tutorial-confirm"><input id="calibration-confirm" type="checkbox"> 사용할 카메라·인쇄물의 내부 교차점 수·실측 칸 크기를 확인했습니다. Tello는 비행하지 않고 기체와 프로펠러를 안전하게 고정했습니다.</label>
-          <div class="profile-actions"><button id="calibration-start" type="button">튜토리얼 카메라 연결</button><button id="calibration-stop" type="button" disabled>중단·카메라 해제</button></div>
-          <div id="calibration-preview-area" hidden><video id="calibration-video" muted playsinline hidden aria-label="보정 중인 카메라 원본 영상"></video><img id="calibration-preview" hidden alt="현재 수집 후보와 검출한 체크보드 코너"><p>미리보기는 크기에 맞춰 표시하며, 원본 픽셀로 코너를 계산합니다. 점이 보이는 영상은 마지막으로 분석한 장면입니다.</p></div>
-          <p id="calibration-status" role="status" aria-live="polite">체크보드를 준비한 뒤 카메라를 연결하세요.</p>
-          <progress id="calibration-progress" value="0" max="18" aria-label="유효한 체크보드 장면 수집"></progress>
-          <ul id="calibration-coverage" class="tutorial-coverage"></ul>
-          <p id="calibration-guide">정면에서 시작해 왼쪽·오른쪽·위·아래, 가까이·멀리, 좌우·상하 기울임 순서로 보여 주세요. 각 자세에서 잠시 멈춥니다.</p>
-          <div class="profile-actions"><button id="calibration-undo" type="button" disabled>마지막 수집 장면 제외</button><button id="calibration-solve" type="button" disabled>모은 장면으로 보정값 계산</button></div>
-          <div id="calibration-result" hidden><strong>보정값 계산 결과</strong><p id="calibration-result-info"></p><p>검증용 장면은 내부 파라미터 계산에서 제외하고 자세만 추정해 오차를 확인합니다. 이 수치는 실제 치수 정확도나 3D 지도의 미터 단위를 보장하지 않습니다. 같은 카메라·초점·해상도·방향·크롭에서 재사용하세요.</p><div class="profile-actions"><a id="calibration-download" download>계산한 보정 JSON ↓</a><button id="calibration-register" type="button">이 결과를 새 프로필로 등록 준비</button></div></div>
-        </details>
-        <details id="profile-manual-live" class="profile-manual"><summary>이번 실행만 직접 설정 <span>JSON 직접 적용 · 화각 추정</span></summary><label>보정 JSON <input id="camera-calibration" type="file" accept=".json,application/json"></label><label>수평 화각 <input id="camera-fov" type="number" min="25" max="120" value="60"> °</label><p>여기서 고른 JSON은 프로필로 저장하지 않고 이번 실행에만 적용합니다. 직접 고르면 위 프로필 선택은 해제됩니다. Tello는 별도 선택이 없으면 기존 실측값을 적용하고, 다른 카메라는 보정 파일이 없을 때 화각으로 추정합니다.</p></details>
+        <details id="profile-manual-live" class="profile-manual"><summary>이번 실행만 직접 설정 <span>JSON 직접 적용 · 화각 추정</span></summary><label>보정 JSON <input id="camera-calibration" type="file" accept=".json,application/json"></label><label>수평 화각 <input id="camera-fov" type="number" min="25" max="120" value="60"> °</label><p>여기서 고른 JSON은 프로필로 저장하지 않고 이번 실행에만 적용합니다. 직접 고르면 위 프로필 선택은 해제됩니다. 지원되는 드론 카메라는 별도 선택이 없으면 기본 실측값을 적용하고, 다른 카메라는 보정 파일이 없을 때 화각으로 추정합니다.</p></details>
       </details>
     </section>
     </div>
@@ -164,14 +174,14 @@
     <section id="live-panel" class="live-panel" hidden aria-label="실시간 영상 연결">
       <div><strong>카메라에서 공간으로</strong><p>영상을 받으며 같은 특징점을 추적하고 3D 점을 갱신합니다.</p></div>
       <div class="live-actions">
-        <label>영상 입력 <select id="input-source"><option value="camera">연결된 카메라</option><option value="tello-map" hidden>Tello · 실시간 3D 지도</option><option value="demo" hidden>현재 녹화 영상 · 스트리밍 시연</option><option value="tello" hidden>Tello / RoboMaster TT · 사람 탐지</option></select></label>
+        <label>영상 입력 <select id="input-source"><option value="camera">연결된 카메라</option><option value="tello-map" hidden>드론 카메라 · 실시간 3D 지도</option><option value="demo" hidden>현재 녹화 영상 · 스트리밍 시연</option><option value="tello" hidden>드론 카메라 · 사람 탐지</option></select></label>
         <button id="camera-start">카메라 연결 · 시작</button><button id="camera-stop" disabled>수신 종료</button>
       </div>
       <div id="camera-devices" class="live-actions"><label>카메라 장치 <select id="camera-device"><option value="">브라우저 기본 카메라</option></select></label><button id="camera-refresh" type="button">장치 새로고침</button><span id="camera-device-note">권한을 허용하면 장치 이름을 확인할 수 있습니다.</span></div>
       <p id="tello-map-note" hidden></p>
       <p id="camera-input-info">웹캠으로 지도를 만들려면 같은 공간을 보며 카메라의 위치를 천천히 옮겨야 합니다. 고정 카메라는 영상 연결만 확인할 수 있습니다.</p>
       <p id="camera-status" role="status">Docker 실행 후 카메라를 연결하세요. 권한은 시작할 때 요청합니다.</p>
-      <section id="tello-flight" class="tello-flight" hidden aria-label="Tello 수동 조종">
+      <section id="tello-flight" class="tello-flight" hidden aria-label="드론 수동 조종">
         <div class="flight-actions"><strong>드론 조종</strong><span id="flight-state">연결 전</span>
           <button id="flight-emergency" class="danger">비상 정지 (Esc)</button>
           <button id="flight-takeoff" disabled>이륙 (T)</button><button id="flight-land" disabled>착륙 (L)</button>
@@ -183,7 +193,7 @@
       </section>
       <video id="input-preview" muted playsinline hidden aria-label="전송 중인 입력 영상"></video>
       <img id="tello-preview" hidden alt="사람 탐지 윤곽선이 표시된 드론 영상">
-      <img id="tello-map-preview" hidden alt="3D 지도 생성에 사용하는 Tello 실시간 원본 영상">
+      <img id="tello-map-preview" hidden alt="3D 지도 생성에 사용하는 드론 카메라 실시간 원본 영상">
     </section>
     <section id="map-playback" class="map-playback" hidden aria-label="지도 생성 과정 재생">
       <button id="play" aria-label="지도 생성 과정 재생">▶ 재생</button><button id="replay-reset" aria-label="지도 재생 처음으로">↺ 처음</button>

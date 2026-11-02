@@ -162,11 +162,24 @@ class CalibrationHTTPTests(unittest.TestCase):
         code, camera = self.request('/camera.json?id=' + key)
         self.assertEqual(code, 200)
         self.assertAlmostEqual(camera['fx'], 850, delta=7)
+        code, report = self.request('/report.pdf?id=' + key)
+        self.assertEqual(code, 200)
+        self.assertTrue(report.startswith(b'%PDF-'))
         self.assertEqual(self.request('/stop', {'id': key})[0], 200)
         newer = self.start()
         self.assertNotEqual(key, newer)
         self.assertEqual(self.request('/stop', {'id': key})[0], 400)
         self.assertEqual(self.tutorial.current.id, newer)
+
+    def test_uploaded_frames_use_same_quality_checks_without_a_live_camera(self):
+        code, state = self.request('/start', {**BOARD, 'source': 'file', 'confirmed': True,
+                                              'camera_identity': 'Uploaded photos'})
+        self.assertEqual(code, 201)
+        key = state['id']
+        code, collected = self.request('/frame?id=' + key, checkerboard_jpeg())
+        self.assertEqual(code, 202)
+        self.assertEqual(collected['accepted'], 1)
+        self.assertEqual(self.request('/stop', {'id': key})[0], 200)
 
     def test_origin_confirmation_and_active_mapping_are_enforced(self):
         body = {**BOARD, 'source': 'camera', 'confirmed': True}

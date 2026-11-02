@@ -7,21 +7,22 @@ const state = (id='calibration_test') => ({id, source:'camera', status:'collecti
   coverage:{ready:false, checks:{}}, reason:'show_checkerboard', size:null});
 
 function fixture(t, {permission, fetcher}={}) {
-  const saved = new Map(['document','navigator','window','fetch','Option'].map(k=>[k,Object.getOwnPropertyDescriptor(globalThis,k)]));
-  t.after(()=>{for(const [k,v] of saved) {if(v) Object.defineProperty(globalThis,k,v); else delete globalThis[k];}});
+  const saved = new Map(['document','navigator','window','location','fetch','Option','createImageBitmap'].map(k=>[k,Object.getOwnPropertyDescriptor(globalThis,k)]));
   const elements = new Map(), events={}, calls=[], busy=[], prepared=[], preparedOptions=[], constraints=[];
   const element = () => ({handlers:{}, value:'', checked:false, readyState:0, files:[], dataset:{},
     addEventListener(n,f){this.handlers[n]=f;}, replaceChildren(...children){this.children=children;},
-    removeAttribute(){}, pause(){}, async play(){}, focus(){}});
+    removeAttribute(){}, pause(){}, async play(){}, focus(){}, append(){}, scrollIntoView(){}});
   const get=id=>{if(!elements.has(id)) elements.set(id,element());return elements.get(id);};
   Object.entries({'calibration-columns':'9','calibration-rows':'6','calibration-square':'25',
     'calibration-source':'camera','calibration-size':'960x720'}).forEach(([id,value])=>{get(id).value=value;});
   const track={label:'Test camera',stops:0,addEventListener(){},stop(){this.stops++;}};
   const media={getTracks:()=>[track],getVideoTracks:()=>[track]};
   const values={
-    document:{getElementById:get,createElement:tag=>tag==='canvas'?{getContext:()=>({drawImage(){}}),toBlob:f=>f(new Blob(['jpeg']))}:element()},
+    document:{getElementById:get,querySelector:()=>({classList:{add(){},remove(){}}}),querySelectorAll:()=>[],
+      createElement:tag=>tag==='canvas'?{getContext:()=>({drawImage(){}}),toBlob:f=>f(new Blob(['jpeg']))}:element()},
     navigator:{mediaDevices:{async enumerateDevices(){return [];},async getUserMedia(c){constraints.push(c);return permission?permission():media;}}},
     window:{addEventListener(n,f){events[n]=f;}},
+    location:{hash:'#live'},
     Option:class{constructor(label,value){this.label=label;this.value=value;}},
     fetch:async(url,options={})=>{
       const body=options.body instanceof Blob?options.body:options.body?JSON.parse(options.body):null;
@@ -32,7 +33,11 @@ function fixture(t, {permission, fetcher}={}) {
   };
   for(const [k,v]of Object.entries(values))Object.defineProperty(globalThis,k,{configurable:true,value:v});
   const handle=connectCalibration({profiles:{async prepareCamera(camera,options){prepared.push(camera);preparedOptions.push(options);}},onBusy:v=>busy.push(v)});
-  t.after(()=>handle.stop());
+  t.after(async()=>{await handle.stop();for(const [k,v] of saved) {if(v) Object.defineProperty(globalThis,k,v); else delete globalThis[k];}});
+  get('calibration-workspace').hidden=true;
+  get('calibration-open').handlers.click();
+  get('calibration-method-live').handlers.click();
+  get('calibration-media-next').handlers.click();
   get('calibration-confirm').checked=true;
   return {get,calls,busy,prepared,preparedOptions,constraints,track,media,events,handle,
     start:()=>get('calibration-start').handlers.click(),stop:()=>get('calibration-stop').handlers.click()};
@@ -80,9 +85,61 @@ test('successful result releases camera and prepares the existing profile regist
   const f=fixture(t,{fetcher:async url=>url==='/api/calibration'?{enabled:true,busy:false}:
     {...state(),status:'complete',accepted:20,camera}});
   await f.start();assert.equal(f.track.stops,1);assert.equal(f.handle.active,false);
-  assert.equal(f.get('calibration-result').hidden,false);assert.match(f.get('calibration-result-info').textContent,/검증 RMS 0.300/);
+  assert.equal(f.get('calibration-result').hidden,false);assert.match(f.get('calibration-result-info').textContent,/검증 오차 0.300/);
+  assert.match(f.get('calibration-report-download').href,/report\.pdf\?id=calibration_test/);
   await f.get('calibration-register').handlers.click();
   assert.equal(f.prepared[0].fx,850);assert.equal(f.preparedOptions[0].mode,'camera');
+});
+
+test('file choice sends decoded photos through the same bounded calibration session', async t => {
+  let accepted = 0;
+  const f = fixture(t, {fetcher: async url => {
+    if (url === '/api/calibration') return {enabled: true, busy: false};
+    if (url.includes('/frame?')) return {...state(), source: 'file', accepted: ++accepted};
+    return {...state(), source: 'file', accepted};
+  }});
+  globalThis.createImageBitmap = async () => ({width: 960, height: 720, close() {}});
+  f.get('calibration-method-file').handlers.click();
+  f.get('calibration-files').files = [
+    {name: 'one.jpg', type: 'image/jpeg', size: 100},
+    {name: 'two.jpg', type: 'image/jpeg', size: 100}];
+  f.get('calibration-media-next').handlers.click();
+  assert.equal(f.get('calibration-setup').hidden, false);
+  f.get('calibration-confirm').checked = true;
+  await f.start();
+  for (let i = 0; i < 20 && f.get('calibration-additional').hidden; i++) await new Promise(resolve => setImmediate(resolve));
+  assert.equal(f.calls.find(call => call.url.endsWith('/start')).body.source, 'file');
+  assert.equal(f.calls.filter(call => call.url.includes('/frame?')).length, 2);
+  assert.equal(f.constraints.length, 0);
+  assert.equal(f.get('calibration-additional').hidden, false);
+});
+
+test('file input calculates automatically once the uploaded views meet coverage checks', async t => {
+  let accepted = 0;
+  const camera = {width:960,height:720,fx:850,fy:855,cx:480,cy:360,distortion:[0,0,0,0],
+    calibration_summary:{views:18,training_views:14,validation_views:4,training_rms_px:.2,validation_rms_px:.3}};
+  const collecting = () => ({...state(),source:'file',accepted,
+    coverage:{ready:accepted >= 2,checks:{views:true,positions:true,distances:true,tilts:true}}});
+  const f = fixture(t,{fetcher:async url => {
+    if (url === '/api/calibration') return {enabled:true,busy:false};
+    if (url.includes('/frame?')) {accepted++; return collecting();}
+    if (url.endsWith('/solve')) return {...collecting(),status:'complete',camera};
+    return collecting();
+  }});
+  globalThis.createImageBitmap = async () => ({width:960,height:720,close(){}});
+  f.get('calibration-method-file').handlers.click();
+  f.get('calibration-files').files = [
+    {name:'one.jpg',type:'image/jpeg',size:100},{name:'two.jpg',type:'image/jpeg',size:100}];
+  f.get('calibration-media-next').handlers.click();
+  f.get('calibration-confirm').checked = true;
+  await f.start();
+  for (let i=0; i<20 && !f.calls.some(call=>call.url.endsWith('/solve')); i++)
+    await new Promise(resolve=>setImmediate(resolve));
+  for (let i=0; i<20 && f.get('calibration-result').hidden; i++)
+    await new Promise(resolve=>setImmediate(resolve));
+  assert.equal(f.calls.filter(call=>call.url.includes('/frame?')).length,2);
+  assert.equal(f.calls.filter(call=>call.url.endsWith('/solve')).length,1);
+  assert.equal(f.get('calibration-result').hidden,false);
 });
 
 test('page exit releases media and sends a scoped keepalive stop',async t=>{

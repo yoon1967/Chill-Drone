@@ -132,6 +132,8 @@ class LiveSession:
             return {"source": "live", "backend": "orb_slam3_monocular",
                     "session_id": self.id, "session_status": lifecycle,
                     "input": getattr(self, "input_kind", "browser_camera"),
+                    "camera": {key: getattr(self, "camera", {}).get(key) for key in
+                               ("width", "height", "fx", "fy", "cx", "cy", "distortion", "calibration_status", "profile")},
                     "input_origin": getattr(self, "input_origin", "local_camera" if getattr(self, "input_kind", "browser_camera") == "browser_camera" else "not_connected"),
                     "input_state": getattr(self, "input_state", "receiving" if self.ready else "connecting"),
                     "input_error": getattr(self, "input_error", None), "reconnects": getattr(self, "reconnects", 0),

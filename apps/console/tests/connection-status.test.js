@@ -26,6 +26,15 @@ test('video, tracking and completed records cannot imply a current connection', 
   assert.equal(connectionStatus({state: active, capture: {kind: 'tello'}}).map.text, '해당 없음');
 });
 
+test('drone connection shows only parameters applied to the current live session', () => {
+  const camera = {width: 960, height: 720, fx: 850, fy: 855, cx: 480, cy: 360,
+    calibration_status: 'checkerboard_calibrated', profile: {name: 'Test camera'}};
+  const current = connectionStatus({state: {...active, camera}});
+  assert.match(current.camera, /Test camera.*fx 850\.0.*cy 360\.0/);
+  assert.equal(connectionStatus({state: {...active, status: 'complete', camera}}).camera, null);
+  assert.equal(connectionStatus({state: {...active, input: 'browser_camera', camera}}).camera, null);
+});
+
 test('new starts ignore the previous run and preflight failures belong to SLAM', () => {
   const state = {...active, status: 'failed', last_error: 'tello_sdk_unavailable_check_wifi'};
   const pending = connectionStatus({state, capture: {state: 'connecting', kind: 'tello-map'}});
@@ -56,6 +65,10 @@ test('read-only monitor recovers, detects stalled frames and survives invalid re
     }});
   await new Promise(resolve => setImmediate(resolve));
   assert.equal(element('connection-server').textContent, '연결됨');
+  monitor.drone({connected: true});
+  assert.match(element('connection-camera-values').textContent, /지도 시작 후 실제 적용값/);
+  monitor.drone({connected: false});
+  assert.equal(element('connection-camera').hidden, true);
   now = 6000; await next(); assert.equal(element('connection-video').textContent, '수신 지연');
   fail = true; await next(); assert.equal(element('connection-drone').textContent, '확인 불가');
   fail = false; invalid = true; await next(); assert.equal(element('connection-server').textContent, '응답 오류');
