@@ -23,6 +23,20 @@ export function importMessage(job) {
 
 export function openUrl(id) { return `/?asset=${encodeURIComponent(id)}#saved`; }
 
+const processingStages = ['inspect', 'input', 'features', 'reconstruction', 'preview', 'finalization'];
+export function savedPhase(job) {
+  if (job.status === 'awaiting_options') return 'settings';
+  if (['running', 'cancelling', 'uploading', 'inspecting'].includes(job.status)) return 'processing';
+  if (['ready', 'complete'].includes(job.status)) return 'ready';
+  return 'input';
+}
+
+export function processingSteps(job) {
+  const index = job.status === 'complete' ? processingStages.length : processingStages.indexOf(job.stage);
+  return processingStages.map((stage, i) => ({label: stages[stage],
+    state: i < index ? 'done' : i === index && job.status === 'running' ? 'active' : 'waiting'}));
+}
+
 async function droppedFiles(items) {
   const files = [];
   async function visit(entry, prefix = '') {
@@ -49,7 +63,62 @@ async function droppedFiles(items) {
 export function connectImport({profiles = null} = {}) {
   const $ = id => document.getElementById(id);
   let active = null, polling = null, uploadController = null, working = false;
+  let previewUrl = null, startedAt = null, timer = null, creating = false, openingRecord = false;
+  let navigatingToResult = false;
+  let initialHandled = false;
+  let viewingCurrent = false;
   const asset = new URLSearchParams(location.search).get('asset');
+  function phase(value) {
+    document.body.dataset.savedPhase = value;
+    $('saved-title').textContent = value === 'result' ? '복원한 공간을 살펴보세요.' :
+      value === 'processing' ? '촬영 영상에서 공간을 만들고 있습니다.' : '촬영한 영상으로 공간을 복원하세요.';
+    const current = {input: 0, settings: 1, processing: 2, ready: 3, result: 3}[value] ?? 0;
+    [...$('saved-steps').children].forEach((node, index) => {
+      node.dataset.state = index < current ? 'done' : index === current ? 'active' : 'waiting';
+      if (index === current) node.setAttribute('aria-current', 'step');
+      else node.removeAttribute('aria-current');
+    });
+    $('saved-new').hidden = value === 'input';
+    $('saved-library-section').hidden = !['input', 'ready'].includes(value);
+    $('saved-input').hidden = value !== 'input';
+    $('saved-output-note').hidden = value === 'input' || value === 'result';
+  }
+  phase('input');
+  function clearPreview() {
+    $('saved-preview').pause(); $('saved-preview').removeAttribute('src'); $('saved-preview').load();
+    if (previewUrl) URL.revokeObjectURL(previewUrl);
+    previewUrl = null; $('saved-preview-wrap').hidden = true;
+  }
+  function reset() {
+    if (working) return;
+    clearTimeout(polling); clearInterval(timer); timer = null; startedAt = null;
+    active = null; creating = true; openingRecord = false; viewingCurrent = false; clearPreview();
+    $('import-details').open = true;
+    for (const id of ['import-summary', 'saved-inspection', 'import-progress']) $(id).hidden = true;
+    $('import-status').textContent = '먼저 촬영 영상을 선택하세요.';
+    $('import-status').dataset.state = '';
+    $('import-video').pause(); $('import-selected').hidden = true;
+    phase('input'); $('import-file').focus();
+  }
+  $('saved-new').addEventListener('click', reset);
+  $('saved-change').addEventListener('click', reset);
+  $('saved-current').addEventListener('click', () => {
+    if (working) return;
+    creating = false; viewingCurrent = true; phase('result'); $('import-details').open = false;
+  });
+  $('saved-existing').addEventListener('click', () => {
+    const open = $('saved-existing-tools').hidden;
+    $('saved-existing-tools').hidden = !open;
+    $('saved-existing').setAttribute('aria-expanded', String(open));
+  });
+  window.addEventListener('saved-map-ready', () => {
+    if (!asset) $('saved-current').hidden = false;
+    if (creating) return;
+    if (!asset && !viewingCurrent) return;
+    phase('result'); $('import-details').open = false;
+    if (asset) $('saved-media-slot').append($('import-selected'));
+  });
+  window.addEventListener('pagehide', () => { clearPreview(); clearInterval(timer); clearTimeout(polling); uploadController?.abort(); });
   async function request(action, body, query = '') {
     const response = await fetch(`/api/import/${action}${query}`, body === undefined ? {cache: 'no-store'} :
       {method: 'POST', headers: {'X-Mapping-Client': '1', 'Content-Type': 'application/json'}, body: JSON.stringify(body)});
@@ -57,15 +126,45 @@ export function connectImport({profiles = null} = {}) {
     if (!response.ok) throw new Error(errors[value.error] || value.error);
     return value;
   }
-  function fail(error) { $('import-status').textContent = error.name === 'AbortError' ? '전송을 취소했습니다.' : error.message; $('import-progress').hidden = true; working = false; }
+  function fail(error) {
+    $('import-status').textContent = error.name === 'AbortError' ? '전송을 취소했습니다.' : error.message;
+    $('import-status').dataset.state = 'error'; $('import-progress').hidden = true;
+    // A validation error must not release an already running upload/reconstruction.
+    if (!working) $('saved-change').disabled = false;
+  }
   function render(job) {
     if (active !== job.id) { $('import-confirm').checked = false; $('import-camera').value = ''; profiles?.resetFileConfirmation(); }
+    const previousPhase = document.body.dataset.savedPhase;
     active = job.id;
+    phase(savedPhase(job));
+    if (job.status === 'awaiting_options' && previousPhase !== 'settings') $('profile-manager').open = true;
+    $('import-status').dataset.state = job.status === 'failed' ? 'error' : '';
+    $('saved-inspection').hidden = !job.summary;
+    $('saved-change').disabled = !['awaiting_options', 'ready', 'complete', 'failed', 'cancelled'].includes(job.status);
+    $('saved-new').disabled = $('saved-change').disabled;
+    $('saved-processing').hidden = !['running', 'cancelling', 'complete', 'failed', 'cancelled'].includes(job.status);
+    $('saved-processing-title').textContent = job.status === 'complete' ? '복원 결과를 준비했습니다.' :
+      job.status === 'failed' ? '복원을 마치지 못했습니다. 입력과 설정을 확인해 주세요.' :
+      job.status === 'cancelled' ? '복원을 취소했습니다.' : job.status === 'cancelling' ? '복원을 취소하고 있습니다.' : '공간을 복원하고 있습니다.';
+    $('saved-processing-steps').replaceChildren(...processingSteps(job).map(step => {
+      const li = document.createElement('li'); li.dataset.state = step.state;
+      li.textContent = `${step.state === 'done' ? '✓ ' : ''}${step.label.replace(/ 중$/, '')}`;
+      if (step.state === 'active') li.setAttribute('aria-current', 'step');
+      return li;
+    }));
+    if (job.status === 'running' && !startedAt) {
+      startedAt = Date.now();
+      const tick = () => { $('saved-elapsed').textContent = `이 화면에서 처리 시간 ${Math.floor((Date.now() - startedAt) / 1000)}초 · 계산 진행률은 단계로 표시합니다.`; };
+      tick(); timer = setInterval(tick, 1000);
+    }
+    if (['complete', 'failed', 'cancelled', 'ready'].includes(job.status)) { clearInterval(timer); timer = null; }
+    $('saved-processing-settings').textContent = `${job.summary?.name || job.name || ''} · 초당 추출 ${job.options?.sample_fps ?? $('import-sample-fps').value}프레임 · ${job.options?.profile_selection ? '선택한 보정 프로필 적용' : job.options?.camera ? '직접 보정 JSON 적용' : '카메라 값 자동 추정'}`;
     $('import-status').textContent = importMessage(job);
     $('import-summary').hidden = false;
     const summary = job.summary;
     $('import-options').hidden = job.status !== 'awaiting_options';
     $('import-start').hidden = job.status !== 'awaiting_options';
+    $('import-start').disabled = !$('import-confirm').checked;
     $('import-open').hidden = !['ready', 'complete'].includes(job.status);
     $('import-open').href = openUrl(job.id);
     $('import-cancel').hidden = ['ready', 'complete', 'failed', 'cancelled'].includes(job.status);
@@ -74,12 +173,17 @@ export function connectImport({profiles = null} = {}) {
     if (summary) {
       $('import-info').textContent = ['session', 'result'].includes(summary.kind) ?
         `${summary.name} · ${summary.points.toLocaleString()}점 · 키프레임 ${summary.keyframes}장 · 지도 기록 ${summary.revisions}개` :
-        `${summary.name} · ${summary.width}×${summary.height} · ${summary.frames ?? '미확인'}프레임${summary.order ? ` · 순서: ${summary.order.join(' → ')}${summary.frames > summary.order.length ? ' → … → ' + summary.last_frame : ''}` : ''}`;
+        `${summary.name} · ${summary.width}×${summary.height}${Number.isFinite(summary.duration_s) ? ` · ${summary.duration_s.toFixed(1)}초` : ''} · ${summary.frames ?? '미확인'}프레임${summary.order ? ` · 순서: ${summary.order.join(' → ')}${summary.frames > summary.order.length ? ' → … → ' + summary.last_frame : ''}` : ''}`;
       $('import-warnings').replaceChildren(...(summary.warnings || []).map(text => { const item = document.createElement('li'); item.textContent = text; return item; }));
       $('import-sampling').hidden = summary.kind !== 'video';
       $('import-frame-timing').hidden = summary.kind !== 'frames';
     }
     if (['ready', 'complete', 'awaiting_options', 'failed', 'cancelled'].includes(job.status)) working = false;
+    if (!navigatingToResult && (job.status === 'complete' || (openingRecord && job.status === 'ready'))) {
+      navigatingToResult = true;
+      clearTimeout(polling);
+      location.assign(openUrl(job.id));
+    }
   }
   async function poll(id) {
     clearTimeout(polling);
@@ -87,14 +191,27 @@ export function connectImport({profiles = null} = {}) {
       const job = await request('status', undefined, '?id=' + encodeURIComponent(id));
       if (active !== id) return;
       render(job);
+      if (navigatingToResult) return;
       if (['uploading', 'inspecting', 'running', 'cancelling'].includes(job.status)) polling = setTimeout(() => poll(id), 750);
       else refresh();
-    } catch (error) { fail(error); }
+    } catch (error) {
+      if (active !== id) return;
+      fail(error);
+      if (working) polling = setTimeout(() => poll(id), 2000);
+    }
   }
   async function upload(files) {
     if (working) { fail(new Error('먼저 진행 중인 작업을 취소하거나 마쳐 주세요.')); return; }
     if (!files.length) return;
     working = true;
+    creating = true; openingRecord = false; startedAt = null; clearPreview();
+    active = null;
+    const video = files.length === 1 && /\.(mp4|mov|avi|mkv)$/i.test(files[0].file.name) ? files[0].file : null;
+    if (video) {
+      previewUrl = URL.createObjectURL(video); $('saved-preview').src = previewUrl;
+      $('saved-preview-wrap').hidden = false;
+      $('saved-preview-note').textContent = '선택한 원본 영상입니다. 재생이 지원되지 않아도 파일 검사를 진행할 수 있습니다.';
+    }
     $('import-details').open = true;
     $('import-confirm').checked = false;
     $('import-camera').value = '';
@@ -116,6 +233,7 @@ export function connectImport({profiles = null} = {}) {
       poll(job.id);
     } catch (error) {
       if (active) await request('cancel', {}, '?id=' + active).catch(() => {});
+      working = false;
       fail(error);
     }
   }
@@ -124,18 +242,44 @@ export function connectImport({profiles = null} = {}) {
       const data = await request('library');
       $('import-library').replaceChildren(new Option('저장 기록 선택', ''), ...data.items.map(job =>
         new Option(`${job.name} · ${job.status === 'local' ? '이 PC의 기록' : importMessage(job)}`, job.local_id || job.id)));
-      if (data.initial && !active && !asset) { active = data.initial; $('import-details').open = true; poll(active); }
+      const recent = data.items.slice(0, 6);
+      $('saved-library-empty').hidden = recent.length > 0;
+      $('saved-library-empty').textContent = '아직 복원 기록이 없습니다. 촬영 영상을 선택해 첫 지도를 만들어 보세요.';
+      $('saved-library').replaceChildren(...recent.map(job => {
+        const button = document.createElement('button'); button.type = 'button'; button.className = 'saved-record';
+        const title = document.createElement('strong'), info = document.createElement('span'), date = document.createElement('span');
+        const image = document.createElement('img'); image.loading = 'lazy'; image.alt = '';
+        const mapReady = ['local', 'ready', 'complete'].includes(job.status);
+        image.hidden = !mapReady;
+        if (mapReady) image.src = `/api/import/thumbnail?local_id=${encodeURIComponent(job.local_id || job.id)}`;
+        image.addEventListener('error', () => { image.hidden = true; });
+        title.textContent = job.summary?.name || job.name;
+        info.textContent = mapReady ? job.summary ? `${(job.summary.points ?? 0).toLocaleString()}점 · 촬영 시점 ${job.summary.keyframes ?? 0}개 · 지도 열기 ↗` : '이 PC의 저장 기록 · 지도 열기 ↗' : `${importMessage(job)} · 작업 확인 ↗`;
+        date.textContent = `${job.updated_at ? '최근 수정 ' + new Date(job.updated_at * 1000).toLocaleString('ko-KR') + ' · ' : ''}${!mapReady ? importMessage(job) : job.summary?.warnings?.some(text => text.includes('부분 복원')) ? '부분 복원' : job.status === 'local' ? '저장 기록' : '결과 준비됨'}`;
+        button.append(image, title, date, info); button.addEventListener('click', () => openRecord(job.local_id || job.id));
+        return button;
+      }));
+      if (data.initial && !initialHandled) {
+        initialHandled = true;
+        if (!active && !asset) { active = data.initial; $('import-details').open = true; poll(active); }
+      }
     } catch (error) { $('import-status').textContent = error.message; }
   }
   $('import-refresh').addEventListener('click', refresh);
-  $('import-local').addEventListener('click', async () => {
-    if (working || !$('import-library').value) return;
-    try { const job = await request('local', {local_id: $('import-library').value}); render(job); working = true; poll(job.id); }
-    catch (error) { fail(error); }
-  });
-  for (const id of ['import-file', 'import-folder']) $(id).addEventListener('change', event => {
+  async function openRecord(id) {
+    if (working || !id) return;
+    clearPreview(); creating = true; openingRecord = true; working = true; $('import-details').open = true;
+    try { const job = await request('local', {local_id: id}); render(job); if (!navigatingToResult) poll(job.id); }
+    catch (error) { working = false; fail(error); }
+  }
+  $('import-local').addEventListener('click', () => openRecord($('import-library').value));
+  for (const id of ['import-file', 'import-folder', 'saved-archive', 'saved-result-folder']) $(id).addEventListener('change', event => {
     upload([...event.target.files].map(file => ({file, path: file.webkitRelativePath || file.name}))); event.target.value = '';
   });
+  $('import-drop').addEventListener('keydown', event => {
+    if (event.target === $('import-drop') && ['Enter', ' '].includes(event.key)) { event.preventDefault(); $('import-file').click(); }
+  });
+  $('saved-preview').addEventListener('error', () => { $('saved-preview-note').textContent = '브라우저에서 이 영상을 미리 재생할 수 없습니다. 서버의 파일 검사 결과를 확인하세요.'; });
   $('import-drop').addEventListener('dragover', event => { event.preventDefault(); $('import-drop').classList.add('drag-over'); });
   $('import-drop').addEventListener('dragleave', () => $('import-drop').classList.remove('drag-over'));
   $('import-drop').addEventListener('drop', async event => {
@@ -147,7 +291,10 @@ export function connectImport({profiles = null} = {}) {
     try { if (active) { render(await request('cancel', {}, '?id=' + active)); poll(active); } }
     catch (error) { fail(error); }
   });
+  $('import-confirm').addEventListener('change', () => { $('import-start').disabled = !$('import-confirm').checked || working; });
   $('import-start').addEventListener('click', async () => {
+    if (working) return;
+    working = true; $('import-start').disabled = true;
     try {
       let camera = null;
       const file = $('import-camera').files[0];
@@ -160,32 +307,47 @@ export function connectImport({profiles = null} = {}) {
         sample_fps: Number($('import-sample-fps').value), frame_fps: Number($('import-frame-fps').value), camera,
         ...(profile ? {profile_selection: profile.profile_selection} : {})}, '?id=' + active);
       working = true; render(job); poll(job.id);
-    } catch (error) { fail(error); }
+    } catch (error) { working = false; $('import-start').disabled = !$('import-confirm').checked; fail(error); }
   });
   function visibility() {
     $('import-panel').hidden = location.hash === '#live';
-    if (location.hash === '#live') $('import-video').pause();
+    $('import-selected').hidden = location.hash === '#live' || !asset;
+    if (location.hash === '#live') { $('import-video').pause(); $('saved-preview').pause(); $('saved-show-frame').click(); }
   }
   window.addEventListener('hashchange', visibility); visibility(); refresh();
   if (asset) request('status', undefined, '?id=' + encodeURIComponent(asset)).then(job => {
     const summary = job.summary;
     if (!summary) return;
-    $('import-selected').hidden = false;
+    $('import-selected').hidden = location.hash === '#live';
     $('import-selected-name').textContent = `${summary.name} · 불러온 저장 기록`;
     $('import-selected-warnings').textContent = (summary.warnings || []).join(' ');
-    const media = summary.media || [];
+    const media = [...(summary.media || [])];
+    if (job.source_video) media.unshift({index: 'source', label: '복원에 사용한 원본 영상', browser_playable: true});
     $('import-media').hidden = media.length === 0;
     $('import-media-note').hidden = media.length === 0;
+    $('saved-show-video').hidden = media.length === 0;
+    const showMedia = video => {
+      $('saved-original').hidden = !video; document.querySelector('.capture').hidden = video;
+      $('saved-show-frame').setAttribute('aria-pressed', String(!video));
+      $('saved-show-video').setAttribute('aria-pressed', String(video));
+      if (!video) $('import-video').pause();
+    };
+    $('saved-show-frame').addEventListener('click', () => showMedia(false));
+    $('saved-show-video').addEventListener('click', () => showMedia(true));
     $('import-media').replaceChildren(...media.map(m => new Option(m.label, m.index)));
     const show = () => {
-      const part = media[Number($('import-media').value)];
+      const part = media.find(part => String(part.index) === $('import-media').value);
       if (!part) return;
-      const url = `/api/import/media?id=${encodeURIComponent(asset)}&part=${part.index}`;
+      const url = part.index === 'source' ? `/api/import/source-video?id=${encodeURIComponent(asset)}` :
+        `/api/import/media?id=${encodeURIComponent(asset)}&part=${part.index}`;
       $('import-video').hidden = !part.browser_playable;
       $('import-video').src = part.browser_playable ? url : '';
       $('import-media-download').hidden = false;
       $('import-media-download').href = url;
     };
     $('import-media').addEventListener('change', show); show();
+    $('import-video').addEventListener('error', () => {
+      $('import-media-note').textContent = '브라우저에서 이 영상을 재생할 수 없습니다. 녹화 파일을 내려받아 확인하세요. 지도와 자동 동기화하지 않습니다.';
+    });
   }).catch(fail);
 }

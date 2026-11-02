@@ -298,7 +298,44 @@ class ImportManager:
     def public(self, key):
         with self.lock:
             job = self.job(key)
-            return {k: v for k, v in job.items() if k in {'id', 'name', 'status', 'stage', 'bytes', 'summary', 'error', 'options'}}
+            value = {k: v for k, v in job.items() if k in {'id', 'name', 'status', 'stage', 'bytes', 'summary', 'error', 'options'}}
+            source = job.get('source')
+            value['source_video'] = bool(source and Path(source).suffix.lower() in {'.mp4', '.mov', '.avi', '.mkv'})
+            return value
+
+    def source_video(self, key):
+        job = self.job(key)
+        source = job.get('source')
+        if not source or Path(source).suffix.lower() not in {'.mp4', '.mov', '.avi', '.mkv'}:
+            raise ValueError('source_video_unavailable')
+        # Path objects are explicitly registered in this running process by inspect().
+        # Persisted strings must resolve inside this import's owned folder.
+        target = Path(source).resolve()
+        if isinstance(source, str):
+            target = inside(job['path'], target.relative_to(job['path']).as_posix())
+        if not target.is_file():
+            raise ValueError('source_video_unavailable')
+        return target
+
+    def thumbnail(self, local_id):
+        from io import BytesIO
+        from PIL import Image
+        if local_id not in {row.get('local_id', row.get('id')) for row in self.library()}:
+            raise ValueError('unknown_local_record')
+        record = self.resolve(local_id) if local_id.startswith('import_') else ImportedMap(inside(self.root, local_id))
+        result = record.result()
+        if result is None:
+            raise ValueError('thumbnail_unavailable')
+        images = record.image_root(result)
+        cameras = scene_at(result)['cameras']
+        if images is None or not cameras:
+            raise ValueError('thumbnail_unavailable')
+        target = inside(images, cameras[len(cameras) // 2]['frame_id'])
+        with Image.open(target) as image:
+            image.thumbnail((480, 270))
+            output = BytesIO()
+            image.convert('RGB').save(output, format='JPEG', quality=80)
+        return output.getvalue()
 
     def upload(self, key, name, stream, length):
         job = self.job(key)
@@ -399,21 +436,40 @@ class ImportManager:
 
     def library(self):
         rows = []
+        seen_maps = set()
         for folder in sorted(self.root.iterdir(), key=lambda p: p.stat().st_mtime, reverse=True):
             if not folder.is_dir() or folder.is_symlink() or (hasattr(folder, 'is_junction') and folder.is_junction()):
                 continue
             try:
                 if folder.name.startswith('import_'):
                     if folder.name in self.jobs:
+                        job = self.jobs[folder.name]
+                        record = job.get('record')
+                        identity = record.root if record else None
+                        if identity and identity in seen_maps:
+                            continue
+                        if identity:
+                            seen_maps.add(identity)
                         rows.append(self.public(folder.name))
                     elif (folder / 'import.json').is_file():
                         info = read_json(folder / 'import.json')
                         if info.get('status') in {'ready', 'complete'}:
+                            identity = Path(info['map_root']).resolve() if info.get('map_root') else None
+                            if identity and identity in seen_maps:
+                                continue
+                            if identity:
+                                seen_maps.add(identity)
                             rows.append({**{k: info[k] for k in ('name', 'summary', 'status')}, 'local_id': folder.name})
                 elif any((folder / n).is_file() for n in ('session.json', 'state.json', 'scene.json', 'reconstruction/scene.json')):
+                    if folder in seen_maps:
+                        continue
+                    seen_maps.add(folder)
                     rows.append({'name': folder.name, 'local_id': folder.name, 'status': 'local'})
             except (OSError, ValueError, KeyError):
                 continue
+        for row in rows:
+            folder = inside(self.root, row.get('local_id', row.get('id')))
+            row['updated_at'] = folder.stat().st_mtime
         return rows[:100]
 
     def open_local(self, name):

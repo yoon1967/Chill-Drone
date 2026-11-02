@@ -70,6 +70,51 @@ class SessionImportTests(unittest.TestCase):
         self.assertEqual(record.image_root(record.result()), root / 'frames')
         self.assertEqual(record.warnings, [])
 
+    def test_library_thumbnail_uses_registered_relative_image_and_rejects_other_paths(self):
+        source = self.manager.root / 'saved_session'
+        make_session(source)
+        payload = self.manager.thumbnail('saved_session')
+        with Image.open(BytesIO(payload)) as image:
+            self.assertEqual(image.format, 'JPEG')
+            self.assertLessEqual(image.width, 480)
+        self.assertGreater(self.manager.library()[0]['updated_at'], 0)
+        for name in ('../saved_session', 'missing', str(source)):
+            with self.assertRaises(ValueError):
+                self.manager.thumbnail(name)
+        (source / 'frames/key.jpg').unlink()
+        with self.assertRaises(OSError):
+            self.manager.thumbnail('saved_session')
+
+    def test_recent_library_lists_one_card_for_reopened_local_map(self):
+        source = self.manager.root / 'saved_session'
+        make_session(source)
+        first = self.manager.add_local(source)
+        self.wait(first)
+        second = self.manager.add_local(source)
+        self.wait(second)
+        self.assertEqual(len(self.manager.library()), 1)
+        restarted = ImportManager(self.manager.root)
+        self.assertEqual(len(restarted.library()), 1)
+
+    def test_original_video_restart_is_confined_to_owned_import_folder(self):
+        source = self.manager.root / 'saved_session'
+        make_session(source)
+        key = self.manager.add_local(source)
+        self.wait(key)
+        job = self.manager.job(key)
+        video = job['path'] / 'bundle/original.mp4'
+        video.write_bytes(b'original bytes')
+        job['source'] = video
+        self.manager._save(job)
+        restarted = ImportManager(self.manager.root)
+        self.assertTrue(restarted.public(key)['source_video'])
+        self.assertEqual(restarted.source_video(key), video)
+        outside = self.root / 'unregistered.mp4'
+        outside.write_bytes(b'private')
+        restarted.job(key)['source'] = str(outside)
+        with self.assertRaises(ValueError):
+            restarted.source_video(key)
+
     def test_corrupt_latest_preserves_previous_and_missing_images_only_warn(self):
         root = self.root / 'session'
         make_session(root)
@@ -212,9 +257,9 @@ class SessionImportTests(unittest.TestCase):
             timeline=Timeline(), observations=ObservationCache()))
         thread = threading.Thread(target=server.serve_forever, daemon=True)
         thread.start()
-        def get(path):
+        def get(path, headers=None):
             connection = HTTPConnection('127.0.0.1', server.server_port)
-            connection.request('GET', path)
+            connection.request('GET', path, headers=headers or {})
             response = connection.getresponse()
             value = response.read()
             connection.close()
@@ -228,6 +273,15 @@ class SessionImportTests(unittest.TestCase):
             scene = json.loads(payload)
             self.assertEqual((status, scene['revision'], scene['source']), (200, 1, 'saved'))
             self.assertEqual(get('/api/saved/frame/key.jpg?asset=' + key)[0], 200)
+            status, thumbnail = get('/api/import/thumbnail?local_id=' + key)
+            self.assertEqual(status, 200)
+            self.assertEqual(Image.open(BytesIO(thumbnail)).format, 'JPEG')
+            self.assertEqual(get('/api/import/thumbnail?local_id=..%2Fsession')[0], 400)
+            video = self.manager.job(key)['path'] / 'bundle/source.mp4'
+            video.write_bytes(b'0123456789')
+            self.manager.job(key)['source'] = video
+            self.assertEqual(get('/api/import/source-video?id=' + key, {'Range': 'bytes=2-5'}), (206, b'2345'))
+            self.assertEqual(get('/api/import/source-video?id=missing')[0], 400)
             self.assertEqual(json.loads(get('/api/live/state')[1])['status'], 'idle')
             self.assertEqual(get('/api/saved/state?asset=' + key + '&session=other')[0], 409)
             self.assertEqual(get('/api/saved/run?asset=' + key + '&revision=999999')[0], 503)

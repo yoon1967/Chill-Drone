@@ -676,6 +676,18 @@ class ViewerHandler(BaseHTTPRequestHandler):
                     self.json_response({'items': self.imports.library(), 'initial': getattr(self.imports, 'initial', None)})
                 elif action == 'status':
                     self.json_response(self.imports.status(key))
+                elif action == 'source-video':
+                    self.demo = self.imports.source_video(key)
+                    self.source_video()
+                elif action == 'thumbnail':
+                    payload = self.imports.thumbnail(query.get('local_id', [''])[0])
+                    self.send_response(200)
+                    self.send_header('Content-Type', 'image/jpeg')
+                    self.send_header('Content-Length', str(len(payload)))
+                    self.send_header('Cache-Control', 'no-store')
+                    self.send_header('X-Content-Type-Options', 'nosniff')
+                    self.end_headers()
+                    self.write_payload(payload)
                 elif action == 'media':
                     record = self.imports.resolve(key)
                     index = int(query.get('part', ['0'])[0])

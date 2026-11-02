@@ -161,6 +161,7 @@ function selectSource(next, force = false) {
     frame: run.cameras[currentIndex]?.frame_id, position: camera.position.clone(), up: camera.up.clone(),
     target: controls.target.clone(), fov: camera.fov, view: document.querySelector('[data-view].active')?.dataset.view});
   source.select(next);
+  document.body.dataset.mapSource = next;
   clearTimeout(pollTimer);
   resetReplay();
   revision = null;
@@ -176,7 +177,7 @@ function selectSource(next, force = false) {
     tab.setAttribute('aria-selected', String(selected));
     tab.tabIndex = selected ? 0 : -1;
   });
-  $('map-content').setAttribute('aria-labelledby', `tab-${next}`);
+  $('mapping-panel').setAttribute('aria-labelledby', `tab-${next}`);
   $('camera-actions').hidden = next !== 'live';
   if (next !== 'live') closeDroneWorkspace(false);
   renderDroneStages(next, droneState);
@@ -187,7 +188,7 @@ function selectSource(next, force = false) {
   $('profile-file-context').hidden = next !== 'saved';
   profiles.setContext(next);
   document.querySelector('.workspace').classList.toggle('slam-workspace', next === 'live');
-  document.querySelector('#map-content .heading h1').textContent = next === 'saved' ? '영상 속 공간을, 입체로.' : '영상이 들어오는 지금, 공간으로.';
+  $('result-title').textContent = next === 'saved' ? '복원 결과' : '영상이 들어오는 지금, 공간으로.';
   $('run-name').textContent = next === 'saved' ? '저장된 실험 결과를 불러옵니다.' : '실시간 입력과 지도 생성 상태를 확인합니다.';
   document.querySelector('footer > span').textContent = next === 'saved' ? 'COLMAP · OFFLINE RECONSTRUCTION' : 'ORB-SLAM3 · MONOCULAR TRACKING';
   poll();
@@ -655,6 +656,12 @@ function applyRun(value) {
   showCloud();
   setMode(mode);
   const quality = run.quality;
+  if (run.source === 'saved') {
+    $('saved-result-status').hidden = false;
+    $('saved-result-status').dataset.state = quality.result_status === 'partial' ? 'partial' : 'complete';
+    $('saved-result-status').textContent = `${quality.result_status === 'partial' ? '부분 복원' : '복원 결과'} · ${run.slam ? `촬영 시점 ${run.slam.keyframes}개` : `입력 ${quality.input_frames}장 중 ${quality.registered_frames}장 등록`} · ${run.scale.unit === 'm' ? '기준 치수로 스케일 보정 · 독립 치수 정확도 미검증' : '실측 스케일 미보정'}`;
+    window.dispatchEvent(new Event('saved-map-ready'));
+  } else $('saved-result-status').hidden = true;
   $('frames').parentElement.querySelector('span').textContent = '등록 프레임';
   $('elapsed').nextElementSibling.textContent = '입력 검증 이후 SfM·색상';
   document.querySelector('.notes h2').innerHTML = savedCopy.title;
@@ -668,6 +675,7 @@ function applyRun(value) {
   $('reprojection').textContent = `${quality.mean_reprojection_error_px.toFixed(2)} px`;
   $('elapsed').textContent = `${quality.processing_seconds.toFixed(1)} s`;
   document.querySelector('.object-panel').hidden = Boolean(run.slam && !run.planar_objects);
+  $('object-analysis').hidden = !run.planar_objects;
   if (run.slam) {
     $('frames').textContent = String(run.slam.keyframes);
     $('frames').parentElement.querySelector('span').textContent = '선택된 키프레임';
@@ -986,6 +994,27 @@ document.querySelectorAll('[data-mode]').forEach((b) => b.addEventListener('clic
 document.querySelectorAll('[data-view]').forEach((b) => b.addEventListener('click', () => { if (run) setView(b.dataset.view); }));
 $('reset').addEventListener('click', () => { if (run) setView('perspective', true); });
 $('camera-view').addEventListener('click', () => { if (run) cameraView(); });
+// Pick a recorded camera in screen space; dragging remains orbit navigation.
+let cameraPickStart = null;
+renderer.domElement.addEventListener('pointerdown', event => {
+  cameraPickStart = event.button === 0 ? {x: event.clientX, y: event.clientY} : null;
+});
+renderer.domElement.addEventListener('pointercancel', () => { cameraPickStart = null; });
+renderer.domElement.addEventListener('pointerup', event => {
+  const start = cameraPickStart; cameraPickStart = null;
+  if (!start || !run || source.source !== 'saved' || navigating || !$('show-cameras').checked ||
+      Math.hypot(event.clientX - start.x, event.clientY - start.y) > 5) return;
+  const rect = renderer.domElement.getBoundingClientRect();
+  let closest = -1, distance = 16;
+  run.cameras.forEach((capture, index) => {
+    const projected = new THREE.Vector3(...capture.position).project(camera);
+    if (projected.z < -1 || projected.z > 1) return;
+    const pixels = Math.hypot((projected.x + 1) * rect.width / 2 + rect.left - event.clientX,
+      (1 - projected.y) * rect.height / 2 + rect.top - event.clientY);
+    if (pixels < distance) { distance = pixels; closest = index; }
+  });
+  if (closest >= 0) { selectFrame(closest); $('saved-show-frame').click(); }
+});
 $('explore').addEventListener('click', () => {
   if (!run) return;
   if (navigating) { stopExplore(); return; }
