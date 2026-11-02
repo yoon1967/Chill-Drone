@@ -147,3 +147,14 @@
 #calibration-result{padding:14px;margin-top:14px;border:1px solid #bed0b8;border-radius:8px;background:#eaf0e4}
 .profile-panel #calibration-result>strong{font-size:13px;color:#35583d}
 @media(max-width:600px){.profile-panel{padding:16px}.profile-panel summary span{display:block;margin:4px 0 0}.profile-actions{align-items:stretch}.profile-actions label{flex:1 1 100%}.profile-panel select,.profile-panel input:not([type=checkbox]):not([type=file]),.profile-choice select{width:100%}.profile-actions button,.profile-actions a{max-width:100%}.profile-choice>label{align-items:flex-start;flex-direction:column}}
+/* Drone inspection remains absent from layout until explicitly opened. */
+.drone-panel { padding: 18px; margin-block: 14px; }
+.drone-panel p { font-size: 13px; line-height: 1.6; }
+#drone-resource-panel { border-top: 1px solid #c9d4c9; margin-top: 16px; padding-top: 12px; }
+#drone-resources { display: grid; grid-template-columns: repeat(auto-fit, minmax(240px, 1fr)); gap: 12px; }
+#drone-resources > div { background: #edf1e9; border-radius: 8px; padding: 12px; overflow-wrap: anywhere; }
+#drone-resources dt { font-weight: 600; }
+#drone-resources dd { margin: 6px 0 0; font-size: 13px; }
+#drone-resource-image { max-width: 100%; max-height: 420px; border-radius: 8px; }
+#drone-camera-panel { margin-top: 16px; padding: 16px; background: #edf1e9; border-radius: 8px; }
+.map-save-bar { display: flex; align-items: center; flex-wrap: wrap; gap: 12px; margin-block: 14px; font-size: 13px; }

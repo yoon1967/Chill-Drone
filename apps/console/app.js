@@ -1,4 +1,6 @@
 import * as THREE from 'three';
+import { connectDrones, renderDroneStages } from '/drone-view.js';
+import { connectMapSave } from '/map-save.js';
 import { connectImport } from '/import-view.js';
 import { connectProfiles } from '/profile-view.js';
 import { connectCalibration } from '/calibration-view.js';
@@ -24,6 +26,18 @@ let pollDelay = 2000;
 let pollTimer, captureState = {state: 'idle'}, captureHandle, lastLiveState = {};
 const source = new MapSource(location.hash === '#live' ? 'live' : 'saved');
 source.asset = new URLSearchParams(location.search).get('asset');
+let droneState = {can_save: false};
+const mapSaver = connectMapSave({source, scene: () => run, allowed: () =>
+  droneState.can_save === true && source.source === 'live' && run?.stream?.session_id === droneState.save_session_id});
+connectDrones({
+  onState(state) { droneState = state; mapSaver.update(); renderDroneStages(source.source, droneState); },
+  async onMapStart() {
+    if (!captureHandle?.startDroneMapping) throw new Error('영상 입력 준비 중입니다. 잠시 뒤 다시 시도하세요.');
+    location.hash = 'live';
+    await captureHandle.startDroneMapping();
+  },
+  async onDisconnected() { location.hash = 'live'; await captureHandle?.stopDrone?.(); },
+});
 const profiles = connectProfiles();
 const inputGate = {calibrating: false};
 const calibrationTutorial = connectCalibration({profiles, onBusy(value) {
@@ -157,6 +171,8 @@ function selectSource(next, force = false) {
     tab.tabIndex = selected ? 0 : -1;
   });
   $('map-content').setAttribute('aria-labelledby', `tab-${next}`);
+  renderDroneStages(next, droneState);
+  mapSaver.update();
   $('live-panel').hidden = $('live-status').hidden = next !== 'live';
   $(`profile-slot-${next}`).append($('camera-profile-panel'));
   $('profile-live-context').hidden = $('profile-manual-live').hidden = next !== 'live';
@@ -560,6 +576,7 @@ function applyRun(value) {
   const restore = view && view.session === value.input_run_id && view.segment === value.segment_id;
   const frame = run?.cameras[currentIndex]?.frame_id || (restore ? view.frame : null);
   run = value;
+  mapSaver.update();
   $('viewport').dataset.revision = String(run.revision ?? 0);
   $('viewport').dataset.session = run.input_run_id;
   $('viewport').dataset.source = run.source;
@@ -984,6 +1001,7 @@ renderer.domElement.addEventListener('pointermove', (e) => {
   camera.quaternion.setFromEuler(angle);
 });
 window.addEventListener('keydown', (e) => {
+  if (e.ctrlKey || e.metaKey || e.altKey) return;
   if (!navigating || /INPUT|SELECT|TEXTAREA/.test(e.target.tagName)) return;
   if (e.key === 'Escape') { stopExplore(); return; }
   if ('wasdqe'.includes(e.key.toLowerCase())) { keys.add(e.key.toLowerCase()); e.preventDefault(); }
