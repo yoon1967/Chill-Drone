@@ -16,7 +16,7 @@ from pathlib import Path, PurePosixPath
 import shutil
 
 
-DEFAULT_RUN = Path(__file__).resolve().parents[2] / "data/mapping/phone_video/2f1_20261021"
+DEFAULT_RUN = Path(__file__).resolve().parents[4] / "data/mapping/phone_video/2f1_20261021"
 REQUIRED_FILES = {
     "keypoints", "matches", "frames", "feature_metadata", "feature_quality",
     "feature_validation", "manual_picks", "measurement_anchors",

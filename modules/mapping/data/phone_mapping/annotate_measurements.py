@@ -21,7 +21,7 @@ from PIL import Image, ImageDraw, ImageFont
 from path_options import relative_reference, writable_output
 
 
-ROOT = Path(__file__).resolve().parents[2]
+ROOT = Path(__file__).resolve().parents[4]
 INPUT = ROOT / "output/phone_mapping/2f1_20261021"
 FEATURES = ROOT / "output/phone_mapping/2f1_20261021_features_v1/full"
 OUTPUT = FEATURES.parent / "measurements"

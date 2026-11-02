@@ -39,12 +39,12 @@ Windows의 Python 3.12.14 환경에서 PyCOLMAP 4.2.1로 생성했다. 저장소
 
 ```powershell
 python -m venv .venv
-.\.venv\Scripts\python.exe -m pip install -r scripts/phone_mapping/requirements-features.txt
+.\.venv\Scripts\python.exe -m pip install -r modules/mapping/data/phone_mapping/requirements-features.txt
 ```
 
 ## 기존 로컬 입력 폴더에서 재처리
 
-Git 전용 입력 검사는 `python -B scripts/phone_mapping/shared_inputs.py`이며 추가 패키지가 필요 없다.
+Git 전용 입력 검사는 `python -B modules/mapping/data/phone_mapping/shared_inputs.py`이며 추가 패키지가 필요 없다.
 기존 전달 폴더를 보관한 경우에는 `--package-root <ZIP 해제 루트> --workspace <새 작업 폴더>`를 사용할 수 있다.
 이 옵션은 예전 manifest와 폴더 구성을 요구한다. Drive에서 받은 프레임과 DB만 사용할 때는 `team_guide.md`의 직접 검사 예제를 따른다.
 자세한 형식과 경로 해석은 `contracts/mapping/PHONE_INPUT_SNAPSHOT_V1.md`를 따른다.
@@ -59,16 +59,16 @@ Git 전용 입력 검사는 `python -B scripts/phone_mapping/shared_inputs.py`�
 2. 자동 특징점·매칭을 생성한다. 기존 DB가 있으면 덮어쓰지 않고 중단한다. 기존 DB에서 CSV만 다시 만들 때는 `--export-only`를 사용한다.
 
    ```powershell
-   .\.venv\Scripts\python.exe -B scripts/phone_mapping/full_features.py
+   .\.venv\Scripts\python.exe -B modules/mapping/data/phone_mapping/full_features.py
    # 기존 DB에서 CSV/보고서 재생성:
-   # .\.venv\Scripts\python.exe -B scripts/phone_mapping/full_features.py --export-only
+   # .\.venv\Scripts\python.exe -B modules/mapping/data/phone_mapping/full_features.py --export-only
    ```
 
 3. DB와 CSV의 좌표/인덱스/체크섬을 검증하고 수동 기준점 결과를 만든다. 수동 입력은 자동으로 정답을 찾는 과정이 아니며 별도 확인이 필요하다.
 
    ```powershell
-   .\.venv\Scripts\python.exe -B scripts/phone_mapping/validate_features.py
-   .\.venv\Scripts\python.exe -B scripts/phone_mapping/annotate_measurements.py
+   .\.venv\Scripts\python.exe -B modules/mapping/data/phone_mapping/validate_features.py
+   .\.venv\Scripts\python.exe -B modules/mapping/data/phone_mapping/annotate_measurements.py
    ```
 
 4. 필요할 때 전달 ZIP을 새 출력 폴더에 재생성한다. 기존 ZIP이 있으면 덮어쓰지 않고 중단한다.
@@ -76,7 +76,7 @@ Git 전용 입력 검사는 `python -B scripts/phone_mapping/shared_inputs.py`�
    ZIP 해시·압축 해제·네이티브 DB 읽기와 미확인 높이 사용 방지 검사를 수행한다.
 
    ```powershell
-   .\.venv\Scripts\python.exe -B scripts/phone_mapping/package_handoff.py --output-dir output/phone_mapping/handoff_rebuild
+   .\.venv\Scripts\python.exe -B modules/mapping/data/phone_mapping/package_handoff.py --output-dir output/phone_mapping/handoff_rebuild
    ```
 
 5. 수신자는 ZIP을 풀고 ZIP 안의 README대로 `scripts/check_handoff.py --native`를 실행한다. 수신자 검사기는 표준 라이브러리 검사만 할 수도 있지만 네이티브 검사는 PyCOLMAP 4.2.1 환경이 필요하다. 실제 수신 결과는 별도 회신으로 확인한다.

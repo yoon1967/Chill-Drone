@@ -25,7 +25,7 @@ from path_options import relative_reference, writable_output
 from feature_input import digest, load_feature_input, native_database_copy
 
 
-ROOT = Path(__file__).resolve().parents[2]
+ROOT = Path(__file__).resolve().parents[4]
 INPUT = ROOT / "output/phone_mapping/2f1_20261021"
 OUTPUT = ROOT / "output/phone_mapping/2f1_20261021_features_v1/full"
 WINDOW = 4

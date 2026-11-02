@@ -14,7 +14,7 @@ from zipfile import ZipFile, ZIP_DEFLATED
 from path_options import writable_output
 
 
-ROOT = Path(__file__).resolve().parents[2]
+ROOT = Path(__file__).resolve().parents[4]
 BASE = ROOT / "output/phone_mapping"
 INPUT = BASE / "2f1_20261021"
 FEATURES = BASE / "2f1_20261021_features_v1"
@@ -127,9 +127,9 @@ def main() -> None:
                 raise RuntimeError(f"Unexpected temporary file in source: {path}")
             payload["output/phone_mapping/2f1_20261021_features_v1/" + path.relative_to(FEATURES).as_posix()] = path
     for name in ("full_features.py", "annotate_measurements.py", "validate_features.py", "requirements-features.txt", "package_handoff.py", "path_options.py", "feature_input.py"):
-        payload["provenance/" + name] = ROOT / "scripts/phone_mapping" / name
-    payload["scripts/check_handoff.py"] = ROOT / "scripts/phone_mapping/check_handoff.py"
-    payload["requirements.txt"] = ROOT / "scripts/phone_mapping/requirements-features.txt"
+        payload["provenance/" + name] = ROOT / "modules/mapping/data/phone_mapping" / name
+    payload["scripts/check_handoff.py"] = ROOT / "modules/mapping/data/phone_mapping/check_handoff.py"
+    payload["requirements.txt"] = ROOT / "modules/mapping/data/phone_mapping/requirements-features.txt"
     payload["README.md"] = README.encode("utf-8")
     payload["recipient_message.md"] = MESSAGE.encode("utf-8")
     template = {"status": "pending_actual_recipient_run", "receiver_name": "", "tool_and_version": "",

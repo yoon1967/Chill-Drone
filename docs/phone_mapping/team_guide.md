@@ -62,7 +62,7 @@ data/mapping/
       measurement_observations.csv
       annotation_quality_report.json
 
-scripts/phone_mapping/
+modules/mapping/data/phone_mapping/
   shared_inputs.py          # Git 수치 입력 검사와 현재 경로 조회
   full_features.py          # 특징점·매칭 추출/내보내기
   validate_features.py      # DB·프레임·CSV 대조
@@ -88,7 +88,7 @@ modules/mapping/
 ```
 
 이 트리는 이번 협업에 필요한 파일을 추린 것이다. 저장소의 모든 파일을 나열한 목록은 아니다.
-기존 처리 코드는 경로 호환을 위해 scripts/phone_mapping/에 남겨 두었다.
+휴대폰 처리 코드는 modules/mapping/data/phone_mapping/에 모았다. scripts/에는 Windows CMD 실행기만 둔다.
 localization/reconstruct.py는 기존 snapshot과 새 영상의 features/ 입력을 모두 받는다. 전체 실행은 data/run_video_pipeline.py가 연결한다. 실행 인자는 [복원 모듈 안내](../../modules/mapping/localization/README.md)를 따른다.
 
 ## 3. 팀원이 Git을 받은 직후 할 일
@@ -100,7 +100,7 @@ git clone https://lab.ssafy.com/s15-final/S15P31B205.git
 cd S15P31B205
 git switch develop
 git pull --ff-only origin develop
-python -B scripts/phone_mapping/shared_inputs.py
+python -B modules/mapping/data/phone_mapping/shared_inputs.py
 ```
 
 기존 저장소 사용자는 clone/cd를 생략한다. develop에서 직접 코드를 수정하지 않고 작업할 실제 Jira 키에 맞는 브랜치를 만든다.
@@ -136,7 +136,7 @@ from pathlib import Path
 import sys
 
 repo = Path('/실제/저장소/경로')
-sys.path.insert(0, str(repo / 'scripts/phone_mapping'))
+sys.path.insert(0, str(repo / 'modules/mapping/data/phone_mapping'))
 from shared_inputs import load_run, validate, csv_rows
 
 run = load_run(repo / 'data/mapping/phone_video/2f1_20261021')
@@ -196,7 +196,7 @@ for point in csv_rows(run['paths']['keypoints']):
 python --version
 python -m venv .venv
 $mappingPython = (Resolve-Path '.venv/Scripts/python.exe').Path
-& $mappingPython -m pip install -r scripts/phone_mapping/requirements-features.txt
+& $mappingPython -m pip install -r modules/mapping/data/phone_mapping/requirements-features.txt
 $env:MAPPING_REPO_ROOT = (Get-Location).Path
 $env:MAPPING_FRAMES_DIR = Read-Host '원본 31장이 있는 로컬 폴더 경로'
 $env:MAPPING_DB_FILE = Read-Host '원본 database.db의 로컬 파일 경로'
@@ -215,7 +215,7 @@ import subprocess
 import sys
 
 repo = Path(os.environ["MAPPING_REPO_ROOT"]).resolve()
-sys.path.insert(0, str(repo / "scripts/phone_mapping"))
+sys.path.insert(0, str(repo / "modules/mapping/data/phone_mapping"))
 from shared_inputs import check_file, load_run, read_json, require, sha256, validate
 from check_handoff import native_read
 

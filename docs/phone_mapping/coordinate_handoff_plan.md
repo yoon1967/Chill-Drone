@@ -4,7 +4,7 @@
 
 현재 확정 수치 입력은 `data/mapping/phone_video/2f1_20261021/`에서 Git으로 공유한다.
 아래 `output/` 경로는 기존 실행 기록이며 원본 영상·프레임·DB는 로컬/Drive에 유지한다.
-현재 파일은 `run_manifest.json`과 `scripts/phone_mapping/shared_inputs.py`로 찾고 검사한다.
+현재 파일은 `run_manifest.json`과 `modules/mapping/data/phone_mapping/shared_inputs.py`로 찾고 검사한다.
 
 ## 목표와 역할
 
@@ -58,7 +58,7 @@ CSV만으로 COLMAP 복원 명령에 바로 넣을 수 있다고 가정하지 �
 
 - `frame_0034.jpg`, `frame_0035.jpg`, `frame_0036.jpg`(17.0/17.5/18.0초)의 체크섬을 확인하고 OpenCV 4.12.0 SIFT로 시험했다. OpenCV는 시스템 설치 대신 임시 폴더에만 설치했다. COLMAP 수신 버전은 아직 확인되지 않았다.
 - 각 프레임의 특징점 수는 3,223 / 3,137 / 2,986개다. 양방향 비율 검사를 통과한 후보와 기본 행렬 기반 기하 검증 통과 수는 각각 0034↔0035: 813/743, 0035↔0036: 1,161/1,085, 0034↔0036: 810/704다.
-- 결과는 `output/phone_mapping/2f1_20261021_features_v1/pilot/`에 저장했다. `keypoints.csv`, `matches.csv`, `sift_features.npz`, `quality_report.json`, `match_previews/`가 있다. 실행 코드와 사용 방법은 `scripts/phone_mapping/pilot_features.py`와 출력 폴더의 README에 있다.
+- 결과는 `output/phone_mapping/2f1_20261021_features_v1/pilot/`에 저장했다. `keypoints.csv`, `matches.csv`, `sift_features.npz`, `quality_report.json`, `match_previews/`가 있다. 실행 코드와 사용 방법은 `modules/mapping/data/phone_mapping/pilot_features.py`와 출력 폴더의 README에 있다.
 - 연결 그림에서 안내문·잠금장치·문틀 등 여러 위치의 대응을 눈으로 확인했다. 반복 패턴/반사에서 잘못 연결된 일부 점의 가능성은 남아 있다. 기하 검증 수치만으로 3D 복원 가능성이나 31장 전체 입력의 품질을 보장하지 않는다.
 - 이 OpenCV 시험 산출물은 COLMAP `database.db`가 아니다. 3단계에서는 사용자가 수신 도구/버전 미정을 확인하여 생성 도구를 PyCOLMAP 4.2.1로 고정하고 별도 DB를 만들었다. 실제 수신 환경 검증은 5단계에 남긴다.
 
@@ -70,11 +70,11 @@ CSV만으로 COLMAP 복원 명령에 바로 넣을 수 있다고 가정하지 �
 
 ### 2026-10-22 실행 결과
 
-- `scripts/phone_mapping/full_features.py`로 PyCOLMAP 4.2.1 CPU SIFT를 실행했다. 출력: `output/phone_mapping/2f1_20261021_features_v1/full/`. 2단계 OpenCV 결과와 특징점 ID를 혼합하지 않는다.
+- `modules/mapping/data/phone_mapping/full_features.py`로 PyCOLMAP 4.2.1 CPU SIFT를 실행했다. 출력: `output/phone_mapping/2f1_20261021_features_v1/full/`. 2단계 OpenCV 결과와 특징점 ID를 혼합하지 않는다.
 - 31장 모두 추출 완료, 178,584개 특징점. 뒤의 최대 4개 선택 프레임과 비교하여 114쌍에서 59,175개 매칭 후보, 52,159개 기하 검증 대응을 얻었다. 이 수는 쌍별 대응 수이며 고유 3D 점 수가 아니다.
 - 보고 기준 50개 이상의 기하 검증 대응으로 연결망을 확인하면 31장이 하나로 이어지고 인접 선택 프레임의 최소 대응은 105개다. 13.0→13.5초(105개), 19.0→20.0초(168개)의 상대적으로 약한 구간을 표시했다. 25.5→27.5초는 `PLANAR_OR_PANORAMIC` 판정이며 3D 초기화에 주의한다. 나머지 113쌍은 `UNCALIBRATED`다.
 - `database.db`, `keypoints.csv`, `matches.csv`, `candidate_tracks.csv`, 설정·프레임 manifest·품질 보고서와 인접 30쌍의 확인 그림을 만들었다. 후보 트랙은 15,196개이며 그중 6,072개는 3개 이상 프레임의 관측을 포함한다. 같은 프레임에 서로 다른 점이 중복된 232개 연결 묶음은 후보 트랙 CSV에서 제외하고 DB/원본 매칭은 보존했다.
-- `scripts/phone_mapping/validate_features.py`가 원본 SHA-256·PTS, 전체 CSV 좌표와 DB 좌표/점 번호, 전체 매칭·기하 검증, 기술자 수/타입, 트랙 연결·중복과 DB 무결성을 검사한다. 결과는 `validation_report.json`에 기록한다.
+- `modules/mapping/data/phone_mapping/validate_features.py`가 원본 SHA-256·PTS, 전체 CSV 좌표와 DB 좌표/점 번호, 전체 매칭·기하 검증, 기술자 수/타입, 트랙 연결·중복과 DB 무결성을 검사한다. 결과는 `validation_report.json`에 기록한다.
 - 카메라는 실측 보정값 없이 공유 SIMPLE_RADIAL과 초점거리 2,304px의 초깃값을 사용했다. 3D 복원에서 재추정이 필요하다. 현재 값은 2D 픽셀이며 m 좌표·카메라 자세·3D 점은 생성하지 않았다.
 - Jira -253은 로컬 추출 기준을 충족했지만 실제 수신 확인·리뷰·develop MR 머지 조건이 남아 **진행 중**을 유지한다. -254는 4단계 착수 시 진행 중으로 옮겼다.
 
@@ -101,7 +101,7 @@ CSV만으로 COLMAP 복원 명령에 바로 넣을 수 있다고 가정하지 �
 
 - 사용자 표시의 공통 위쪽 왼편 끝점 A, 위쪽 오른편 B, 아래쪽 왼편 C를 정의했다. A–B=0.44m는 스케일 기준, A–C=1.36m는 스케일 계산에 쓰지 않는 별도 길이 검사다. 같은 A와 문 평면을 공유하므로 오차는 서로 연관될 수 있다.
 - `frame_0030/0034/0035/0036/0038.jpg`(15.0/17.0/17.5/18.0/19.0초) 원본을 확대해 각각 3개 경계 교점을 수작업 지정했다. 각 점 5시점, 총 15개 보이는 관측이다. 흐린/잘린 후보에서 숨은 끝점을 임의로 채우지 않았다.
-- 출력: `output/phone_mapping/2f1_20261021_features_v1/measurements/`. `measurement_anchors.json`, `measurement_observations.csv`, 수작업 원본 `manual_picks.json`, `annotation_quality_report.json`, 5장 주석/끝점 확대 그림·사용자 표시 비교 그림과 README를 만들었다. 재생성 코드: `scripts/phone_mapping/annotate_measurements.py`.
+- 출력: `output/phone_mapping/2f1_20261021_features_v1/measurements/`. `measurement_anchors.json`, `measurement_observations.csv`, 수작업 원본 `manual_picks.json`, `annotation_quality_report.json`, 5장 주석/끝점 확대 그림·사용자 표시 비교 그림과 README를 만들었다. 재생성 코드: `modules/mapping/data/phone_mapping/annotate_measurements.py`.
 - 좌표는 원본 1920×1080, 첫 픽셀 중심 (0.5,0.5) 규칙이다. 정수 픽셀 중심 인덱스의 수작업 선택에 0.5를 더해 표기했으며 서브픽셀 정확도를 뜻하지 않는다. 주석 위치의 추정 오차 반경 3~4px를 남겼고, 실측 도구/실측 오차는 미상으로 기록했다.
 - 원본/참조 이미지 체크섬, run_id, DB 이미지 ID·PTS·크기, 좌표 범위·길이/단위·JSON↔CSV를 검사했다. 기존 F에 대한 보조 기하 검사 21건은 최대 sqrt Sampson 오차 약 2.33px였다. 이는 실제 3D/cm 정확도 검증을 대신하지 않는다.
 - A/B/C는 수동 기준점 ID로서 SIFT 점 번호와 별도로 보관한다. 특징점 DB에 추가하지 않았으며 원본 프레임·참조 사진·3단계 DB는 그대로 보존했다. 김수호가 카메라 복원 후 등록된 여러 시점의 수동 관측을 이용해 왜곡을 고려한 삼각측량·스케일/치수 검사를 진행해야 한다.

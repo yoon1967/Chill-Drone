@@ -89,7 +89,7 @@ def main():
     token = os.environ.get("GITHUB_MIRROR_TOKEN")
     if not token:
         raise RuntimeError("Set the protected, hidden GITHUB_MIRROR_TOKEN variable for github-mirror.")
-    for branch, sha in mirror(Path(__file__).resolve().parents[1], token=token).items():
+    for branch, sha in mirror(Path(__file__).resolve().parents[2], token=token).items():
         print(f"Verified GitHub {branch}: {sha}")
 
 

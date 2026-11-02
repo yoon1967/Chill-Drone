@@ -15,7 +15,7 @@ import numpy as np
 from PIL import Image, ImageDraw
 
 ROOT = Path(__file__).resolve().parents[4]
-sys.path.insert(0, str(ROOT / "scripts/phone_mapping"))
+sys.path.insert(0, str(ROOT / "modules/mapping/data/phone_mapping"))
 sys.path.insert(0, str(ROOT / "modules/mapping/data"))
 from feature_input import digest, load_feature_input
 from full_features import run_features
@@ -137,7 +137,7 @@ class FeaturePipelineTests(unittest.TestCase):
 
     def test_existing_output_cli_rejected_without_changes(self):
         before = digest(self.features / "database.db")
-        command = [sys.executable, "-B", str(ROOT / "scripts/phone_mapping/full_features.py"),
+        command = [sys.executable, "-B", str(ROOT / "modules/mapping/data/phone_mapping/full_features.py"),
                    "--input-dir", str(self.input_dir), "--output-dir", str(self.features)]
         result = subprocess.run(command, cwd=self.parent, capture_output=True, text=True)
         self.assertEqual(result.returncode, 2)

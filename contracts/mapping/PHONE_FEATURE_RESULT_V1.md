@@ -1,7 +1,7 @@
 # 파일 입력의 2D 특징점·매칭 결과 1.0
 
-생산자: `scripts/phone_mapping/full_features.py`의 `run_features()`.
-검사기: `scripts/phone_mapping/validate_features.py`의 `validate_features()`.
+생산자: `modules/mapping/data/phone_mapping/full_features.py`의 `run_features()`.
+검사기: `modules/mapping/data/phone_mapping/validate_features.py`의 `validate_features()`.
 생성 버전은 PyCOLMAP 4.2.1이다. 새 결과 metadata의 schema_version은 `phone-feature-result/1.0`이다.
 
 ## 입력과 좌표

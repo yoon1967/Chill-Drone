@@ -1,6 +1,7 @@
 """Portable receiver check. Reads the package; optional native reads use a DB copy.
 
 In the ZIP: python scripts/check_handoff.py --native --report ../receipt.json
+The ZIP's standalone checker path is independent of this repository's tool layout.
 In this repository: supply --root with the extracted package directory.
 """
 

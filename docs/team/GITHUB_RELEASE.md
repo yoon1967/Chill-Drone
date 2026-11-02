@@ -9,7 +9,7 @@ GitLab 기본 Push mirror는 서버 관리자 전용으로 제한돼 있어 아�
 
 - 작업: [S15P31B205-262](https://ssafy.atlassian.net/browse/S15P31B205-262).
 - 대상: [Chill-Drone](https://github.com/yoon1967/Chill-Drone).
-- `.gitlab/ci/github-mirror.yml`의 `github-mirror` 작업이 `scripts/github_mirror.py`를 실행한다.
+- `.gitlab/ci/github-mirror.yml`의 `github-mirror` 작업이 `automation/github-mirror/github_mirror.py`를 실행한다.
 - GitLab의 `develop`·`master` 두 브랜치만 현재 SHA 그대로 전송한다. 작업 브랜치·태그는 제외하며
   GitHub의 기존 `main`과 GitHub에만 있는 다른 브랜치를 삭제하거나 변경하지 않는다.
 - 브랜치의 모든 조상 커밋도 함께 전송하므로 최초 연결 전의 변경·작성자·커밋 SHA도 유지된다.

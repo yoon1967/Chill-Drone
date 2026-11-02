@@ -8,7 +8,7 @@ import tempfile
 import unittest
 
 ROOT = Path(__file__).resolve().parents[4]
-sys.path.insert(0, str(ROOT / "scripts/phone_mapping"))
+sys.path.insert(0, str(ROOT / "modules/mapping/data/phone_mapping"))
 from shared_inputs import DEFAULT_RUN, inside, load_run, prepare_workspace, sha256, validate
 
 
@@ -29,7 +29,7 @@ class SharedInputTests(unittest.TestCase):
         path.write_text(json.dumps(manifest), encoding="utf-8")
 
     def test_relocated_snapshot_from_unrelated_cwd_without_images(self):
-        result = subprocess.run([sys.executable, "-B", str(ROOT / "scripts/phone_mapping/shared_inputs.py"),
+        result = subprocess.run([sys.executable, "-B", str(ROOT / "modules/mapping/data/phone_mapping/shared_inputs.py"),
                                  "--run-dir", str(self.run_dir)], cwd=self.parent,
                                 capture_output=True, text=True, check=True)
         report = json.loads(result.stdout)
@@ -37,6 +37,15 @@ class SharedInputTests(unittest.TestCase):
         self.assertEqual(report["matches"], 59175)
         self.assertEqual(report["external_package"], "not_requested")
         self.assertFalse(any(self.run_dir.rglob("*.jpg")))
+
+    def test_default_snapshot_from_unrelated_cwd(self):
+        result = subprocess.run(
+            [sys.executable, "-B", str(ROOT / "modules/mapping/data/phone_mapping/shared_inputs.py")],
+            cwd=self.parent, capture_output=True, text=True, check=True,
+        )
+        report = json.loads(result.stdout)
+        self.assertEqual(report["keypoints"], 178584)
+        self.assertEqual(DEFAULT_RUN, ROOT / "data/mapping/phone_video/2f1_20261021")
 
     def test_checksum_corruption_rejected(self):
         with (self.run_dir / "features_v1/matches.csv").open("ab") as file:

@@ -8,7 +8,7 @@ import unittest
 from pathlib import Path
 
 SPEC = importlib.util.spec_from_file_location(
-    "github_mirror", Path(__file__).resolve().parents[1] / "scripts/github_mirror.py"
+    "github_mirror", Path(__file__).resolve().parents[1] / "automation/github-mirror/github_mirror.py"
 )
 MIRROR = importlib.util.module_from_spec(SPEC)
 SPEC.loader.exec_module(MIRROR)
