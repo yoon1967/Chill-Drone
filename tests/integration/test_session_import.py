@@ -9,8 +9,11 @@ import tempfile
 import threading
 import time
 import unittest
+from unittest.mock import patch
+from types import SimpleNamespace
 import zipfile
 
+import numpy as np
 from PIL import Image
 
 from apps.console.serve import ObservationCache, Timeline, ViewerHandler, ViewerServer
@@ -39,7 +42,202 @@ def make_session(root):
         write(result / 'local_assets.json', {'images_root': 'C:/old-pc/private', 'frames': ['key.jpg']})
 
 
+def make_reconstruction(root):
+    """A real portable history and fused result, without a model or SLAM process."""
+    from modules.mapping.data.mapping_history import HistoryWriter
+    from modules.mapping.data.stream_mapping import finalize_history, write_json
+    (root / 'frames').mkdir(parents=True)
+    writer = HistoryWriter(root, write_json)
+    for revision in (1, 2):
+        frame_id = f'frame_{revision:07d}.jpg'
+        Image.new('RGB', (32, 24), (revision * 60, 100, 150)).save(root / 'frames' / frame_id)
+        pose = np.eye(4); pose[0, 3] = revision / 10
+        snapshot = dict(revision=revision, timestamp_s=float(revision), frame_id=frame_id,
+            frame_number=revision, tracking='tracking', pose_confirmed=True, pose_map_id=0, map_id=0,
+            pose_position=pose[:3, 3].tolist(), pose_rotation=pose[:3, :3].tolist(),
+            points=[[revision / 10, 0, 2, 100, 100, 150]], cameras=[pose[:3, 3].tolist()],
+            processed=revision, registered=revision, dropped=0, map_points=revision,
+            latency_ms=20, processing_ms=10, render_window_s=10)
+        writer.append(snapshot, dict(depth=np.full((24, 32), 2., np.float32),
+            rgb=np.full((24, 32, 3), 100, np.uint8), world_from_camera=pose,
+            intrinsics=np.array([20., 20., 16., 12.]), map_id=np.array(0), depth_scale=np.array(1.)))
+    writer.close()
+    write(root / 'preview.json', snapshot)
+    finalize_history(root, {}, 'portable_history_test', time.monotonic())
+
+
 class SessionImportTests(unittest.TestCase):
+    def test_history_download_roundtrip_keeps_result_replay_and_relative_frames_after_restart(self):
+        source = self.root / 'original_reconstruction'
+        make_reconstruction(source)
+        original_scene = json.loads((source / 'scene.json').read_text(encoding='utf-8'))
+        source_key = self.manager.add_local(source)
+        self.assertEqual(self.wait(source_key)['status'], 'ready')
+        files, metadata = self.manager.history_archive(source_key)
+        buffer = BytesIO()
+        with zipfile.ZipFile(buffer, 'w') as archive:
+            for path, name in files:
+                archive.write(path, name)
+            for name, value in metadata.items():
+                archive.writestr(name, value)
+        payload = buffer.getvalue()
+        with zipfile.ZipFile(BytesIO(payload)) as archive:
+            self.assertEqual(len(archive.namelist()), len(set(archive.namelist())))
+            assets = json.loads(archive.read('local_assets.json'))
+            self.assertEqual(assets['images_root'], 'frames')
+            self.assertEqual(assets['frames'], ['frame_0000001.jpg', 'frame_0000002.jpg'])
+        uploaded = self.manager.create('reconstruction-history.zip')['id']
+        self.manager.upload(uploaded, 'reconstruction-history.zip', BytesIO(payload), len(payload))
+        with patch.object(self.manager, 'start', side_effect=AssertionError('a saved archive must not run reconstruction')):
+            self.manager.inspect(uploaded)
+            result = self.wait(uploaded)
+        self.assertEqual(result['status'], 'ready')
+        self.assertTrue(result['history_available'])
+        self.assertEqual(result['summary']['history_frames'], 2)
+        record = self.manager.resolve(uploaded)
+        self.assertEqual(json.loads((record.result() / 'scene.json').read_text()), original_scene)
+        self.assertTrue(record.root.is_relative_to(self.manager.job(uploaded)['path']))
+        restarted = ImportManager(self.manager.root)
+        self.assertTrue(restarted.public(uploaded)['history_available'])
+        self.assertEqual(restarted.history_timeline(uploaded)['count'], 2)
+        self.assertEqual(restarted.history_snapshot(uploaded, 1)['frame_number'], 1)
+        self.assertEqual(restarted.history_snapshot(uploaded, 2)['timestamp_s'], 2.)
+        self.assertEqual(restarted.preview(uploaded)['revision'], 2)
+        self.assertTrue(restarted.preview_frame(uploaded, 'frame_0000001.jpg').is_file())
+        self.assertEqual(restarted.resolve(uploaded).warnings, [])
+
+    def test_incomplete_reconstruction_history_is_rejected_before_offering_replay(self):
+        for missing in ('history/frames/00000001.npz', 'frames/frame_0000002.jpg'):
+            with self.subTest(missing=missing):
+                source = self.root / ('incomplete_' + str(len(self.manager.jobs)))
+                make_reconstruction(source)
+                (source / missing).unlink()
+                key = self.manager.add_local(source)
+                result = self.wait(key)
+                self.assertEqual(result['status'], 'failed')
+                self.assertEqual(result['error'], 'reconstruction_history_incomplete')
+
+    def test_history_archive_requires_a_finished_job_and_saved_result(self):
+        source = self.root / 'finished_reconstruction'
+        make_reconstruction(source)
+        key = self.manager.add_local(source)
+        self.assertEqual(self.wait(key)['status'], 'ready')
+        job = self.manager.job(key)
+        for state in ('running', 'cancelling', 'failed', 'cancelled'):
+            job['status'] = state
+            with self.subTest(status=state), self.assertRaisesRegex(ValueError, 'reconstruction_result_not_ready'):
+                self.manager.history_archive(key)
+        job['status'] = 'ready'
+        (source / 'scene.json').unlink()
+        with self.assertRaisesRegex(ValueError, 'reconstruction_result_not_ready'):
+            self.manager.history_archive(key)
+
+    def test_older_history_without_a_result_requests_a_completed_download(self):
+        source = self.root / 'unfinished_history'
+        make_reconstruction(source)
+        (source / 'scene.json').unlink()
+        (source / 'status.json').unlink()
+        key = self.manager.add_local(source)
+        result = self.wait(key)
+        self.assertEqual(result['status'], 'failed')
+        self.assertEqual(result['error'], 'reconstruction_result_not_ready')
+
+    def test_delete_import_removes_record_but_preserves_external_source(self):
+        source = self.root / 'original'
+        make_session(source)
+        key = self.manager.add_local(source)
+        self.assertEqual(self.wait(key)['status'], 'ready')
+        folder = self.manager.job(key)['path']
+        alias = self.manager.add_local(source)
+        self.assertEqual(self.wait(alias)['status'], 'ready')
+        self.assertEqual(self.manager.delete_local(key)['status'], 'deleted')
+        self.assertFalse(folder.exists())
+        self.assertFalse((self.manager.root / alias).exists())
+        self.assertTrue((source / 'session.json').exists())
+        self.assertEqual(self.manager.library(), [])
+
+    def test_delete_managed_session_and_aliases_without_touching_other_records(self):
+        source = self.manager.root / 'managed_session'
+        make_session(source)
+        key = self.manager.add_local(source)
+        self.assertEqual(self.wait(key)['status'], 'ready')
+        other = self.manager.root / 'other'
+        make_session(other)
+        self.manager.delete_local(key)
+        self.assertFalse(source.exists())
+        self.assertFalse((self.manager.root / key).exists())
+        self.assertTrue((other / 'session.json').exists())
+        self.assertEqual([row['local_id'] for row in self.manager.library()], ['other'])
+
+    def test_delete_rejects_traversal_and_busy_records(self):
+        key = self.manager.create('busy')['id']
+        with self.assertRaisesRegex(ValueError, 'record_busy'):
+            self.manager.delete_local(key)
+        with self.assertRaises(ValueError):
+            self.manager.delete_local('../original')
+        target = self.manager.root / 'selected'
+        make_session(target)
+        # Another in-flight import uses this record as its source.
+        self.manager.job(key)['source'] = target
+        with self.assertRaisesRegex(ValueError, 'record_busy'):
+            self.manager.delete_local('selected')
+        self.assertTrue(target.exists())
+    def test_cancelling_pose_job_stops_transport_before_its_owned_container(self):
+        key = self.manager.create('pose cancel')['id']
+        job = self.manager.job(key)
+        output = job['path'] / 'result'
+        write(output / 'pose_tracker/container.json', {'name': 'ssafy-pose-123456abcdef'})
+        job.update(status='running', options={'mode': 'depth_rgbd'}, output=output, process=object())
+        events = []
+        with patch.object(self.manager, '_terminate', side_effect=lambda process: events.append('transport')), \
+             patch('modules.mapping.data.session_import.subprocess.run', side_effect=lambda command, **kwargs: (events.append(command[-1]) or SimpleNamespace(returncode=0))):
+            self.manager.cancel(key)
+        self.assertEqual(events, ['transport', 'ssafy-pose-123456abcdef'])
+
+    def test_running_preview_is_readable_without_publishing_completed_map(self):
+        value = self.manager.create('streaming')
+        key = value['id']
+        job = self.manager.job(key)
+        output = job['path'] / 'stream'
+        output.mkdir()
+        job.update(output=output, status='running', options={'mode': 'depth_rgbd'})
+        self.assertTrue(self.manager.preview(key)['waiting'])
+        write(output / 'preview.json', {'revision': 2, 'points': [[0, 0, 1, 255, 0, 0]]})
+        write(output / 'progress.json', {'status': 'running', 'stage': 'tracking', 'processed': 2})
+        self.assertEqual(self.manager.status(key)['progress']['processed'], 2)
+        self.assertEqual(self.manager.preview(key)['revision'], 2)
+        self.assertTrue(self.manager.preview(key, 2)['unchanged'])
+        with self.assertRaisesRegex(ValueError, 'import_not_ready'):
+            self.manager.resolve(key)
+        with self.assertRaises(ValueError):
+            self.manager.preview_frame(key, '../source.mp4')
+        job['status'] = 'complete'
+        write(output / 'progress.json', {'status': 'complete', 'stage': 'finished', 'processed': 3})
+        self.assertEqual(self.manager.status(key)['progress']['processed'], 3)
+
+    def test_status_keeps_sfm_stage_counts_and_fast_reconstruction_progress_separate(self):
+        key = self.manager.create('progress integration')['id']
+        job = self.manager.job(key)
+        output = job['path'] / 'result'
+        job.update(output=output, status='running', options={'mode': 'sfm'})
+        write(output / 'input/manifest.json', {'selected_frames': 3})
+        write(output / 'manifest.json', {'stage': 'features'})
+        status = self.manager.status(key)
+        self.assertEqual(status['feature_progress']['total'], 3)
+        write(output / 'manifest.json', {'stage': 'preview'})
+        write(output / 'preview/status.json', {'phase': 'overview', 'completed': 0, 'total': 2})
+        status = self.manager.status(key)
+        self.assertNotIn('feature_progress', status)
+        self.assertEqual(status['progress']['phase'], 'overview')
+        job['options'] = {'mode': 'depth_rgbd'}
+        write(output / 'progress.json', {'stage': 'integration', 'processed': 4, 'integrated_frames': 3})
+        status = self.manager.status(key)
+        self.assertEqual(status['stage'], 'integration')
+        self.assertEqual(status['progress']['integrated_frames'], 3)
+        self.assertNotIn('feature_progress', status)
+        job['status'] = 'complete'
+        self.assertEqual(self.manager.status(key)['progress']['processed'], 4)
+
     def test_feature_progress_reads_only_committed_complete_frames(self):
         with tempfile.TemporaryDirectory() as folder:
             root = Path(folder)
@@ -315,6 +513,15 @@ class SessionImportTests(unittest.TestCase):
             self.assertEqual(json.loads(get('/api/live/state')[1])['status'], 'idle')
             self.assertEqual(get('/api/saved/state?asset=' + key + '&session=other')[0], 409)
             self.assertEqual(get('/api/saved/run?asset=' + key + '&revision=999999')[0], 503)
+            connection = HTTPConnection('127.0.0.1', server.server_port)
+            connection.request('POST', '/api/import/delete', json.dumps({'local_id': key}),
+                               {'Host': f'127.0.0.1:{server.server_port}', 'X-Mapping-Client': '1', 'Content-Type': 'application/json'})
+            response = connection.getresponse()
+            self.assertEqual(response.status, 202)
+            self.assertEqual(json.loads(response.read())['status'], 'deleted')
+            connection.close()
+            self.assertTrue((root / 'session.json').exists())
+            self.assertFalse((self.manager.root / key).exists())
         finally:
             server.shutdown()
             server.server_close()

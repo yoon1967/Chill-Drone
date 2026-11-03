@@ -1,6 +1,10 @@
 const stages = {upload: '자료 복사 중', inspect: '자료 검사 중', confirm: '입력 확인 대기', input: '프레임 준비 중',
   features: '특징점 추출·매칭 중', reconstruction: '3D 지도 복원 중', preview: '미리보기 생성 중', finalization: '결과 검증 중', finished: '복원 완료'};
 const errors = {
+  record_busy: '사용 중인 복원 기록입니다. 처리가 끝난 뒤 삭제하세요.',
+  depth_mapping_dependencies_missing: '빠른 복원 준비가 필요합니다. 실행 중인 CMD 창을 닫고 3D 매핑 실행기를 다시 실행하면 필요한 패키지와 모델을 자동으로 준비합니다.',
+  slam_image_missing: '카메라 위치 추적용 Docker 이미지가 없습니다. 실행 안내에 따라 ssafy-orbslam3:local 이미지를 준비하세요.',
+  slam_docker_unavailable: '카메라 위치 추적을 위해 Docker Desktop을 먼저 실행하세요.',
   import_busy: '진행 중인 불러오기가 있습니다. 완료하거나 취소한 뒤 다시 선택하세요.',
   reconstruction_busy: '다른 복원이 실행 중입니다. 완료 뒤 다시 시작하세요.',
   stop_live_mapping_before_reconstruction: '실시간 매핑을 종료한 뒤 새 지도 복원을 시작하세요.',
@@ -10,6 +14,8 @@ const errors = {
   insufficient_disk_space: '저장 공간이 부족합니다.',
   unsupported_input_use_session_zip_video_or_frames: '세션 ZIP·결과 폴더·동영상·JPG/PNG 폴더를 선택하세요.',
   external_import_requires_reselection: '외부 폴더를 CMD에 다시 드롭하거나 웹에서 폴더를 다시 선택하세요.',
+  reconstruction_history_incomplete: '복원 기록의 프레임 또는 이력 파일이 빠져 있습니다. 전체 복원 기록 ZIP을 다시 내려받아 선택하세요.',
+  reconstruction_result_not_ready: '최종 결과가 없는 복원 기록입니다. 복원이 끝난 뒤 전체 복원 기록 ZIP을 다시 내려받아 선택하세요.',
   calibration_dimensions_must_match_input: '보정 JSON의 해상도가 현재 영상·프레임과 다릅니다. 같은 크기·방향·크롭의 보정 파일을 선택하세요.',
   confirm_input_order_and_camera: '카메라·해상도 또는 프레임 순서·FPS 확인란을 체크하세요.',
 };
@@ -27,6 +33,12 @@ export function importMessage(job) {
   if (job.status === 'failed') return `불러오기 실패: ${errors[job.error] || job.error}`;
   if (job.status === 'cancelled') return '취소했습니다. 원본 자료와 이미 생성된 진단은 보존합니다.';
   if (job.status === 'ready') return '저장 자료를 확인했습니다. 지도를 열 수 있습니다.';
+  if (job.options?.mode === 'depth_rgbd') {
+    const progress = job.progress || {};
+    const task = {input: '영상 준비 중', model: '깊이 모델 준비 중 · 첫 실행은 모델 다운로드가 필요합니다', depth: '현재 프레임 깊이 추정 중',
+      tracking: '카메라 위치·방향 추적 중', pose_wait: '위치·방향 확정 대기 · 깊이 복원 보류', mapping: '확정한 자세로 3D 지도 복원 중', integration: `전체 경로 지도 통합 중 · ${progress.integrated_frames || 0} / ${progress.integration_total || 0}관측`, saving: '전체 통합 지도 저장 중'}[job.stage] || '프레임 처리 중';
+    return `${task} · ${progress.processed || 0}프레임 처리 · ${progress.points || 0}점`;
+  }
   if (job.status === 'cancelling') return '현재 계산을 중단하고 작업 프로세스를 종료하고 있습니다.';
   const progress = job.progress || {};
   const count = progress.total ? `${progress.completed} / 총 ${progress.total}` : `${progress.completed ?? 0}`;
@@ -68,6 +80,11 @@ export function savedPhase(job) {
 }
 
 export function processingSteps(job) {
+  if (job.options?.mode === 'depth_rgbd') {
+    const entries = [['model', '추적·깊이 모델 준비'], ['tracking', '① 위치·방향 확정'], ['depth', '② 깊이 추정'], ['mapping', '③ 확정 자세로 복원'], ['integration', '④ 전체 경로 통합'], ['saving', '전체 지도 저장']];
+    const index = job.status === 'complete' ? entries.length : job.stage === 'pose_wait' ? 1 : Math.max(0, entries.findIndex(([stage]) => stage === job.stage));
+    return entries.map(([stage, label], i) => ({label, state: i < index ? 'done' : i === index && job.status === 'running' ? 'active' : 'waiting'}));
+  }
   const index = job.status === 'complete' ? processingStages.length : processingStages.indexOf(job.stage);
   return processingStages.map((stage, i) => ({label: job.status === 'running' && job.stage === stage ? importMessage(job) : stages[stage],
     state: i < index ? 'done' : i === index && job.status === 'running' ? 'active' : 'waiting'}));
@@ -104,6 +121,19 @@ export function connectImport({profiles = null, onPhase = () => {}} = {}) {
   let initialHandled = false;
   let viewingCurrent = false;
   let lastJob = null, navigationPhase = null, observedPhase = null;
+  let progressive = null, progressiveLoading = null;
+  function updateProgressive(job) {
+    const fast = job.options?.mode === 'depth_rgbd' || job.history_available;
+    $('progressive-workspace').hidden = !fast;
+    document.body.classList?.toggle('progressive-processing', fast && ['running', 'cancelling', 'ready', 'complete', 'failed', 'cancelled'].includes(job.status));
+    if (!fast) { progressive?.dispose(); progressive = null; return; }
+    if (progressive) { progressive.update(job); return; }
+    progressiveLoading ||= import('/progressive-map.js').then(({connectProgressiveMap}) => {
+      if (document.body.dataset.savedPhase === 'result') return;
+      if (lastJob?.options?.mode !== 'depth_rgbd' && !lastJob?.history_available) return;
+      progressive = connectProgressiveMap(); progressive.update(lastJob);
+    }).catch(error => { $('progressive-state').textContent = `3D 표시를 준비하지 못했습니다: ${error.message}`; }).finally(() => { progressiveLoading = null; });
+  }
   const asset = new URLSearchParams(location.search).get('asset');
   function phase(value) {
     document.body.dataset.savedPhase = value;
@@ -127,6 +157,7 @@ export function connectImport({profiles = null, onPhase = () => {}} = {}) {
     if (working) return;
     clearTimeout(polling); clearInterval(timer); timer = null; startedAt = null;
     active = null; lastJob = null; navigationPhase = null; observedPhase = null;
+    progressive?.dispose(); progressive = null; $('progressive-workspace').hidden = true; document.body.classList.remove('progressive-processing');
     creating = true; openingRecord = false; viewingCurrent = false; clearPreview();
     $('import-details').open = true;
     for (const id of ['import-summary', 'saved-inspection', 'import-progress']) $(id).hidden = true;
@@ -135,6 +166,16 @@ export function connectImport({profiles = null, onPhase = () => {}} = {}) {
     $('import-video').pause(); $('import-selected').hidden = true;
     phase('input'); $('import-file').focus();
   }
+  $('saved-replay').addEventListener('click', () => { if (!lastJob?.history_available) return; creating = true; render(lastJob, false); phase('processing'); applyNavigation('processing'); $('import-details').open = true; });
+  $('import-open').addEventListener('click', event => {
+    if (!active || active !== asset || !['ready', 'complete'].includes(lastJob?.status) ||
+        event.button > 0 || event.ctrlKey || event.metaKey || event.shiftKey || event.altKey) return;
+    event.preventDefault();
+    creating = false; openingRecord = false; viewingCurrent = true; navigationPhase = 'result';
+    progressive?.dispose(); progressive = null; $('progressive-workspace').hidden = true;
+    document.body.classList.remove('progressive-processing');
+    phase('result'); applyNavigation('result');
+  });
   $('saved-new').addEventListener('click', reset);
   $('saved-change').addEventListener('click', reset);
   $('saved-current').addEventListener('click', () => {
@@ -142,10 +183,9 @@ export function connectImport({profiles = null, onPhase = () => {}} = {}) {
     creating = false; viewingCurrent = true; phase('result'); $('import-details').open = false;
   });
   $('saved-existing').addEventListener('click', () => {
-    const open = $('saved-existing-tools').hidden;
-    $('saved-existing-tools').hidden = !open;
-    $('saved-existing').setAttribute('aria-expanded', String(open));
+    $('saved-result-folder').click();
   });
+  $('saved-open-zip').addEventListener('click', () => $('saved-archive').click());
   window.addEventListener('saved-map-ready', () => {
     if (!asset) $('saved-current').hidden = false;
     if (creating) return;
@@ -153,7 +193,7 @@ export function connectImport({profiles = null, onPhase = () => {}} = {}) {
     phase('result'); $('import-details').open = false;
     if (asset) $('saved-media-slot').append($('import-selected'));
   });
-  window.addEventListener('pagehide', () => { clearPreview(); clearInterval(timer); clearTimeout(polling); uploadController?.abort(); });
+  window.addEventListener('pagehide', () => { progressive?.dispose(); clearPreview(); clearInterval(timer); clearTimeout(polling); uploadController?.abort(); });
   async function request(action, body, query = '') {
     const response = await fetch(`/api/import/${action}${query}`, body === undefined ? {cache: 'no-store'} :
       {method: 'POST', headers: {'X-Mapping-Client': '1', 'Content-Type': 'application/json'}, body: JSON.stringify(body)});
@@ -180,7 +220,10 @@ export function connectImport({profiles = null, onPhase = () => {}} = {}) {
     const previousPhase = document.body.dataset.savedPhase;
     active = job.id;
     lastJob = job;
-    const nextPhase = savedPhase(job);
+    updateProgressive(job);
+    const keepPreview = job.options?.mode === 'depth_rgbd' && (job.status === 'complete' ||
+      (['failed', 'cancelled'].includes(job.status) && job.progress?.revision > 0));
+    const nextPhase = keepPreview ? 'processing' : savedPhase(job);
     if (observedPhase !== nextPhase) navigationPhase = null;
     observedPhase = nextPhase;
     phase(navigationPhase || nextPhase);
@@ -212,7 +255,7 @@ export function connectImport({profiles = null, onPhase = () => {}} = {}) {
     $('import-options').hidden = job.status !== 'awaiting_options';
     $('import-start').hidden = job.status !== 'awaiting_options';
     $('import-start').disabled = !$('import-confirm').checked;
-    for (const id of ['import-sample-fps', 'import-frame-fps', 'import-camera', 'import-confirm'])
+    for (const id of ['import-mode', 'import-sample-fps', 'import-frame-fps', 'import-camera', 'import-confirm'])
       $(id).disabled = job.status !== 'awaiting_options';
     $('import-open').hidden = !['ready', 'complete'].includes(job.status);
     $('import-open').href = openUrl(job.id);
@@ -229,7 +272,8 @@ export function connectImport({profiles = null, onPhase = () => {}} = {}) {
     }
     if (['ready', 'complete', 'awaiting_options', 'failed', 'cancelled'].includes(job.status)) working = false;
     if (navigationPhase) applyNavigation(navigationPhase);
-    if (navigateToResult && !navigatingToResult && (job.status === 'complete' || (openingRecord && job.status === 'ready'))) {
+    if (navigateToResult && !navigatingToResult && (job.status === 'ready' ||
+        (job.status === 'complete' && job.options?.mode !== 'depth_rgbd') || (openingRecord && job.status === 'complete'))) {
       navigatingToResult = true;
       clearTimeout(polling);
       location.assign(openUrl(job.id));
@@ -297,6 +341,7 @@ export function connectImport({profiles = null, onPhase = () => {}} = {}) {
       $('saved-library-empty').hidden = recent.length > 0;
       $('saved-library-empty').textContent = '아직 복원 기록이 없습니다. 촬영 영상을 선택해 첫 지도를 만들어 보세요.';
       $('saved-library').replaceChildren(...recent.map(job => {
+        const card = document.createElement('div'); card.className = 'saved-record-card';
         const button = document.createElement('button'); button.type = 'button'; button.className = 'saved-record';
         const title = document.createElement('strong'), info = document.createElement('span'), date = document.createElement('span');
         const image = document.createElement('img'); image.loading = 'lazy'; image.alt = '';
@@ -308,7 +353,20 @@ export function connectImport({profiles = null, onPhase = () => {}} = {}) {
         info.textContent = mapReady ? job.summary ? `${(job.summary.points ?? 0).toLocaleString()}점 · 촬영 시점 ${job.summary.keyframes ?? 0}개 · 지도 열기 ↗` : '이 PC의 저장 기록 · 지도 열기 ↗' : `${importMessage(job)} · 작업 확인 ↗`;
         date.textContent = `${job.updated_at ? '최근 수정 ' + new Date(job.updated_at * 1000).toLocaleString('ko-KR') + ' · ' : ''}${!mapReady ? importMessage(job) : job.summary?.warnings?.some(text => text.includes('부분 복원')) ? '부분 복원' : job.status === 'local' ? '저장 기록' : '결과 준비됨'}`;
         button.append(image, title, date, info); button.addEventListener('click', () => openRecord(job.local_id || job.id));
-        return button;
+        const remove = document.createElement('button'); remove.type = 'button'; remove.className = 'saved-record-delete';
+        remove.setAttribute('aria-label', `${job.summary?.name || job.name} 복원 기록 삭제`); remove.title = '복원 기록 삭제';
+        remove.innerHTML = '<svg viewBox="0 0 24 24" width="18" height="18" fill="none" stroke="currentColor" stroke-width="1.8" aria-hidden="true"><path d="M3 6h18M9 6V3h6v3M5 6l1 15h12l1-15M10 10v7M14 10v7"/></svg>';
+        remove.disabled = !['local', 'ready', 'complete', 'failed', 'cancelled'].includes(job.status);
+        remove.addEventListener('click', async event => {
+          event.stopPropagation(); if (working || remove.disabled) return;
+          remove.disabled = true;
+          try {
+            await request('delete', {local_id: job.local_id || job.id});
+            if (active === job.id || active === job.local_id) reset();
+            await refresh();
+          } catch (error) { remove.disabled = false; fail(error); }
+        });
+        card.append(button, remove); return card;
       }));
       if (data.initial && !initialHandled) {
         initialHandled = true;
@@ -355,6 +413,7 @@ export function connectImport({profiles = null, onPhase = () => {}} = {}) {
       }
       const profile = await profiles?.selected('file');
       const job = await request('start', {confirmed: $('import-confirm').checked,
+        mode: $('import-mode').value || 'depth_rgbd',
         sample_fps: Number($('import-sample-fps').value), frame_fps: Number($('import-frame-fps').value), camera,
         ...(profile ? {profile_selection: profile.profile_selection} : {})}, '?id=' + active);
       working = true; render(job); poll(job.id);
@@ -368,6 +427,7 @@ export function connectImport({profiles = null, onPhase = () => {}} = {}) {
   window.addEventListener('hashchange', visibility); visibility(); refresh();
   if (asset) request('status', undefined, '?id=' + encodeURIComponent(asset)).then(job => {
     lastJob = job;
+    $('saved-replay').hidden = !job.history_available;
     const summary = job.summary;
     if (!summary) return;
     $('import-selected').hidden = location.hash === '#live';

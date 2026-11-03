@@ -685,6 +685,39 @@ class ViewerHandler(BaseHTTPRequestHandler):
                     self.json_response({'items': self.imports.library(), 'initial': getattr(self.imports, 'initial', None)})
                 elif action == 'status':
                     self.json_response(self.imports.status(key))
+                elif action == 'preview':
+                    self.json_response(self.imports.preview(key, int(query.get('revision', ['0'])[0])))
+                elif action == 'history':
+                    self.json_response(self.imports.history_timeline(key))
+                elif action == 'history-frame':
+                    self.json_response(self.imports.history_snapshot(key, int(query.get('revision', ['0'])[0])))
+                elif action == 'history.zip':
+                    files, metadata = self.imports.history_archive(key)
+                    self.send_response(200)
+                    self.send_header('Content-Type', 'application/zip')
+                    self.send_header('Content-Disposition', 'attachment; filename="reconstruction-history.zip"')
+                    self.send_header('Cache-Control', 'no-store')
+                    self.send_header('Connection', 'close')
+                    self.end_headers()
+                    self.close_connection = True
+                    try:
+                        with zipfile.ZipFile(self.wfile, 'w', compression=zipfile.ZIP_STORED) as archive:
+                            for path, name in files:
+                                archive.write(path, name)
+                            for name, value in metadata.items():
+                                archive.writestr(name, value)
+                    except (BrokenPipeError, ConnectionResetError, ConnectionAbortedError):
+                        pass
+                elif action == 'preview-frame':
+                    file = self.imports.preview_frame(key, query.get('name', [''])[0])
+                    payload = file.read_bytes()
+                    self.send_response(200)
+                    self.send_header('Content-Type', 'image/jpeg')
+                    self.send_header('Content-Length', str(len(payload)))
+                    self.send_header('Cache-Control', 'private, max-age=3600, immutable')
+                    self.send_header('X-Content-Type-Options', 'nosniff')
+                    self.end_headers()
+                    self.write_payload(payload)
                 elif action == 'source-video':
                     self.demo = self.imports.source_video(key)
                     self.source_video()
@@ -721,6 +754,9 @@ class ViewerHandler(BaseHTTPRequestHandler):
                 value = self.imports.inspect(key)
             elif action == 'local':
                 value = self.imports.open_local(body.get('local_id', ''))
+            elif action == 'delete':
+                protected = [self.current.path] if self.current and self.current.stats().get('session_status') not in {'complete', 'failed', 'stopped_or_disconnected'} else []
+                value = self.imports.delete_local(body.get('local_id', ''), protected_paths=protected)
             elif action == 'start':
                 if self.current and self.current.stats().get('session_status') not in {'complete', 'failed', 'stopped_or_disconnected'}:
                     raise ValueError('stop_live_mapping_before_reconstruction')
@@ -1063,6 +1099,9 @@ class ViewerHandler(BaseHTTPRequestHandler):
                   '/calibration-files.js': APP / 'calibration-files.js',
                   '/drone-view.js': APP / 'drone-view.js',
                   '/workflow-guide.js': APP / 'workflow-guide.js',
+                  '/progressive-map.js': APP / 'progressive-map.js',
+                  '/progressive-replay.js': APP / 'progressive-replay.js',
+                  '/axis-gizmo.js': APP / 'axis-gizmo.js',
                   '/map-save.js': APP / 'map-save.js',
                   "/vendor/three.module.js": APP / "node_modules/three/build/three.module.js",
                   "/vendor/three.core.js": APP / "node_modules/three/build/three.core.js",

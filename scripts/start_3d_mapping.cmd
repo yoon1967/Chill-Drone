@@ -36,6 +36,52 @@ SLAM_IMAGE = 'ssafy-orbslam3:local'
 SLAM_SOURCE_LABEL = 'org.ssafy.mapping.source-sha256'
 
 
+def ensure_python_environment():
+    required = ['cv2', 'numpy', 'PIL', 'av', 'torch', 'transformers']
+    missing = [name for name in required if importlib.util.find_spec(name) is None]
+    try:
+        if missing:
+            print('Preparing missing mapping packages: ' + ', '.join(missing) + '\n'
+                  'Keep internet available. The first download can take several minutes.', flush=True)
+            if importlib.util.find_spec('pip') is None:
+                if subprocess.call([sys.executable, '-B', '-m', 'ensurepip'], cwd=ROOT):
+                    print('[ERROR] Could not prepare pip. Check the messages above and retry this CMD.', flush=True)
+                    return False
+            pip = [sys.executable, '-B', '-m', 'pip', 'install',
+                   '--disable-pip-version-check', '--no-cache-dir']
+            if 'torch' in missing:
+                index = 'https://download.pytorch.org/whl/cpu'
+                try:
+                    gpu = subprocess.run(['nvidia-smi', '--query-gpu=name', '--format=csv,noheader'],
+                                         capture_output=True, text=True, timeout=10)
+                    if gpu.returncode == 0 and gpu.stdout.strip():
+                        index = 'https://download.pytorch.org/whl/cu128'
+                except (OSError, subprocess.TimeoutExpired):
+                    pass
+                print('Installing PyTorch for ' + ('NVIDIA CUDA' if index.endswith('cu128') else 'CPU') + '.', flush=True)
+                if subprocess.call(pip + ['torch>=2.6,<3', '--index-url', index], cwd=ROOT):
+                    print('[ERROR] PyTorch installation failed. Check internet and disk space, then retry this CMD.', flush=True)
+                    return False
+            requirements = ROOT / 'modules/mapping/data/requirements-stream.txt'
+            if subprocess.call(pip + ['-r', str(requirements)], cwd=ROOT):
+                print('[ERROR] Mapping package installation failed. Check the messages above and retry this CMD.', flush=True)
+                return False
+            importlib.invalidate_caches()
+        print('Checking the depth model. Missing model files will download automatically; cached files are reused.', flush=True)
+        # A separate process checks real imports and model loading, then releases GPU memory before the server starts.
+        code = subprocess.call([sys.executable, '-B', '-c',
+            'from modules.mapping.data.stream_mapping import DepthEstimator; '
+            'model = DepthEstimator(); '
+            'print("Fast reconstruction is ready (" + model.device + ").", flush=True)'], cwd=ROOT)
+        if code:
+            print('[ERROR] Could not prepare fast reconstruction. Check the messages above, internet and disk space, then retry this CMD.', flush=True)
+            return False
+        return True
+    except OSError as error:
+        print('[ERROR] Mapping setup failed: ' + str(error) + '. Retry this CMD after fixing the error.', flush=True)
+        return False
+
+
 def slam_source_hash(context):
     """Version local image inputs; Python/web changes are read on every launch."""
     digest = hashlib.sha256()
@@ -106,19 +152,13 @@ def main():
     if not (ROOT / 'apps/console/node_modules/three/build/three.module.js').is_file():
         print('[ERROR] Install the local web dependencies first:\n  pnpm --dir apps/console install --frozen-lockfile')
         return 1
-    required = ['cv2', 'numpy', 'PIL', 'av']
-    missing = [name for name in required if importlib.util.find_spec(name) is None]
-    if missing:
-        print('[ERROR] Missing Python dependencies: ' + ', '.join(missing))
-        print('  .venv\\Scripts\\python.exe -m pip install -r modules/mapping/data/requirements-pipeline.txt')
-        print('  .venv\\Scripts\\python.exe -m pip install -r modules/mapping/localization/requirements-online.txt av Pillow')
+    if source is not None and not source.exists():
+        print('[ERROR] The input file or folder does not exist.')
+        return 1
+    if not ensure_python_environment():
         return 1
     result = None
-    if args.input:
-        if not source.exists():
-            print('[ERROR] The input file or folder does not exist.')
-            return 1
-    else:
+    if not args.input:
         if not ensure_slam_image():
             return 1
         candidates = [saved_result(folder) for folder in (ROOT / 'output/phone_mapping').glob('*') if folder.is_dir()]
