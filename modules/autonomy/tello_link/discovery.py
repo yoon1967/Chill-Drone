@@ -181,9 +181,11 @@ class DroneDiscovery:
         with self.lock:
             if self.busy():
                 raise RuntimeError('drone_input_is_active')
-            if key not in self.candidates:
+            if key != 'current-network' and key not in self.candidates:
                 raise ValueError('scan_and_select_a_drone_first')
-            item = self.candidates[key]
+            # Explicit current-network action; never invent a Wi-Fi scan result.
+            item = ({'id': key, 'ssid': '현재 네트워크의 드론', 'kind': 'current', 'verified': False}
+                    if key == 'current-network' else self.candidates[key])
             self.release()
             if item['kind'] == 'wifi':
                 ssid = item['ssid']

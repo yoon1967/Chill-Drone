@@ -37,6 +37,15 @@ class DiscoveryTests(unittest.TestCase):
         self.assertTrue(all(not i['verified'] for i in values))
         self.assertEqual(wifi_candidates(lambda args: ':TELLO-a:80\n:Home:20\n:TELLO-a:70\n', 'linux')[0]['signal_pct'], 80)
 
+    def test_explicit_current_network_connection_needs_no_scan_or_wifi_switch(self):
+        self.manager.runner = Mock(return_value='')
+        self.assertTrue(self.manager.connect('current-network')['connected'])
+        self.assertEqual(self.manager.candidates, {})
+        self.assertFalse(any(call.args[0][:3] == ['netsh', 'wlan', 'connect']
+                             for call in self.manager.runner.call_args_list))
+        self.assertEqual(self.link.send.call_args.args[0], 'command')
+        self.manager.release()
+
     def test_connect_queries_resources_and_distinguishes_unknown_from_no_response(self):
         self.manager.scan()
         self.assertTrue(self.manager.connect('TELLO-test')['connected'])

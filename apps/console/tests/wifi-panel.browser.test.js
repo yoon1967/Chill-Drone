@@ -4,7 +4,7 @@ import { createRequire } from 'node:module';
 
 const url = process.env.MAPPING_TEST_URL;
 
-test('Wi-Fi panel stays visible outside the disclosure before search, on failure, and with results',
+test('Wi-Fi panel inside the connection card handles search failure and actual network selection',
   {skip: !url, timeout: 30000}, async () => {
     const {chromium} = process.env.MAPPING_PLAYWRIGHT_MODULE ?
       createRequire(import.meta.url)(process.env.MAPPING_PLAYWRIGHT_MODULE) : await import('playwright');
@@ -22,10 +22,11 @@ test('Wi-Fi panel stays visible outside the disclosure before search, on failure
       for (const width of [1440, 390]) {
         await page.setViewportSize({width, height: 900});
         assert.equal(await page.locator('#drone-workspace').evaluate(node => node.open), false);
+        await page.locator('#drone-open').click();
         assert.equal(await page.locator('#drone-wifi-results').isVisible(), true);
-        assert.equal(await page.locator('#calibration-open').isVisible(), false);
+        assert.equal(await page.locator('#calibration-open').isVisible(), true);
         assert.equal(await page.locator('#drone-scan').isVisible(), true);
-        assert.equal(await page.locator('#drone-workspace #drone-wifi-results').count(), 0);
+        assert.equal(await page.locator('#drone-workspace #drone-wifi-results').count(), 1);
         assert.equal(await page.locator('#drone-scan').count(), 1);
         scan = {items: [], warning: 'wifi_location_permission_required'};
         await page.locator('#drone-scan').click();

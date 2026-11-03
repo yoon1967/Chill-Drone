@@ -32,6 +32,10 @@
     </section></div>
     <div id="mapping-panel" role="tabpanel" aria-labelledby="tab-saved">
     <div id="camera-actions" class="camera-actions" hidden>
+      <button id="calibration-open" type="button">새 카메라 연결</button>
+      <details id="drone-workspace" class="drone-disclosure" aria-label="기존 카메라 연결">
+        <summary id="drone-open">기존 카메라 연결 <span>드론 카메라</span></summary>
+        <section class="profile-panel drone-panel" aria-label="Wi-Fi 드론 연결">
       <section id="drone-wifi-results" class="wifi-panel" aria-labelledby="wifi-panel-title">
         <div class="wifi-panel-heading"><div><h2 id="wifi-panel-title">Wi-Fi 목록</h2><p>노트북이 감지한 Wi-Fi에서 드론의 이름을 직접 찾아 선택하세요.</p></div>
           <button id="drone-scan" type="button">드론 검색 · Wi-Fi 새로고침</button></div>
@@ -42,9 +46,7 @@
         <p id="drone-wifi-status" role="status" hidden></p>
         <p id="drone-wifi-signal" role="status" hidden></p>
       </section>
-      <details id="drone-workspace" class="drone-disclosure" aria-label="드론 카메라 연결">
-        <summary id="drone-open">드론 카메라 연결</summary>
-        <section class="profile-panel drone-panel" aria-label="Wi-Fi 드론 연결">
+          <div class="drone-current-network"><h3>이미 연결한 네트워크 사용</h3><p>PC를 드론 Wi-Fi에 연결해 두었다면 확인하세요. Wi-Fi를 바꾸지 않습니다.</p><button id="drone-current-connect" type="button">현재 네트워크에서 드론 확인</button></div>
           <div class="profile-actions"><button id="drone-disconnect" type="button" disabled>드론 연결 해제</button>
             <button id="drone-details" type="button" disabled aria-expanded="false" aria-controls="drone-resource-panel">자세히 보기</button></div>
           <p id="drone-link-state" role="status">연결 전 · SDK 응답을 확인하세요</p>
@@ -56,7 +58,7 @@
           </section>
           <section id="drone-camera-panel" hidden aria-label="연결된 드론 카메라">
             <h2>드론 카메라</h2><p>연결 → 카메라 확인·지도 생성 → 드론 연결 해제 → 전체 지도 이력 저장</p>
-            <div id="live-camera-settings" class="live-camera-settings"><h3>카메라 보정·설정</h3><p>처음 사용하는 카메라는 보정하고, 기존 보정값이 있으면 아래 프로필에서 선택하세요.</p><button id="calibration-open" type="button" hidden>새 카메라 보정</button></div>
+            <div id="live-camera-settings" class="live-camera-settings"><h3>카메라 보정·설정</h3><p>처음 사용하는 카메라는 보정하고, 기존 보정값이 있으면 아래 프로필에서 선택하세요.</p></div>
             <div id="profile-slot-live"></div>
             <div class="profile-actions"><button id="drone-video-start" type="button">카메라 확인·재시도</button><button id="drone-map-start" type="button">3D 지도 생성 시작</button></div>
             <p id="drone-image-status" role="status">카메라 영상을 준비하고 있습니다.</p>
@@ -276,7 +278,7 @@
           <p class="muted" id="slam-preview-note">노란 점은 직전 처리 프레임과 같은 지도 점, 초록 점은 이번 프레임에서 새로 연결된 지도 점입니다. 숫자는 지도 점 ID입니다.</p>
           <p id="slam-timing" role="status"></p>
           <p id="frame-latency" role="status">입력 → 지도 표시 지연 · 측정 대기</p>
-          <small>이 화면의 입력 시점부터 지도 렌더 후 다음 화면 주기까지 · 확정 키프레임 기준 · 모니터 실측 아님</small>
+          <p class="muted">브라우저 촬영 프레임이 지도에 표시되기까지의 추정 시간입니다. 측정값은 JSON으로 저장합니다.</p>
           <button id="latency-export" disabled>지연 기록 저장</button>
         </section>
         <div id="saved-media-slot"></div>

@@ -356,14 +356,23 @@ class ViewerHandler(BaseHTTPRequestHandler):
                     self.json_response({"error": "tello_mapping_input_disabled"}, 403)
                     return
                 with self.tello_input_lock:
+                    from modules.mapping.localization.orbslam3_live import live_camera, require_slam_image
                     if self.calibrations and self.calibrations.busy:
                         raise RuntimeError('calibration_input_is_active')
                     if self.tello and self.tello.running:
                         self.json_response({"error": "tello_detection_input_is_active"}, 409)
                         return
+                    if self.tello_map.busy:
+                        raise RuntimeError('tello_input_cleanup_pending')
+                    if self.live and self.live.current and not self.live.current.done:
+                        raise RuntimeError('another_camera_session_is_active')
+                    config = self.profile_config(json.loads(data), 'tello')
+                    live_camera({**config, 'camera': self.tello_map.camera if config.get('camera') is None else config['camera'],
+                                 'width': 960, 'height': 720, 'fps': 24})
+                    image_id = require_slam_image()
                     if self.drones:
                         self.drones.release()
-                    started = self.tello_map.start(self.profile_config(json.loads(data), 'tello'))
+                    started = self.tello_map.start(config, image_id=image_id)
                     if self.drones:
                         self.drones.manual_disconnected = False
                         self.drones.disconnected_session = None
