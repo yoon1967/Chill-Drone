@@ -47,3 +47,32 @@ Tello/RoboMaster TT의 실시간 영상을 받아 YOLO26 인스턴스 세그멘�
 
 실제 드론의 자세·가림·원거리·어두움·흔들림 조건과 처리 지연은 별도 실기 검증 대상이다.
 팀 작업 절차는 저장소 루트의 `docs/team/START_HERE.md`를 따른다.
+
+## IP Webcam 실내 시맨틱 세그멘테이션 실험
+
+사람 인스턴스 탐지와 별개로, SegFormer-B0 ADE20K가 휴대폰 영상의 벽·바닥·천장·테이블·의자를
+어떻게 픽셀 단위로 분류하는지 확인하는 실험 도구다. Android IP Webcam 앱에서 서버를 시작하고
+휴대폰과 PC를 같은 네트워크에 연결한다. 앱 화면의 IPv4 주소가 `192.168.0.20:8080`이라면:
+
+```powershell
+.\.venv\Scripts\python.exe -m pip install -r modules/perception/inference/requirements.txt
+.\.venv\Scripts\python.exe -m modules.perception.inference.ip_webcam_semantic `
+  --source http://192.168.0.20:8080/video
+```
+
+처음 실행할 때 `nvidia/segformer-b0-finetuned-ade-512-512` 가중치를 내려받는다. 창에는 관심 영역의
+반투명 마스크, 화면 점유율, 추론 시간과 처리 FPS가 표시된다. `q` 또는 `Esc`로 종료한다.
+
+```powershell
+# 표시 대상과 기준 조정
+.\.venv\Scripts\python.exe -m modules.perception.inference.ip_webcam_semantic `
+  --source http://192.168.0.20:8080/video `
+  --classes wall,floor,ceiling,table,chair,door,window `
+  --confidence 0.40 --device auto
+
+# 드론·휴대폰 없이 순수 마스크 로직 검증
+.\.venv\Scripts\python.exe -B -m unittest modules.perception.inference.tests.test_semantic_overlay -v
+```
+
+IP·포트·비밀번호를 코드나 문서에 커밋하지 않는다. 이 모델은 영역의 종류를 분류하지만 벽까지의
+실제 거리를 제공하지 않으므로 충돌 방지 검증에는 깊이 추정이나 거리 센서가 별도로 필요하다.
