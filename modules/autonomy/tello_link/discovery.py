@@ -20,6 +20,9 @@ def run_os(args):
     result = subprocess.run(args, capture_output=True, timeout=12,
                             creationflags=subprocess.CREATE_NO_WINDOW if sys.platform == 'win32' else 0)
     text = result.stdout.decode(locale.getencoding(), errors='replace')
+    if args[:4] == ['netsh', 'wlan', 'show', 'networks'] and (
+            'ms-settings:privacy-location' in text or 'location permission' in text.lower()):
+        raise RuntimeError('wifi_location_permission_required')
     if result.returncode:
         raise RuntimeError('wifi_os_request_failed_check_permissions_and_saved_profile')
     return text
@@ -102,9 +105,6 @@ class DroneDiscovery:
             warning = None
         except (OSError, RuntimeError, subprocess.TimeoutExpired) as error:
             items, warning = [], str(error)
-        # Also permits an already associated Wi-Fi when OS enumeration is denied.
-        items.append({'id': 'current-network', 'ssid': '현재 연결된 네트워크의 Tello',
-                      'kind': 'current', 'verified': False})
         with self.lock:
             self.candidates = {item['id']: item for item in items}
         self.refresh_wifi(force=True)

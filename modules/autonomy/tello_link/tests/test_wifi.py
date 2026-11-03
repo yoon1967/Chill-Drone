@@ -2,10 +2,30 @@ import unittest
 from unittest.mock import Mock, patch
 
 from modules.autonomy.tello_link.wifi import windows_networks, linux_networks, current_wifi
-from modules.autonomy.tello_link.discovery import DroneDiscovery
+from modules.autonomy.tello_link.discovery import DroneDiscovery, run_os
 
 
 class WifiTests(unittest.TestCase):
+    def test_scan_returns_only_real_networks_and_failure_never_invents_a_drone(self):
+        manager = DroneDiscovery(runner=Mock())
+        items = [{'id': 'Home', 'ssid': 'Home', 'kind': 'wifi'},
+                 {'id': 'TELLO-a', 'ssid': 'TELLO-a', 'kind': 'wifi'}]
+        with patch.object(manager, 'refresh_wifi'), patch(
+                'modules.autonomy.tello_link.discovery.wifi_candidates', return_value=items):
+            self.assertEqual(manager.scan(), {'items': items, 'warning': None})
+        with patch.object(manager, 'refresh_wifi'), patch(
+                'modules.autonomy.tello_link.discovery.wifi_candidates',
+                side_effect=RuntimeError('wifi_location_permission_required')):
+            self.assertEqual(manager.scan(), {'items': [], 'warning': 'wifi_location_permission_required'})
+        self.assertEqual(manager.candidates, {})
+
+    def test_windows_location_denial_is_actionable_even_with_zero_exit_code(self):
+        for code in (0, 1):
+            with patch('modules.autonomy.tello_link.discovery.subprocess.run', return_value=Mock(
+                    returncode=code, stdout=b'Location permission required: ms-settings:privacy-location')):
+                with self.assertRaisesRegex(RuntimeError, 'wifi_location_permission_required'):
+                    run_os(['netsh', 'wlan', 'show', 'networks', 'mode=bssid'])
+
     def test_windows_multiple_bssids_korean_signal_and_hidden_ssid(self):
         rows = windows_networks('SSID 1 : TELLO-a\n BSSID 1 : aa:bb\n 신호 : 35%\n BSSID 2 : cc:dd\n Signal : 82%\nSSID 2 : Home\n Signal : 101%\nSSID 3 : \n Signal : 90%')
         self.assertEqual(rows, [{'ssid': 'TELLO-a', 'signal_pct': 82}, {'ssid': 'Home', 'signal_pct': None}])

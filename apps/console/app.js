@@ -1,5 +1,6 @@
 import * as THREE from 'three';
 import { connectDrones, renderDroneStages } from '/drone-view.js';
+import {connectWorkflowGuide, liveStep} from '/workflow-guide.js';
 import { connectMapSave } from '/map-save.js';
 import { connectImport } from '/import-view.js';
 import { connectProfiles } from '/profile-view.js';
@@ -30,12 +31,23 @@ function closeDroneWorkspace(focus = true) {
   $('drone-workspace').open = false;
   if (focus && source.source === 'live') $('drone-open').focus();
 }
-$('calibration-open').addEventListener('click', () => closeDroneWorkspace(false));
 let droneState = {can_save: false};
+let imports;
+const guide = connectWorkflowGuide({async onNavigate(kind, index) {
+  if (kind === 'saved') return imports?.navigateStep(index) ?? false;
+  renderLiveWorkflow(index);
+  const target = ['drone-wifi-results', 'live-camera-settings', 'drone-camera-panel', 'map-save-bar'][index];
+  if (index === 1 || index === 2) $('drone-workspace').open = true;
+  $(target).scrollIntoView({behavior: 'smooth', block: 'center'});
+}});
+function renderLiveWorkflow(step = guide.current('live')) {
+  document.body.dataset.liveStep = String(step);
+  renderDroneStages(source.source, droneState, undefined, step);
+}
 const mapSaver = connectMapSave({source, scene: () => run, allowed: () =>
   droneState.can_save === true && source.source === 'live' && run?.stream?.session_id === droneState.save_session_id});
 connectDrones({
-  onState(state) { droneState = state; connections.drone(state); mapSaver.update(); renderDroneStages(source.source, droneState); },
+  onState(state) { droneState = state; connections.drone(state); mapSaver.update(); guide.update('live', liveStep(state)); renderLiveWorkflow(); },
   async onMapStart() {
     if (!captureHandle?.startDroneMapping) throw new Error('영상 입력 준비 중입니다. 잠시 뒤 다시 시도하세요.');
     location.hash = 'live';
@@ -50,7 +62,7 @@ const calibrationTutorial = connectCalibration({profiles, onBusy(value) {
   inputGate.calibrating = value;
   captureHandle?.update(lastLiveState);
 }});
-connectImport({profiles});
+imports = connectImport({profiles, onPhase(index) { guide.update('saved', index); }});
 const views = new Map();
 const savedCopy = {
   title: document.querySelector('.notes h2').innerHTML,
@@ -162,6 +174,7 @@ function selectSource(next, force = false) {
     target: controls.target.clone(), fov: camera.fov, view: document.querySelector('[data-view].active')?.dataset.view});
   source.select(next);
   document.body.dataset.mapSource = next;
+  guide.select(next);
   clearTimeout(pollTimer);
   resetReplay();
   revision = null;
@@ -180,7 +193,7 @@ function selectSource(next, force = false) {
   $('mapping-panel').setAttribute('aria-labelledby', `tab-${next}`);
   $('camera-actions').hidden = next !== 'live';
   if (next !== 'live') closeDroneWorkspace(false);
-  renderDroneStages(next, droneState);
+  renderLiveWorkflow();
   mapSaver.update();
   $('live-panel').hidden = $('live-status').hidden = next !== 'live';
   $(`profile-slot-${next}`).append($('camera-profile-panel'));
