@@ -12,6 +12,10 @@
   <header><a class="brand" href="/" aria-label="공간 복원실 홈"><span class="brand-icon">◈</span> 공간 복원실<span class="brand-sub">PHONE MAPPING</span></a>
     <span class="local"><i></i> 로컬 자료 · 비공개</span>
   </header>
+  <aside id="workflow-guide" class="workflow-guide" data-open="false" aria-label="지도 작업 가이드">
+    <button id="workflow-toggle" type="button" aria-expanded="false" aria-controls="workflow-menu"><span>진행 순서</span><small id="workflow-current">1. 영상 선택</small></button>
+    <nav id="workflow-menu" aria-labelledby="workflow-title"><strong id="workflow-title">저장 지도 순서</strong><p>완료한 이전 단계로 돌아갈 수 있습니다.</p><ol id="workflow-list"></ol></nav>
+  </aside>
   <main>
     <div class="source-bar"><div class="source-primary"><nav class="source-tabs" role="tablist" aria-label="지도 선택">
       <button id="tab-saved" role="tab" data-source="saved" aria-selected="true" aria-controls="mapping-panel">저장 지도</button>
@@ -28,21 +32,23 @@
     </section></div>
     <div id="mapping-panel" role="tabpanel" aria-labelledby="tab-saved">
     <div id="camera-actions" class="camera-actions" hidden>
-      <button id="calibration-open" type="button">새 카메라 보정</button>
+      <section id="drone-wifi-results" class="wifi-panel" aria-labelledby="wifi-panel-title">
+        <div class="wifi-panel-heading"><div><h2 id="wifi-panel-title">Wi-Fi 목록</h2><p>노트북이 감지한 Wi-Fi에서 드론의 이름을 직접 찾아 선택하세요.</p></div>
+          <button id="drone-scan" type="button">드론 검색 · Wi-Fi 새로고침</button></div>
+        <p id="drone-wifi-scan-status" role="status">드론 검색을 누르면 주변 Wi-Fi 목록이 표시됩니다.</p>
+        <div id="drone-list" role="listbox" aria-label="연결할 Wi-Fi"></div>
+        <p id="drone-wifi-empty">아직 검색하지 않았습니다. 위의 드론 검색 버튼을 눌러 주세요.</p>
+        <div class="profile-actions"><button id="drone-connect" type="button" disabled>선택한 Wi-Fi 연결</button><span>항목을 더블클릭하거나 선택 후 Enter로도 연결할 수 있습니다.</span></div>
+        <p id="drone-wifi-status" role="status" hidden></p>
+        <p id="drone-wifi-signal" role="status" hidden></p>
+      </section>
       <details id="drone-workspace" class="drone-disclosure" aria-label="드론 카메라 연결">
         <summary id="drone-open">드론 카메라 연결</summary>
         <section class="profile-panel drone-panel" aria-label="Wi-Fi 드론 연결">
-          <div class="profile-actions"><button id="drone-scan" type="button">드론 검색</button>
-            <button id="drone-connect" type="button" disabled>선택한 Wi-Fi 연결</button><button id="drone-disconnect" type="button" disabled>드론 연결 해제</button>
+          <div class="profile-actions"><button id="drone-disconnect" type="button" disabled>드론 연결 해제</button>
             <button id="drone-details" type="button" disabled aria-expanded="false" aria-controls="drone-resource-panel">자세히 보기</button></div>
           <p id="drone-link-state" role="status">연결 전 · SDK 응답을 확인하세요</p>
           <p id="drone-status" role="status" hidden></p>
-          <section id="drone-wifi-results" hidden aria-label="검색한 Wi-Fi 목록">
-            <p>항목을 더블클릭하거나 선택 후 Enter를 눌러 연결하세요. 터치 화면에서는 선택한 Wi-Fi 연결 버튼을 사용하세요.</p>
-            <div id="drone-list" role="listbox" aria-label="연결할 Wi-Fi"></div>
-          </section>
-          <p id="drone-wifi-status" role="status" hidden></p>
-          <p id="drone-wifi-signal" role="status" hidden></p>
           <section id="drone-resource-panel" hidden aria-label="드론 지원 자원">
             <div class="profile-actions"><h2>드론 지원 자원</h2><button id="drone-resource-refresh" type="button">자원 다시 탐색</button></div>
             <p>영상 입력 중에는 수신된 센서만 표시합니다. 미응답은 미지원 확정이 아닙니다.</p>
@@ -50,6 +56,7 @@
           </section>
           <section id="drone-camera-panel" hidden aria-label="연결된 드론 카메라">
             <h2>드론 카메라</h2><p>연결 → 카메라 확인·지도 생성 → 드론 연결 해제 → 전체 지도 이력 저장</p>
+            <div id="live-camera-settings" class="live-camera-settings"><h3>카메라 보정·설정</h3><p>처음 사용하는 카메라는 보정하고, 기존 보정값이 있으면 아래 프로필에서 선택하세요.</p><button id="calibration-open" type="button" hidden>새 카메라 보정</button></div>
             <div id="profile-slot-live"></div>
             <div class="profile-actions"><button id="drone-video-start" type="button">카메라 확인·재시도</button><button id="drone-map-start" type="button">3D 지도 생성 시작</button></div>
             <p id="drone-image-status" role="status">카메라 영상을 준비하고 있습니다.</p>
@@ -81,13 +88,9 @@
         <div class="calibration-nav"><button id="calibration-stop" type="button" disabled>중단</button><button id="calibration-retry" type="button" hidden>다시 시도</button><button id="calibration-undo" type="button" disabled>마지막 장면 제외</button><button id="calibration-solve" type="button" disabled>보정값 계산</button></div></div>
       <div id="calibration-result" class="calibration-stage" hidden><h2>보정이 완료됐어요</h2><p id="calibration-result-info"></p><details><summary>파라미터 자세히 보기</summary><p id="calibration-result-values"></p></details><p>같은 카메라·해상도·초점·방향·크롭에서 사용하세요. 이 결과만으로 지도의 실제 길이 단위가 정해지지는 않습니다.</p><div class="calibration-nav"><a id="calibration-download" download>적용용 JSON ↓</a><a id="calibration-report-download" download>결과 요약 PDF ↓</a><button id="calibration-register" type="button">프로필로 저장</button></div><div id="profile-slot-registration"></div></div>
     </section>
-    <section id="live-map-placeholder" class="live-map-placeholder" hidden aria-label="실시간 지도 대기">
-      <strong>실시간 지도</strong><div class="live-map-placeholder-frame">지도 생성을 시작하면 여기에 3D 공간이 표시됩니다.</div>
-    </section>
     <section id="map-save-bar" class="map-save-bar" hidden aria-label="3D 지도 저장"><button id="map-save" type="button" disabled aria-keyshortcuts="Control+s Meta+s">3D 지도 저장 ↓</button><kbd>Ctrl / ⌘ + S</kbd><span id="map-save-status" role="status">선택한 세션의 모든 지도 버전과 타임라인을 ZIP으로 저장합니다.</span></section>
     <section id="import-panel" class="import-panel" aria-label="촬영 영상 기반 복원">
       <div class="saved-intro"><div><p class="eyebrow">RECORDED VIDEO → 3D MAP</p><h1 id="saved-title">촬영한 영상으로 공간을 복원하세요.</h1><p>드론이 촬영한 영상으로 3D 지도와 촬영 경로를 만듭니다. 이 PC에서 처리합니다.</p></div><button id="saved-new" type="button" hidden>새 영상 복원</button></div>
-      <ol id="saved-steps" class="saved-steps" aria-label="복원 순서"><li>1. 영상 선택</li><li>2. 복원 설정</li><li>3. 공간 복원</li><li>4. 결과 확인</li></ol>
       <details id="import-details" open><summary>촬영 영상으로 새 지도 만들기</summary>
         <div id="saved-input">
           <div id="import-drop" class="import-drop" tabindex="0" role="group" aria-label="촬영 영상 드롭 영역">

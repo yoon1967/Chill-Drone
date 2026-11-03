@@ -1053,6 +1053,7 @@ class ViewerHandler(BaseHTTPRequestHandler):
                   '/calibration-view.js': APP / 'calibration-view.js',
                   '/calibration-files.js': APP / 'calibration-files.js',
                   '/drone-view.js': APP / 'drone-view.js',
+                  '/workflow-guide.js': APP / 'workflow-guide.js',
                   '/map-save.js': APP / 'map-save.js',
                   "/vendor/three.module.js": APP / "node_modules/three/build/three.module.js",
                   "/vendor/three.core.js": APP / "node_modules/three/build/three.core.js",

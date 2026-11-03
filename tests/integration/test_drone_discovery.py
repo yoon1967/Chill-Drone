@@ -7,7 +7,7 @@ import tempfile
 import threading
 from types import SimpleNamespace
 import unittest
-from unittest.mock import Mock
+from unittest.mock import Mock, patch
 import zipfile
 
 from apps.console.serve import ViewerHandler, ViewerServer
@@ -17,6 +17,11 @@ from modules.mapping.data.session_import import ImportedMap
 
 class DiscoveryTests(unittest.TestCase):
     def setUp(self):
+        scan = patch('modules.autonomy.tello_link.discovery.wifi_candidates', return_value=[
+            {'id': 'TELLO-test', 'ssid': 'TELLO-test', 'kind': 'wifi'}])
+        scan.start(); self.addCleanup(scan.stop)
+        sleep = patch('modules.autonomy.tello_link.discovery.time.sleep')
+        sleep.start(); self.addCleanup(sleep.stop)
         self.link = Mock()
         self.link.latest_state.return_value = {'age_s': .1, 'raw': {'bat': 79, 'h': 0}}
         self.link.send.side_effect = lambda cmd, **kw: SimpleNamespace(ok=True, response={
@@ -34,7 +39,7 @@ class DiscoveryTests(unittest.TestCase):
 
     def test_connect_queries_resources_and_distinguishes_unknown_from_no_response(self):
         self.manager.scan()
-        self.assertTrue(self.manager.connect('current-network')['connected'])
+        self.assertTrue(self.manager.connect('TELLO-test')['connected'])
         self.factory.assert_called_once_with(allow_flight=False, allow_config=False)
         data = self.manager.explore()
         results = {v['command']: v for v in data['resources'] if 'command' in v}
@@ -49,19 +54,19 @@ class DiscoveryTests(unittest.TestCase):
         self.manager.scan()
         self.manager.busy = lambda: True
         with self.assertRaisesRegex(RuntimeError, 'active'):
-            self.manager.connect('current-network')
+            self.manager.connect('TELLO-test')
         self.factory.assert_not_called()
         self.manager.busy = lambda: False
         self.link.send.return_value = SimpleNamespace(ok=False)
         self.link.send.side_effect = None
         with self.assertRaisesRegex(RuntimeError, 'sdk_unavailable'):
-            self.manager.connect('current-network')
+            self.manager.connect('TELLO-test')
         self.link.close.assert_called_once()
         self.assertFalse(self.manager.state()['connected'])
 
     def test_video_handoff_stops_owned_stream_and_borrowed_link_is_never_queried(self):
         self.manager.scan()
-        self.manager.connect('current-network')
+        self.manager.connect('TELLO-test')
         video = Mock()
         self.manager.video_factory = lambda: video
         self.manager.start_preview()

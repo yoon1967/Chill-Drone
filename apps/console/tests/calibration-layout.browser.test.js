@@ -15,10 +15,12 @@ test('calibration opens inside the tab panel, changes steps, and returns to the 
       const errors = [], mutations = [];
       page.on('pageerror', error => errors.push(error.message));
       page.on('request', request => { if (request.method() === 'POST') mutations.push(request.url()); });
+      await page.route('**/api/drones/state', route => route.fulfill({json: {connected: true}}));
       await page.goto(new URL('/#live', url).href);
       await page.waitForFunction(() => document.body.dataset.mapSource === 'live');
       for (const width of [1440, 390]) {
         await page.setViewportSize({width, height: 900});
+        await page.locator('#drone-open').click();
         await page.locator('#calibration-open').click();
         assert.equal(await page.locator('#calibration-workspace').isVisible(), true);
         assert.equal(await page.locator('#calibration-method').isVisible(), true);

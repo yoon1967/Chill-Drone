@@ -60,24 +60,22 @@ async function droppedFiles(items) {
   return files;
 }
 
-export function connectImport({profiles = null} = {}) {
+export function connectImport({profiles = null, onPhase = () => {}} = {}) {
   const $ = id => document.getElementById(id);
   let active = null, polling = null, uploadController = null, working = false;
   let previewUrl = null, startedAt = null, timer = null, creating = false, openingRecord = false;
   let navigatingToResult = false;
   let initialHandled = false;
   let viewingCurrent = false;
+  let lastJob = null, navigationPhase = null, observedPhase = null;
   const asset = new URLSearchParams(location.search).get('asset');
   function phase(value) {
     document.body.dataset.savedPhase = value;
     $('saved-title').textContent = value === 'result' ? '복원한 공간을 살펴보세요.' :
       value === 'processing' ? '촬영 영상에서 공간을 만들고 있습니다.' : '촬영한 영상으로 공간을 복원하세요.';
-    const current = {input: 0, settings: 1, processing: 2, ready: 3, result: 3}[value] ?? 0;
-    [...$('saved-steps').children].forEach((node, index) => {
-      node.dataset.state = index < current ? 'done' : index === current ? 'active' : 'waiting';
-      if (index === current) node.setAttribute('aria-current', 'step');
-      else node.removeAttribute('aria-current');
-    });
+    const current = value === 'processing' && ['uploading', 'inspecting'].includes(lastJob?.status) ? 0 :
+      {input: 0, settings: 1, processing: 2, ready: 3, result: 3}[value] ?? 0;
+    onPhase(current);
     $('saved-new').hidden = value === 'input';
     $('saved-library-section').hidden = !['input', 'ready'].includes(value);
     $('saved-input').hidden = value !== 'input';
@@ -92,7 +90,8 @@ export function connectImport({profiles = null} = {}) {
   function reset() {
     if (working) return;
     clearTimeout(polling); clearInterval(timer); timer = null; startedAt = null;
-    active = null; creating = true; openingRecord = false; viewingCurrent = false; clearPreview();
+    active = null; lastJob = null; navigationPhase = null; observedPhase = null;
+    creating = true; openingRecord = false; viewingCurrent = false; clearPreview();
     $('import-details').open = true;
     for (const id of ['import-summary', 'saved-inspection', 'import-progress']) $(id).hidden = true;
     $('import-status').textContent = '먼저 촬영 영상을 선택하세요.';
@@ -132,11 +131,23 @@ export function connectImport({profiles = null} = {}) {
     // A validation error must not release an already running upload/reconstruction.
     if (!working) $('saved-change').disabled = false;
   }
-  function render(job) {
+  function applyNavigation(value) {
+    $('import-details').open = value !== 'result';
+    $('import-options').hidden = value !== 'settings';
+    $('saved-inspection').hidden = value === 'input' || !lastJob?.summary;
+    $('import-summary').hidden = value === 'input';
+    $('import-start').hidden = value !== 'settings' || lastJob?.status !== 'awaiting_options';
+    $('saved-processing').hidden = value !== 'processing';
+  }
+  function render(job, navigateToResult = true) {
     if (active !== job.id) { $('import-confirm').checked = false; $('import-camera').value = ''; profiles?.resetFileConfirmation(); }
     const previousPhase = document.body.dataset.savedPhase;
     active = job.id;
-    phase(savedPhase(job));
+    lastJob = job;
+    const nextPhase = savedPhase(job);
+    if (observedPhase !== nextPhase) navigationPhase = null;
+    observedPhase = nextPhase;
+    phase(navigationPhase || nextPhase);
     if (job.status === 'awaiting_options' && previousPhase !== 'settings') $('profile-manager').open = true;
     $('import-status').dataset.state = job.status === 'failed' ? 'error' : '';
     $('saved-inspection').hidden = !job.summary;
@@ -165,6 +176,8 @@ export function connectImport({profiles = null} = {}) {
     $('import-options').hidden = job.status !== 'awaiting_options';
     $('import-start').hidden = job.status !== 'awaiting_options';
     $('import-start').disabled = !$('import-confirm').checked;
+    for (const id of ['import-sample-fps', 'import-frame-fps', 'import-camera', 'import-confirm'])
+      $(id).disabled = job.status !== 'awaiting_options';
     $('import-open').hidden = !['ready', 'complete'].includes(job.status);
     $('import-open').href = openUrl(job.id);
     $('import-cancel').hidden = ['ready', 'complete', 'failed', 'cancelled'].includes(job.status);
@@ -179,7 +192,8 @@ export function connectImport({profiles = null} = {}) {
       $('import-frame-timing').hidden = summary.kind !== 'frames';
     }
     if (['ready', 'complete', 'awaiting_options', 'failed', 'cancelled'].includes(job.status)) working = false;
-    if (!navigatingToResult && (job.status === 'complete' || (openingRecord && job.status === 'ready'))) {
+    if (navigationPhase) applyNavigation(navigationPhase);
+    if (navigateToResult && !navigatingToResult && (job.status === 'complete' || (openingRecord && job.status === 'ready'))) {
       navigatingToResult = true;
       clearTimeout(polling);
       location.assign(openUrl(job.id));
@@ -203,6 +217,7 @@ export function connectImport({profiles = null} = {}) {
   async function upload(files) {
     if (working) { fail(new Error('먼저 진행 중인 작업을 취소하거나 마쳐 주세요.')); return; }
     if (!files.length) return;
+    navigationPhase = null; observedPhase = null;
     working = true;
     creating = true; openingRecord = false; startedAt = null; clearPreview();
     active = null;
@@ -316,6 +331,7 @@ export function connectImport({profiles = null} = {}) {
   }
   window.addEventListener('hashchange', visibility); visibility(); refresh();
   if (asset) request('status', undefined, '?id=' + encodeURIComponent(asset)).then(job => {
+    lastJob = job;
     const summary = job.summary;
     if (!summary) return;
     $('import-selected').hidden = location.hash === '#live';
@@ -350,4 +366,17 @@ export function connectImport({profiles = null} = {}) {
       $('import-media-note').textContent = '브라우저에서 이 영상을 재생할 수 없습니다. 녹화 파일을 내려받아 확인하세요. 지도와 자동 동기화하지 않습니다.';
     });
   }).catch(fail);
+  return {navigateStep(index) {
+    const value = ['input', 'settings', 'processing', 'result'][index];
+    if (!value) return false;
+    if (index === 1 && (!lastJob || !['awaiting_options', 'running', 'cancelling', 'ready', 'complete'].includes(lastJob.status))) return false;
+    if (index === 2 && !lastJob) return false;
+    if (index === 3 && !['ready', 'complete'].includes(lastJob?.status) && !viewingCurrent) return false;
+    if (lastJob) render(lastJob, false);
+    navigationPhase = value;
+    phase(value);
+    applyNavigation(value);
+    $('import-panel').scrollIntoView({behavior: 'smooth', block: 'start'});
+    return true;
+  }};
 }

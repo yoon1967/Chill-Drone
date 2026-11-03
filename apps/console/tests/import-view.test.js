@@ -48,7 +48,6 @@ test('opening an already ready record navigates once without starting another st
       replaceChildren(...children) { this.children = children; }};
   }
   const get = id => { if (!nodes.has(id)) nodes.set(id, node()); return nodes.get(id); };
-  get('saved-steps').children = Array.from({length: 4}, node);
   replace('document', {body: {dataset: {}}, getElementById: get, createElement: node});
   replace('window', {addEventListener() {}});
   replace('location', {hash: '#saved', search: '', assign: url => assignments.push(url)});

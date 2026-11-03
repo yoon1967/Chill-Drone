@@ -18,31 +18,50 @@ function fixture(t) {
   const requests = [], timers = [];
   const state = {connected: true, selected: {ssid: 'TELLO-test'}, resources: [
     {name: '<sensor>', value: '<script>', status: 'unconfirmed'}], video: {note: 'SDK camera'}};
-  let fail = false;
+  let fail = false, scanResult = null;
   const handle = connectDrones({element: get, schedule: fn => timers.push(fn), fetcher: async (url, options) => {
     requests.push({url, options});
     if (fail) throw new Error('offline');
-    return {ok: true, json: async () => url.endsWith('/scan') ? {items: [
+    return {ok: true, json: async () => url.endsWith('/scan') ? scanResult || {items: [
       {id: 'TELLO-test', ssid: 'TELLO-test', kind: 'wifi', signal_pct: 75, drone_candidate: true},
       {id: 'home', ssid: '<Home>', kind: 'wifi', signal_pct: 45}]} : structuredClone(state)};
   }});
-  return {handle, get, requests, timers, state, setFail: () => { fail = true; }};
+  return {handle, get, requests, timers, state, setScan: value => { scanResult = value; }, setFail: () => { fail = true; }};
 }
 const settle = () => new Promise(resolve => setImmediate(resolve));
 
+test('denied and empty scans show useful guidance without selectable fallback entries', async t => {
+  const f = fixture(t);
+  await settle();
+  await f.handle.action('scan');
+  f.get('drone-list').children[0].handlers.click();
+  f.setScan({items: [], warning: 'wifi_location_permission_required'});
+  await f.handle.action('scan');
+  assert.equal(f.get('drone-list').children.length, 0);
+  assert.equal(f.get('drone-connect').disabled, true);
+  assert.match(f.get('drone-status').textContent, /Windows 설정.*위치 서비스/);
+  assert.match(f.get('drone-wifi-scan-status').textContent, /Windows 설정.*위치 서비스/);
+  assert.equal(f.get('drone-wifi-empty').hidden, false);
+  f.setScan({items: [], warning: null});
+  await f.handle.action('scan');
+  assert.match(f.get('drone-status').textContent, /검색된 Wi-Fi가 없습니다/);
+  assert.match(f.get('drone-wifi-scan-status').textContent, /검색된 Wi-Fi가 없습니다/);
+});
+
 test('live reconstruction content stays hidden until mapping starts; saved tab remains usable', () => {
-  const elements = {'reconstruction-stage': {}, 'live-map-placeholder': {}};
-  const render = (source, state) => renderDroneStages(source, state, id => elements[id]);
+  const elements = {'reconstruction-stage': {}};
+  const render = (source, state, step = 2) => renderDroneStages(source, state, id => elements[id], step);
   render('live', {}); assert.equal(elements['reconstruction-stage'].hidden, true);
-  assert.equal(elements['live-map-placeholder'].hidden, false);
-  render('live', {connected: true}); assert.equal(elements['live-map-placeholder'].hidden, false);
+  render('live', {connected: true}); assert.equal(elements['reconstruction-stage'].hidden, true);
   render('live', {connected: true, mapping_active: true}); assert.equal(elements['reconstruction-stage'].hidden, false);
-  assert.equal(elements['live-map-placeholder'].hidden, true);
+  for (const step of [0, 1]) {
+    render('live', {connected: true, mapping_active: true}, step);
+    assert.equal(elements['reconstruction-stage'].hidden, true);
+  }
   render('live', {finalizing: true}); assert.equal(elements['reconstruction-stage'].hidden, false);
   render('live', {mapping_session_id: 'finished', map_available: true}); assert.equal(elements['reconstruction-stage'].hidden, false);
-  render('live', {connected: true, mapping_session_id: null}); assert.equal(elements['live-map-placeholder'].hidden, false);
+  render('live', {connected: true, mapping_session_id: null}); assert.equal(elements['reconstruction-stage'].hidden, true);
   render('saved', {}); assert.equal(elements['reconstruction-stage'].hidden, false);
-  assert.equal(elements['live-map-placeholder'].hidden, true);
 });
 
 test('scan reveals a Wi-Fi list, a single click selects, double click connects only once', async t => {
@@ -53,6 +72,7 @@ test('scan reveals a Wi-Fi list, a single click selects, double click connects o
   assert.equal(f.get('drone-wifi-signal').hidden, true);
   await f.handle.action('scan');
   assert.equal(f.get('drone-wifi-results').hidden, false);
+  assert.equal(f.get('drone-wifi-empty').hidden, true);
   assert.equal(f.get('drone-wifi-status').hidden, false);
   assert.equal(f.get('drone-wifi-signal').hidden, false);
   const rows = f.get('drone-list').children;
@@ -74,6 +94,7 @@ test('keyboard connection and live signal changes remain separate from SDK state
   f.get('drone-list').children[0].handlers.keydown({key: 'Enter', preventDefault() {}});
   await settle();
   assert.ok(f.requests.some(r => r.url.endsWith('/connect')));
+  assert.equal(f.get('drone-workspace').open, true);
   f.state.wifi = {status: 'ok', ssid: 'TELLO-test', connected: true, signal_pct: 83, age_s: 1};
   await f.timers.shift()();
   assert.match(f.get('drone-wifi-signal').textContent, /83%.*강함/);

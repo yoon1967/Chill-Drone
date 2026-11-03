@@ -1,9 +1,8 @@
 const statusText = {observed: '응답 확인', unsupported: '미지원 응답', unconfirmed: '미확인 · 응답 없음', stale: '오래된 값'};
-export function renderDroneStages(source, state, element = id => document.getElementById(id)) {
+export function renderDroneStages(source, state, element = id => document.getElementById(id), step = 2) {
   const started = state.mapping_active === true || state.finalizing === true ||
     Boolean(state.mapping_session_id && state.map_available);
-  element('reconstruction-stage').hidden = source === 'live' && !started;
-  element('live-map-placeholder').hidden = source !== 'live' || started;
+  element('reconstruction-stage').hidden = source === 'live' && (!started || step < 2);
 }
 export function wifiSignal(wifi) {
   if (wifi?.status === 'pending') return '신호 조회 중…';
@@ -20,6 +19,7 @@ const errors = {
   drone_ports_busy_or_unavailable: '드론 통신 포트를 열지 못했습니다. 다른 드론 수신 프로그램을 종료하고 다시 시도하세요.',
   tello_sdk_unavailable_check_wifi: '드론 SDK 응답이 없습니다. 전원과 PC Wi-Fi 연결을 확인하세요.',
   wifi_os_request_failed_check_permissions_and_saved_profile: 'Wi-Fi 연결을 요청하지 못했습니다. OS에서 해당 Wi-Fi에 한 번 연결해 프로필을 만든 뒤 다시 시도하세요.',
+  wifi_location_permission_required: 'Wi-Fi 목록을 읽으려면 Windows 설정 → 개인정보 및 보안 → 위치에서 위치 서비스를 켠 뒤 다시 검색하세요.',
   camera_session_mismatch: '지도 실행 회차가 바뀌었습니다. 상태를 확인한 뒤 다시 연결 해제하세요.',
   land_before_disconnect: '비행 중입니다. 착륙을 완료한 뒤 드론 연결을 해제하세요.',
 };
@@ -45,7 +45,7 @@ export function connectDrones({element = id => document.getElementById(id), fetc
       row.setAttribute('aria-selected', 'false');
       const label = document.createElement('span'), signal = document.createElement('span');
       label.textContent = item.ssid;
-      signal.textContent = item.kind === 'current' ? 'OS에서 직접 연결한 드론 확인' :
+      signal.textContent =
         `${item.signal_pct == null ? '신호 미확인' : '검색 시 ' + item.signal_pct + '%'} · ${item.drone_candidate ? '드론 후보' : 'SDK 미확인 Wi-Fi'}`;
       row.baseSignal = signal.textContent;
       row.append(label, signal);
@@ -62,11 +62,15 @@ export function connectDrones({element = id => document.getElementById(id), fetc
       wifiRows.set(item.id, row); list.append(row);
     }
     element('drone-wifi-results').hidden = false;
+    element('drone-wifi-empty').hidden = items.length > 0;
+    element('drone-wifi-empty').textContent = '표시할 Wi-Fi가 없습니다. 검색 안내를 확인한 뒤 다시 검색하세요.';
   }
   const message = value => { element('drone-status').textContent = value; element('drone-status').hidden = !value; };
   function render(state) {
     lastState = state;
     connected = state.connected;
+    element('calibration-open').hidden = !connected;
+    element('calibration-open').disabled = pending || state.mapping_active || state.finalizing;
     const wifi = state.wifi;
     element('drone-wifi-status').hidden = element('drone-wifi-signal').hidden = !wifiVisible && !connected;
     element('drone-wifi-status').textContent = wifi?.status === 'pending' ? 'PC Wi-Fi 상태 조회 중…' : wifi?.status === 'ok' ?
@@ -114,15 +118,22 @@ export function connectDrones({element = id => document.getElementById(id), fetc
     if (path === 'connect') onState({can_save: false, connected: false});
     epoch++;
     for (const id of ['drone-scan', 'drone-connect', 'drone-details', 'drone-disconnect', 'drone-resource-refresh', 'drone-video-start', 'drone-map-start']) element(id).disabled = true;
-    message(path === 'scan' ? 'PC Wi-Fi에서 드론 후보를 검색하고 있습니다…' : path === 'connect' ? 'Wi-Fi 연결과 드론 SDK 응답을 확인하고 있습니다…' : '드론 응답을 확인하고 있습니다…');
+    const report = value => {
+      if (path === 'scan' || path === 'connect') element('drone-wifi-scan-status').textContent = value;
+      message(value);
+    };
+    report(path === 'scan' ? '노트북에서 연결 가능한 Wi-Fi 목록을 검색하고 있습니다…' : path === 'connect' ? 'Wi-Fi 연결과 드론 SDK 응답을 확인하고 있습니다…' : '드론 응답을 확인하고 있습니다…');
     try {
       const response = await fetcher(`/api/drones/${path}`, {method: 'POST', headers: {'Content-Type': 'application/json', 'X-Mapping-Client': '1'}, body: JSON.stringify(body)});
       const state = await response.json();
       if (!response.ok) throw new Error(errors[state.error] || state.error || '드론 요청에 실패했습니다.');
       if (path === 'scan') {
         renderWifi(state.items);
-        message(`${state.items.filter(item => item.kind === 'wifi').length}개 Wi-Fi. ${state.warning ? 'OS 검색 제한: Wi-Fi 권한·어댑터를 확인하세요. ' : ''}연결할 항목을 더블클릭하세요. 드론은 SDK 응답까지 확인합니다.`);
+        report(state.warning ? (errors[state.warning] || 'Wi-Fi 목록을 조회하지 못했습니다. Wi-Fi가 켜져 있는지와 OS 권한·어댑터를 확인한 뒤 다시 검색하세요.') :
+          state.items.length ? `${state.items.length}개 Wi-Fi. 목록에서 드론의 Wi-Fi 이름을 직접 선택하세요. 더블클릭하거나 선택한 Wi-Fi 연결 버튼을 누르면 연결합니다.` :
+          '검색된 Wi-Fi가 없습니다. 노트북 Wi-Fi와 드론 전원을 켜고 다시 검색하세요.');
       } else {
+        if (path === 'connect' && state.connected) element('drone-workspace').open = true;
         if (path === 'preview/start') preview = !state.video?.error;
         if (path === 'preview/stop') preview = false;
         if (path === 'explore') open = true;
@@ -130,9 +141,12 @@ export function connectDrones({element = id => document.getElementById(id), fetc
         element('drone-details').setAttribute('aria-expanded', String(open));
         render(state);
         if (path === 'disconnect') await onDisconnected(state);
-        message(path === 'explore' ? '실제 응답한 자원과 미확인 자원을 구분해 표시합니다.' : state.connected ? 'SDK 연결을 확인했습니다.' : '연결을 해제했습니다.');
+        report(path === 'explore' ? '실제 응답한 자원과 미확인 자원을 구분해 표시합니다.' : state.connected ? 'SDK 연결을 확인했습니다.' : '연결을 해제했습니다.');
       }
-    } catch (error) { message(error.message); }
+    } catch (error) {
+      if (path === 'scan') renderWifi([]);
+      report(error.message);
+    }
     finally {
       pending = false;
       for (const id of ['drone-scan', 'drone-resource-refresh', 'drone-video-start']) element(id).disabled = false;
