@@ -146,7 +146,9 @@ main.calibration-open>:not(#mapping-panel),main.calibration-open>#mapping-panel>
 #slam-preview { display: block; width: 100%; border-radius: 8px; background: #15232a; }
 #slam-panel { padding-bottom: 18px; }
 #slam-panel[hidden] { display: none; }
-#slam-panel .muted, #slam-timing { font-size: 12px; line-height: 1.6; }
+#slam-panel .muted, #slam-timing, #frame-latency { font-family: inherit; font-size: 12px; line-height: 1.6; color: #52624b; }
+#latency-export { padding: 8px 12px; border: 1px solid #bed0b8; border-radius: 7px; background: #fcfdf8; color: #35583d; font: inherit; font-size: 12px; }
+#latency-export:disabled { opacity: .5; }
 .slam-workspace .viewer { height: max(480px, calc(100vh - 260px)); min-height: 480px; }
 .live-panel{display:grid;grid-template-columns:1fr auto;gap:10px 20px;padding:18px 20px;margin-bottom:14px;border:1px solid #d7dfd0;border-radius:10px;background:#eaf0e4}.live-panel strong{font-size:14px}.live-panel p{font-size:11px;color:#61715b;line-height:1.6;margin:6px 0}.live-actions{display:flex;align-items:center;gap:8px}.live-panel button,.map-playback button{border:1px solid #bed0b8;background:#fff;color:#355a3e;padding:9px 12px;border-radius:6px;font-size:11px}.live-panel button:disabled{opacity:.45;cursor:default}.live-panel #camera-start{background:#244d3b;color:white}.live-panel label,.map-playback label{font-size:10px;color:#64745d}.live-panel select,.map-playback select{padding:7px;border:1px solid #ced9c7;border-radius:5px;background:#fcfdf9;font-size:11px}.live-panel details{grid-column:1/-1;margin:0;padding-top:8px}.live-panel details label{display:inline-flex;align-items:center;gap:6px;margin:10px 14px 0 0}.live-panel input[type=number]{width:65px}.live-panel #camera-status{grid-column:1/-1;margin:0}.live-panel video,.live-panel #tello-preview,.live-panel #tello-map-preview{grid-column:1/-1;width:min(480px,100%);border-radius:6px;background:#15232a;max-height:360px;object-fit:contain}.map-playback{display:flex;flex-wrap:wrap;align-items:center;gap:8px 12px;padding:12px 16px;margin-bottom:14px;background:#fcfdf8;border:1px solid #d9dfd4;border-radius:10px}.map-playback #play{background:#244d3b;color:white;min-width:88px}.map-playback #timeline{flex:1;min-width:120px;width:auto;margin:0}.map-playback #replay-clock{font-size:11px;font-variant-numeric:tabular-nums;color:#4f6f53}.map-playback p{width:100%;font-size:10px;color:#74806c;margin:0}.map-playback #live-follow[aria-pressed=true]{background:#d7e9ce}#frame-timeline{width:100%;margin:12px 0 6px}@media(max-width:1000px){.live-panel{grid-template-columns:1fr}.live-actions{flex-wrap:wrap}.map-playback #timeline{order:2;flex-basis:100%}.map-playback p{order:3}}
 .tello-flight{grid-column:1/-1;border:2px solid #c86b5a;border-radius:8px;padding:12px;background:#fff8f4}.flight-actions{display:flex;align-items:center;gap:8px;flex-wrap:wrap}.flight-actions #flight-state{margin-right:auto;font-size:12px;font-weight:700}.live-panel .danger{background:#a62929;color:#fff;border-color:#a62929}.flight-keys{display:flex;gap:12px;flex-wrap:wrap;margin-top:9px;font-size:11px}.flight-keys kbd{padding:2px 6px;border:1px solid #bac4b5;border-radius:4px;background:#fff;font-family:Consolas,monospace}.tello-flight label{display:block;margin-top:10px}.tello-flight #flight-checks{margin-top:8px;color:#71453b}
@@ -251,13 +253,21 @@ main.calibration-open>:not(#mapping-panel),main.calibration-open>#mapping-panel>
 @media(max-width:600px){.profile-panel{padding:16px}.profile-panel summary span{display:block;margin:4px 0 0}.profile-actions{align-items:stretch}.profile-actions label{flex:1 1 100%}.profile-panel select,.profile-panel input:not([type=checkbox]):not([type=file]),.profile-choice select{width:100%}.profile-actions button,.profile-actions a{max-width:100%}.profile-choice>label{align-items:flex-start;flex-direction:column}}
 /* Drone inspection remains absent from layout until explicitly opened. */
 .drone-panel { padding: 18px; margin-block: 14px; }
+.drone-disclosure { border: 1px solid #d9dfd4; border-radius: 14px; background: #fcfdf8; padding: 0; overflow: hidden; }
+.drone-disclosure > summary { display: flex; border: 0; border-radius: 0; padding: 22px; background: transparent; }
+.drone-disclosure > summary span { font-size: 12px; font-weight: 400; color: #64745d; }
+.drone-disclosure > summary::after { margin-left: auto; }
+.drone-disclosure .drone-panel { border: 0; border-radius: 0; background: transparent; margin: 0; padding: 0 22px 22px; }
+.drone-panel h3 { font-size: 13px; color: #35583d; margin: 18px 0 8px; }
+.drone-current-network { margin-top: 18px; padding: 1px 14px 10px; background: #edf1e9; border-radius: 8px; }
+.drone-current-network p { margin: 6px 0 10px; }
+.drone-current-network button { padding: 9px 13px; border: 1px solid #bed0b8; border-radius: 7px; background: #fff; color: #35583d; font: inherit; font-size: 13px; }
+@media(max-width:600px) { .wifi-row { flex-direction: column; gap: 6px; } }
 .drone-panel p { font-size: 13px; line-height: 1.6; }
 .drone-panel .profile-actions h2 { font-size: 16px; color: #244d3b; margin-right: 8px; }
 .calibration-stage #calibration-print-help { font-family: inherit; font-size: 13px; line-height: 1.6; color: #64745d; }
 .calibration-stage #calibration-print-help summary { font: inherit; cursor: pointer; }
 .calibration-stage #calibration-print-help p { margin: 8px 0 0; font: inherit; }
-body[data-map-source=live][data-live-step="0"] #drone-workspace,
-body[data-map-source=live]:not([data-live-step="0"]) #drone-wifi-results,
 body[data-map-source=live][data-live-step="0"] #map-save-bar,
 body[data-map-source=live][data-live-step="1"] #map-save-bar,
 body[data-map-source=live][data-live-step="2"] #map-save-bar { display: none; }

@@ -25,10 +25,12 @@ class ProfileAPITests(unittest.TestCase):
         self.imports = Mock()
         self.imports.job.return_value = {'summary': {'width': 1920, 'height': 1080}}
         self.imports.start.side_effect = lambda key, body: {'options': validate_options(body, {'width': 1920, 'height': 1080})}
-        self.tello = Mock(camera=self.profiles.get(BUILTIN_ID), gateway=None)
+        self.tello = Mock(camera=self.profiles.get(BUILTIN_ID), gateway=None, busy=False)
         self.tello.start.return_value = {'session_id': 'test_tello'}
+        self.drones = Mock()
         self.server = ViewerServer(('127.0.0.1', 0), partial(ViewerHandler, profiles=self.profiles,
-            live=self.live, imports=self.imports, tello_map=self.tello, timeline=Timeline(), observations=ObservationCache()))
+            live=self.live, imports=self.imports, tello_map=self.tello, drones=self.drones,
+            timeline=Timeline(), observations=ObservationCache()))
         self.thread = threading.Thread(target=self.server.serve_forever, daemon=True)
         self.thread.start()
         self.body = {'camera': {'width': 1920, 'height': 1080, 'fx': 1200., 'fy': 1190., 'cx': 960., 'cy': 540., 'distortion': [0, 0, 0, 0]},
@@ -114,6 +116,19 @@ class ProfileAPITests(unittest.TestCase):
         status, _, _ = self.request('/api/live/tello/start', {'profile_selection': selection})
         self.assertEqual(status, 400)
         self.tello.start.assert_not_called()
+
+    def test_docker_failure_keeps_the_drone_connection_available(self):
+        with patch('modules.mapping.localization.orbslam3_live.require_slam_image',
+                   side_effect=RuntimeError('slam_docker_unavailable')):
+            status, data, _ = self.request('/api/live/tello/start', {'width': 960, 'height': 720, 'fps': 24})
+        self.assertEqual((status, data['error']), (409, 'slam_docker_unavailable'))
+        self.drones.release.assert_not_called()
+        self.tello.start.assert_not_called()
+        with patch('modules.mapping.localization.orbslam3_live.require_slam_image', return_value='sha256:ready'):
+            status, data, _ = self.request('/api/live/tello/start', {'width': 960, 'height': 720, 'fps': 24})
+        self.assertEqual(status, 201)
+        self.drones.release.assert_called_once_with()
+        self.assertEqual(self.tello.start.call_args.kwargs['image_id'], 'sha256:ready')
 
     def test_mutations_keep_existing_origin_header_requirement(self):
         status, _, _ = self.request('/api/camera-profiles', self.body, headers={})

@@ -425,12 +425,17 @@ export async function connectCapture({onStart = () => {}, onStatus = () => {}, o
   message('입력 전 · 시작 버튼을 눌러 영상을 연결하세요. 카메라 권한은 시작할 때 요청합니다.', 'idle');
   controls();
   sourceChanged();
-  await refreshDevices();
+  void refreshDevices();
   return {update,
+    prepareDrone() {
+      if (current) return;
+      $('input-source').value = 'tello-map'; sourceChanged();
+    },
     async startDroneMapping() {
       if (!info.tello_map_enabled) throw new Error('드론 지도 입력이 비활성화되어 있습니다. 실행기를 다시 실행하세요.');
       if (current) throw new Error('현재 영상 입력을 먼저 종료하세요.');
       $('input-source').value = 'tello-map'; sourceChanged();
+      if ($('camera-start').disabled) throw new Error('다른 영상 처리가 종료 중입니다. 종료가 끝난 뒤 다시 시도하세요.');
       await start();
     },
     async stopDrone() {

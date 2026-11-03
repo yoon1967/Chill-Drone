@@ -234,7 +234,7 @@ class TelloMapInput:
     def busy(self):
         return bool(self.worker and self.worker.is_alive())
 
-    def start(self, config):
+    def start(self, config, *, image_id=None):
         # The current Tello receiver has one fixed full-frame 960x720 camera mode.
         config = {**config, "camera": self.camera if config.get('camera') is None else config['camera'],
                   "width": 960, "height": 720, "fps": 24}
@@ -243,7 +243,8 @@ class TelloMapInput:
             if self.worker and self.worker.is_alive():
                 raise InputError("tello_input_cleanup_pending")
             source = self.source_factory()
-            state = self.live.start(config, input_kind="tello_camera", timestamp_basis=source.time_basis)
+            state = self.live.start(config, input_kind="tello_camera", timestamp_basis=source.time_basis,
+                                    image_id=image_id)
             session = self.live.require(state["session_id"])
             self.session, self.preview = session, None
             self.lease_until = time.monotonic() + 45

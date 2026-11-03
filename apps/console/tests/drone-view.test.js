@@ -2,7 +2,7 @@ import test from 'node:test';
 import assert from 'node:assert/strict';
 import {connectDrones, renderDroneStages, wifiSignal} from '../drone-view.js';
 
-function fixture(t) {
+function fixture(t, options = {}) {
   const original = Object.getOwnPropertyDescriptor(globalThis, 'document');
   t.after(() => original ? Object.defineProperty(globalThis, 'document', original) : delete globalThis.document);
   const elements = new Map();
@@ -15,18 +15,20 @@ function fixture(t) {
   function get(id) { if (!elements.has(id)) elements.set(id, node()); return elements.get(id); }
   get('drone-resource-panel').hidden = true;
   Object.defineProperty(globalThis, 'document', {configurable: true, value: {createElement: node}});
-  const requests = [], timers = [];
+  const requests = [], timers = [], previewTimers = [];
   const state = {connected: true, selected: {ssid: 'TELLO-test'}, resources: [
     {name: '<sensor>', value: '<script>', status: 'unconfirmed'}], video: {note: 'SDK camera'}};
   let fail = false, scanResult = null;
-  const handle = connectDrones({element: get, schedule: fn => timers.push(fn), fetcher: async (url, options) => {
+  const handle = connectDrones({...options, element: get, schedule: fn => timers.push(fn),
+    schedulePreview: (fn, delay) => { const timer = {fn, delay, cancelled: false}; previewTimers.push(timer); return timer; },
+    cancelPreview: timer => { timer.cancelled = true; }, fetcher: async (url, options) => {
     requests.push({url, options});
     if (fail) throw new Error('offline');
     return {ok: true, json: async () => url.endsWith('/scan') ? scanResult || {items: [
       {id: 'TELLO-test', ssid: 'TELLO-test', kind: 'wifi', signal_pct: 75, drone_candidate: true},
       {id: 'home', ssid: '<Home>', kind: 'wifi', signal_pct: 45}]} : structuredClone(state)};
   }});
-  return {handle, get, requests, timers, state, setScan: value => { scanResult = value; }, setFail: () => { fail = true; }};
+  return {handle, get, requests, timers, previewTimers, state, setScan: value => { scanResult = value; }, setFail: () => { fail = true; }};
 }
 const settle = () => new Promise(resolve => setImmediate(resolve));
 
@@ -88,6 +90,15 @@ test('scan reveals a Wi-Fi list, a single click selects, double click connects o
   assert.deepEqual(JSON.parse(connects[0].options.body), {id: 'TELLO-test'});
 });
 
+test('explicit current-network action works independently of the scanned Wi-Fi list', async t => {
+  const f = fixture(t);
+  await settle();
+  f.get('drone-current-connect').handlers.click();
+  await settle();
+  const request = f.requests.find(r => r.url.endsWith('/connect'));
+  assert.deepEqual(JSON.parse(request.options.body), {id: 'current-network'});
+});
+
 test('keyboard connection and live signal changes remain separate from SDK state', async t => {
   const f = fixture(t);
   await settle(); await f.handle.action('scan');
@@ -143,6 +154,29 @@ test('disconnect hides the resource panel and late image load cannot reopen it',
   assert.equal(f.get('drone-resource-image').hidden, true);
 });
 
+test('camera preview refreshes after each image and stops after disconnection', async t => {
+  const f = fixture(t);
+  f.state.owner = 'video-input';
+  await settle();
+  const image = f.get('drone-resource-image');
+  const first = image.src;
+  assert.match(first, /preview\.jpg\?t=/);
+  image.handlers.load();
+  assert.equal(f.previewTimers.at(-1).delay, 100);
+  const timer = f.previewTimers.at(-1);
+  timer.fn();
+  assert.notEqual(image.src, undefined);
+  image.handlers.error();
+  assert.equal(f.previewTimers.at(-1).delay, 500);
+  f.state.connected = false;
+  await f.timers.shift()();
+  assert.equal(f.previewTimers.at(-1).cancelled, true);
+  const after = f.previewTimers.length;
+  image.handlers.load();
+  assert.equal(f.previewTimers.length, after);
+  assert.equal(image.hidden, true);
+});
+
 test('camera space appears only after connection; explicit disconnect pins the mapping session', async t => {
   const f = fixture(t);
   f.state.connected = false;
@@ -171,4 +205,22 @@ test('server outage disables connection actions and reports unknown drone state'
   await f.timers.shift()();
   assert.equal(f.get('drone-details').disabled, true);
   assert.match(f.get('drone-status').textContent, /상태를 확인하지 못했습니다/);
+});
+
+test('mapping handoff keeps the camera visible and reports preparation and failure in place', async t => {
+  let finish;
+  const f = fixture(t, {onMapStart: () => new Promise(resolve => { finish = resolve; })});
+  await settle();
+  const starting = f.get('drone-map-start').handlers.click();
+  assert.equal(f.get('drone-map-start').disabled, true);
+  assert.match(f.get('drone-flow-status').textContent, /연결하고 있습니다/);
+  f.state.connected = false;
+  f.state.mapping_active = true;
+  f.state.disconnect_available = true;
+  await f.timers.shift()();
+  assert.equal(f.get('drone-camera-panel').hidden, false);
+  f.handle.mappingStatus({kind: 'tello-map', state: 'failed', message: '영상 입력 실패 · 다시 시도하세요.'});
+  assert.match(f.get('drone-flow-status').textContent, /영상 입력 실패/);
+  finish(); await starting;
+  assert.equal(f.get('drone-camera-panel').hidden, false);
 });

@@ -19,9 +19,10 @@ test('side guide gates future steps, returns to earlier saved/live stages, and w
       await page.route('**/api/import/library', route => route.fulfill({json: {items: []}}));
       await page.goto(new URL('/#live', url).href);
       await page.waitForFunction(() => document.body.dataset.mapSource === 'live');
-      assert.equal(await page.locator('#calibration-open').isVisible(), false);
+      assert.equal(await page.locator('#calibration-open').isVisible(), true);
       assert.equal(await page.locator('#reconstruction-stage').isVisible(), false);
       assert.equal(await page.locator('#live-map-placeholder').count(), 0);
+      await page.locator('#drone-open').click();
       assert.equal(await page.locator('#drone-wifi-results').isVisible(), true);
       await page.locator('#workflow-toggle').hover();
       assert.equal(await page.locator('#workflow-menu').isVisible(), true);
@@ -29,10 +30,9 @@ test('side guide gates future steps, returns to earlier saved/live stages, and w
       drone = {connected: true};
       await page.waitForFunction(() => document.getElementById('workflow-current').textContent.startsWith('2.'));
       assert.equal(await page.locator('#reconstruction-stage').isVisible(), false);
-      assert.equal(await page.locator('#drone-wifi-results').isVisible(), false);
+      assert.equal(await page.locator('#drone-wifi-results').isVisible(), true);
       await page.mouse.move(1000, 20);
       await page.waitForFunction(() => document.getElementById('workflow-guide').dataset.open === 'false');
-      await page.locator('#drone-open').click();
       assert.equal(await page.locator('#calibration-open').isVisible(), true);
       drone = {connected: true, mapping_active: true};
       await page.waitForFunction(() => document.getElementById('workflow-current').textContent.startsWith('3.'));

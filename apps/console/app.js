@@ -37,7 +37,7 @@ const guide = connectWorkflowGuide({async onNavigate(kind, index) {
   if (kind === 'saved') return imports?.navigateStep(index) ?? false;
   renderLiveWorkflow(index);
   const target = ['drone-wifi-results', 'live-camera-settings', 'drone-camera-panel', 'map-save-bar'][index];
-  if (index === 1 || index === 2) $('drone-workspace').open = true;
+  if (index <= 2) $('drone-workspace').open = true;
   $(target).scrollIntoView({behavior: 'smooth', block: 'center'});
 }});
 function renderLiveWorkflow(step = guide.current('live')) {
@@ -46,13 +46,17 @@ function renderLiveWorkflow(step = guide.current('live')) {
 }
 const mapSaver = connectMapSave({source, scene: () => run, allowed: () =>
   droneState.can_save === true && source.source === 'live' && run?.stream?.session_id === droneState.save_session_id});
-connectDrones({
-  onState(state) { droneState = state; connections.drone(state); mapSaver.update(); guide.update('live', liveStep(state)); renderLiveWorkflow(); },
+const droneHandle = connectDrones({
+  onState(state) {
+    const newlyConnected = state.connected && !droneState.connected;
+    droneState = state;
+    if (newlyConnected) captureHandle?.prepareDrone();
+    connections.drone(state); mapSaver.update(); guide.update('live', liveStep(state)); renderLiveWorkflow();
+  },
   async onMapStart() {
     if (!captureHandle?.startDroneMapping) throw new Error('영상 입력 준비 중입니다. 잠시 뒤 다시 시도하세요.');
     location.hash = 'live';
     await captureHandle.startDroneMapping();
-    closeDroneWorkspace(false);
   },
   async onDisconnected() { location.hash = 'live'; await captureHandle?.stopDrone?.(); },
 });
@@ -90,8 +94,13 @@ const frameLatency = new FrameLatency();
 let pendingPresentation = null;
 function latencyStatus() {
   const stats = frameLatency.summary(), target = $('frame-latency');
+  if (captureState.kind === 'tello-map' || lastLiveState.input === 'tello_camera') {
+    target.textContent = '드론 영상은 서버에서 직접 수신하므로 입력 → 지도 표시 지연을 측정하지 않습니다.';
+    $('latency-export').hidden = true;
+    return;
+  }
   target.textContent = stats.samples ? `입력 → 지도 표시 · 평균 ${stats.meanMs.toFixed(0)}ms · P95 ${stats.p95Ms.toFixed(0)}ms · 최대 ${stats.maxMs.toFixed(0)}ms · ${stats.samples}개 키프레임` :
-    '입력 → 지도 표시 지연 · 이 화면에서 시작한 영상의 확정 키프레임을 기다립니다.';
+    '입력 → 지도 표시 지연 · 지도에 표시된 키프레임이 생기면 측정합니다.';
   target.dataset.report = JSON.stringify(frameLatency.report());
   $('latency-export').disabled = !stats.samples;
 }
@@ -873,7 +882,12 @@ function showState(state) {
     $('slam-panel').querySelector('h2').textContent = state.recorded ? '저장 키프레임' : '연속 프레임 추적';
     $('frame-latency').hidden = Boolean(state.recorded);
     $('frame-latency').nextElementSibling.hidden = Boolean(state.recorded);
-    $('latency-export').hidden = Boolean(state.recorded);
+    const serverCamera = state.input === 'tello_camera';
+    $('latency-export').hidden = Boolean(state.recorded) || serverCamera;
+    if (serverCamera) {
+      $('frame-latency').textContent = '드론 영상은 서버에서 직접 수신하므로 입력 → 지도 표시 지연을 측정하지 않습니다.';
+      $('frame-latency').nextElementSibling.hidden = true;
+    }
     const description = trackingDescription(state);
     $('slam-timing').textContent = replay.following ? description.detail : '기록 재생 · 선택한 지도 버전의 촬영 키프레임';
     $('slam-tracking-state').textContent = replay.following ? description.label : '기록 재생';
@@ -1145,12 +1159,16 @@ connectCapture({
   },
   onFrameTiming(mark) { frameLatency.record(mark); },
   onStatus(status) {
+    droneHandle.mappingStatus(status);
     connections.capture(status);
     captureState = status;
     $('live-tab-indicator').textContent = status.state === 'receiving' ? '수신 중' : ['requesting', 'connecting', 'stopping'].includes(status.state) ? '연결 중' : '';
     if (source.source === 'live') liveStatus(lastLiveState);
   },
-}).then((handle) => { captureHandle = handle; captureHandle.update(lastLiveState); })
+}).then((handle) => {
+  captureHandle = handle; captureHandle.update(lastLiveState);
+  if (droneState.connected) handle.prepareDrone();
+})
   .catch((error) => {
     captureState = {state: 'failed', message: `영상 입력 준비 실패: ${error.message}`};
     $('camera-status').textContent = captureState.message;

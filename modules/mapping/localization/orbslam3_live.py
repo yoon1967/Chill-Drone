@@ -384,13 +384,13 @@ class LiveManager:
         self.lock = threading.Lock()
         self.current = None
 
-    def start(self, config, *, input_kind="browser_camera", timestamp_basis="browser_media_time"):
+    def start(self, config, *, input_kind="browser_camera", timestamp_basis="browser_media_time", image_id=None):
         camera = live_camera(config)
         with self.lock:
             if self.current and not self.current.done:
                 raise RuntimeError("another_camera_session_is_active")
             # Fail before changing the viewer's selected result when Docker isn't available.
-            image_id = require_slam_image()
+            image_id = image_id or require_slam_image()
             self.current = LiveSession(self.root, camera, image_id, input_kind=input_kind, timestamp_basis=timestamp_basis)
             return self.current.stats()
 
