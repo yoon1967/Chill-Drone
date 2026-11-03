@@ -7,7 +7,7 @@ import cv2
 import numpy as np
 
 
-DEFAULT_CLASSES = ("wall", "floor", "ceiling", "table", "chair")
+DEFAULT_CLASSES = ("wall", "floor", "ceiling", "table", "chair", "door", "windowpane")
 
 
 def class_color(class_id: int) -> tuple[int, int, int]:

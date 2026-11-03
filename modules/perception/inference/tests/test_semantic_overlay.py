@@ -1,7 +1,11 @@
 import unittest
 
 import numpy as np
+import torch
+import torch.nn.functional as functional
 
+from modules.perception.inference.ip_webcam_semantic import (parser, resize_for_display,
+                                                             smooth_filtered_label_map)
 from modules.perception.inference.semantic_overlay import (filtered_label_map, render_overlay,
                                                             resolve_class_ids)
 
@@ -31,6 +35,45 @@ class SemanticOverlayTests(unittest.TestCase):
         self.assertEqual(resolve_class_ids({0: "wall", 3: "Table"}, ["WALL", "table"]), {0, 3})
         with self.assertRaisesRegex(ValueError, "unknown_classes:desk"):
             resolve_class_ids({0: "wall"}, ["desk"])
+
+    def test_parses_performance_options(self):
+        defaults = parser().parse_args(["--source", "http://camera/video"])
+        self.assertEqual((defaults.input_size, defaults.display_width, defaults.inference_every),
+                         (512, 0, 1))
+        self.assertEqual(defaults.classes, "wall,floor,ceiling,table,chair,door,windowpane")
+        optimized = parser().parse_args([
+            "--source", "http://camera/video",
+            "--input-size", "384",
+            "--display-width", "960",
+            "--inference-every", "2",
+        ])
+        self.assertEqual((optimized.input_size, optimized.display_width, optimized.inference_every),
+                         (384, 960, 2))
+
+    def test_resizes_display_frame_while_preserving_aspect_ratio(self):
+        frame = np.zeros((1080, 1920, 3), dtype=np.uint8)
+        self.assertIs(resize_for_display(frame, 0), frame)
+        self.assertEqual(resize_for_display(frame, 640).shape, (360, 640, 3))
+
+    def test_smooths_selected_class_scores_before_choosing_labels(self):
+        probabilities = torch.tensor([
+            [[.8, .8], [.8, .1]],
+            [[.1, .1], [.1, .8]],
+            [[.1, .1], [.1, .1]],
+        ])
+        actual = smooth_filtered_label_map(
+            probabilities,
+            torch.tensor([1]),
+            torch.tensor([0, 2]),
+            torch.tensor([-1, 1]),
+            .4,
+            (4, 4),
+            functional,
+        )
+        self.assertEqual(actual.shape, (4, 4))
+        self.assertEqual(actual[0, 0], -1)
+        self.assertEqual(actual[-1, -1], 1)
+        self.assertTrue(set(np.unique(actual)).issubset({-1, 1}))
 
 
 if __name__ == "__main__":
