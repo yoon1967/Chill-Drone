@@ -32,6 +32,8 @@ from tello_link import DEFAULT_HOST, TelloLink, classify, now_iso, parse_ext_tof
 from tello_video import TelloVideo  # noqa: E402
 
 REPO_ROOT = os.path.abspath(os.path.join(HERE, "..", "..", ".."))
+if REPO_ROOT not in sys.path:
+    sys.path.insert(0, REPO_ROOT)
 DEFAULT_LOG_ROOT = os.path.join(REPO_ROOT, "data", "outputs", "tello")
 CHECK_QUERIES = ["battery?", "sdk?", "sn?", "wifi?"]
 EXT_QUERIES = ["EXT version?", "EXT tof?"]  # 확장 키트가 있을 때만 응답한다
@@ -83,6 +85,13 @@ class Checker:
                               allow_flight=args.flight).start()
         self.flight = FlightController(self.link).start() if args.flight else None
         self.video = TelloVideo(port=video_port, bind_ip=bind)
+        self.ai = None
+        self._ai_lock = threading.Lock()
+        self._ai_stamp = None
+        self._ai_jpeg = None
+        if args.ai:
+            from modules.perception.inference.tello_dual_segmentation import DualSegmentationProcessor
+            self.ai = DualSegmentationProcessor(args)
         self.stream_requested_mono: float | None = None
         self.stream_on = False
         self.last_check: dict | None = None
@@ -143,6 +152,30 @@ class Checker:
         self.video.stop()
         self.link.event("video_off", {"ok": r["ok"]})
         return r
+
+    def ai_jpeg_snapshot(self) -> bytes | None:
+        """Return one cached AI-annotated JPEG for the latest decoded Tello frame."""
+        if self.ai is None:
+            return self.video.jpeg()
+        snapshot = self.video.jpeg_snapshot()
+        if snapshot is None:
+            return None
+        jpeg, stamp, _ = snapshot
+        with self._ai_lock:
+            if stamp == self._ai_stamp:
+                return self._ai_jpeg
+            import cv2
+            import numpy as np
+            frame = cv2.imdecode(np.frombuffer(jpeg, dtype=np.uint8), cv2.IMREAD_COLOR)
+            if frame is None:
+                return None
+            output = self.ai.process(frame)
+            ok, encoded = cv2.imencode(".jpg", output, [cv2.IMWRITE_JPEG_QUALITY, 75])
+            if not ok:
+                return None
+            self._ai_stamp = stamp
+            self._ai_jpeg = encoded.tobytes()
+            return self._ai_jpeg
 
     # ---------- 판정 ----------
     def network(self) -> dict:
@@ -289,6 +322,7 @@ class Checker:
             "state_count": self.link.state_count,
             "video": vstats,
             "stream_on": self.stream_on,
+            "ai_enabled": self.ai is not None,
             "info": self.info,
             "ext": self.ext,
             "history": [h for h in self.link.history if not h["cmd"].startswith("rc ")][-30:],
@@ -408,20 +442,21 @@ def build_app(args) -> FastAPI:
             ctrl.set_input(0, 0, 0, 0, source="ws_closed")  # 연결이 끊기면 제자리
 
     @app.get("/snapshot.jpg")
-    def snapshot():
-        data = checker.video.jpeg()
+    def snapshot(mode: str = "ai"):
+        data = checker.ai_jpeg_snapshot() if mode == "ai" else checker.video.jpeg()
         if data is None:
             raise HTTPException(404, "아직 프레임이 없습니다")
         return Response(data, media_type="image/jpeg", headers={"Cache-Control": "no-store"})
 
     @app.get("/video.mjpg")
-    async def video_mjpg(request: Request):
+    async def video_mjpg(request: Request, mode: str = "ai"):
         # 비동기 생성기로 둔다. 동기 생성기는 브라우저가 끊겨도 작업 스레드를 계속 잡고 있어서
         # 연결이 쌓이면 /api/status까지 멈춘다.
         async def gen():
             last = None
             while checker.video.running and not await request.is_disconnected():
-                data = await asyncio.to_thread(checker.video.jpeg)
+                getter = checker.ai_jpeg_snapshot if mode == "ai" else checker.video.jpeg
+                data = await asyncio.to_thread(getter)
                 if data is not None and data is not last:
                     last = data
                     yield b"--frame\r\nContent-Type: image/jpeg\r\n\r\n" + data + b"\r\n"
@@ -441,12 +476,23 @@ def main():
     ap.add_argument("--log-root", default=DEFAULT_LOG_ROOT, help="회차 로그 폴더 (기본: data/outputs/tello)")
     ap.add_argument("--host", default="127.0.0.1")
     ap.add_argument("--port", type=int, default=8010)
+    ap.add_argument("--ai", action="store_true", help="웹 영상에 YOLO 사람 윤곽선과 SegFormer 공간 마스크 합성")
+    ap.add_argument("--yolo-model", default="yolo26n-seg.pt")
+    ap.add_argument("--semantic-model", default="nvidia/segformer-b0-finetuned-ade-512-512")
+    ap.add_argument("--classes", default="wall,floor,ceiling,table,chair,door,windowpane")
+    ap.add_argument("--confidence", type=float, default=.25)
+    ap.add_argument("--semantic-confidence", type=float, default=.45)
+    ap.add_argument("--alpha", type=float, default=.5)
+    ap.add_argument("--device", default="auto")
+    ap.add_argument("--yolo-size", type=int, default=640)
+    ap.add_argument("--input-size", type=int, default=384)
+    ap.add_argument("--semantic-every", type=int, default=3)
     args = ap.parse_args()
 
     import uvicorn
     app = build_app(args)
     print(f"Tello 연결 점검: http://{args.host}:{args.port}  (모드: {'가짜' if args.fake else '실제'}"
-          f"{', 조작 켜짐' if args.flight else ', 이륙 차단'})")
+          f"{', 조작 켜짐' if args.flight else ', 이륙 차단'}{', AI 합성' if args.ai else ''})")
     print(f"회차 로그: {app.state.checker.link.log.dir}")
     uvicorn.run(app, host=args.host, port=args.port, log_level="warning")
 

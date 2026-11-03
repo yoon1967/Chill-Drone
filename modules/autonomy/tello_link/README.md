@@ -27,6 +27,16 @@ python -m venv .venv
 python -B -m unittest discover -s tests -v       # 표준 라이브러리만 필요
 ```
 
+YOLO 사람 윤곽선과 SegFormer 공간 마스크를 웹 카메라에 합성하려면 저장소 루트의
+AI 의존성을 설치한 뒤 `--ai`로 실행한다. 카메라 제목 옆에서 **AI 합성/원본**을
+바꿔 비교할 수 있다. 모델은 서버 시작 때 한 번 로드되며 첫 실행은 다운로드가 필요할 수 있다.
+
+```powershell
+.\.venv\Scripts\python.exe -m pip install -r modules/perception/inference/requirements.txt
+.\.venv\Scripts\python.exe modules/autonomy/tello_link/check_server.py --ai
+# 브라우저: http://127.0.0.1:8010 → 점검 시작 → 영상 켜기
+```
+
 가짜 모드는 값을 지어내므로 화면 위에 "가짜 Tello" 배지가 뜨고, 기체 SN이 `FAKE...`로 나온다. 실기체 결과로 쓰지 않는다.
 `--fake-no-state`, `--fake-no-video`로 방화벽 차단 상황을 재현할 수 있다.
 

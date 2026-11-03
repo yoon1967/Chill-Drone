@@ -38,6 +38,8 @@
   .buttons { display: flex; flex-wrap: wrap; gap: 8px; margin-bottom: 12px; }
   button { font: inherit; border: 1px solid var(--line); background: var(--panel); color: var(--text);
     padding: 6px 12px; border-radius: 6px; cursor: pointer; }
+  select { font: inherit; border: 1px solid var(--line); background: var(--panel); color: var(--text);
+    padding: 6px 10px; border-radius: 6px; }
   button.primary { background: var(--accent); color: var(--accent-text); border-color: var(--accent); font-weight: 600; }
   button:disabled { opacity: .5; cursor: progress; }
   .step { display: grid; grid-template-columns: 28px 1fr; gap: 2px 10px; padding: 10px 0; border-top: 1px solid var(--line); }
@@ -148,7 +150,7 @@
   </div>
   <div class="col">
     <section>
-      <h2>카메라</h2>
+      <h2>카메라 <select id="videoMode" hidden><option value="ai">AI 합성</option><option value="raw">원본</option></select></h2>
       <div class="video" id="video"><span>영상 꺼짐</span></div>
       <p class="small" id="videoStats"></p>
     </section>
@@ -163,6 +165,7 @@
 const $ = (id) => document.getElementById(id);
 const ICON = { ok: "✓", warn: "!", fail: "✕", idle: "·" };
 let streamShown = false;
+let aiEnabled = false;
 
 function esc(s) {
   return String(s ?? "").replace(/[&<>"]/g, (c) => ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;" }[c]));
@@ -233,10 +236,22 @@ function renderState(st, rate, count) {
     (st.valid ? "" : ` · 불량: ${st.reasons.join(", ")}`);
 }
 
-function renderVideo(on, v) {
+function videoUrl() {
+  const mode = aiEnabled ? $("videoMode").value : "raw";
+  return `/video.mjpg?mode=${mode}&t=${Date.now()}`;
+}
+
+$("videoMode").onchange = () => {
+  const img = $("video").querySelector("img");
+  if (img) img.src = videoUrl();
+};
+
+function renderVideo(on, v, ai) {
   const box = $("video");
+  aiEnabled = !!ai;
+  $("videoMode").hidden = !aiEnabled;
   if (on && !streamShown) {
-    box.innerHTML = `<img alt="Tello 카메라" src="/video.mjpg?t=${Date.now()}">`;
+    box.innerHTML = `<img alt="Tello 카메라" src="${videoUrl()}">`;
     streamShown = true;
   } else if (!on && streamShown) {
     box.innerHTML = "<span>영상 꺼짐</span>";
@@ -275,7 +290,7 @@ async function refresh() {
   $("warnings").innerHTML = s.warnings.map((w) => `<div>${esc(w)}</div>`).join("");
   renderSteps(s.steps);
   renderState(s.state, s.state_rate_hz, s.state_count);
-  renderVideo(s.stream_on, s.video);
+  renderVideo(s.stream_on, s.video, s.ai_enabled);
   renderLog(s.history);
   renderFlight(s);
 }
