@@ -93,11 +93,11 @@
     <section id="map-save-bar" class="map-save-bar" hidden aria-label="3D 지도 저장"><button id="map-save" type="button" disabled aria-keyshortcuts="Control+s Meta+s">3D 지도 저장 ↓</button><kbd>Ctrl / ⌘ + S</kbd><span id="map-save-status" role="status">선택한 세션의 모든 지도 버전과 타임라인을 ZIP으로 저장합니다.</span></section>
     <section id="import-panel" class="import-panel" aria-label="촬영 영상 기반 복원">
       <div class="saved-intro"><div><p class="eyebrow">RECORDED VIDEO → 3D MAP</p><h1 id="saved-title">촬영한 영상으로 공간을 복원하세요.</h1><p>드론이 촬영한 영상으로 3D 지도와 촬영 경로를 만듭니다. 이 PC에서 처리합니다.</p></div><button id="saved-new" type="button" hidden>새 영상 복원</button></div>
-      <details id="import-details" open><summary>촬영 영상으로 새 지도 만들기</summary>
+      <details id="import-details" open><summary>촬영 영상으로 새 지도 만들기 · 복원 기록 열기</summary>
         <div id="saved-input">
-          <div id="import-drop" class="import-drop" tabindex="0" role="group" aria-label="촬영 영상 드롭 영역">
-            <span class="saved-drop-icon" aria-hidden="true">↥</span><strong>촬영 영상을 여기에 놓으세요</strong><p>MP4 · MOV · AVI · MKV</p>
-            <label class="saved-file-button">영상 선택<input id="import-file" type="file" accept=".mp4,.mov,.avi,.mkv"></label>
+          <div id="import-drop" class="import-drop" tabindex="0" role="group" aria-label="촬영 영상 또는 복원 기록 ZIP 드롭 영역">
+            <span class="saved-drop-icon" aria-hidden="true">↥</span><strong>촬영 영상이나 복원 기록 ZIP을 여기에 놓으세요</strong><p>MP4 · MOV · AVI · MKV · ZIP<br>복원 기록 ZIP은 결과 지도와 복원 과정을 바로 엽니다.</p>
+            <label class="saved-file-button">영상·ZIP 선택<input id="import-file" type="file" accept=".mp4,.mov,.avi,.mkv,.zip"></label>
           </div>
           <label class="saved-folder-button">프레임 이미지로 복원하기<input id="import-folder" type="file" webkitdirectory multiple></label>
         </div>
@@ -107,9 +107,10 @@
         </div>
         <div id="import-summary" hidden>
           <div id="import-options" hidden><h2>복원 설정</h2>
-            <label id="import-sampling">초당 추출 프레임 <input id="import-sample-fps" type="number" value="2" min="0.1" max="30" step="0.1" aria-describedby="saved-sampling-note"></label>
+            <label>복원 방식 <select id="import-mode"><option value="depth_rgbd" selected>빠른 복원 · 영상과 지도 함께 보기</option><option value="sfm">기존 SfM 복원 · 완료 후 보기</option></select></label>
+            <label id="import-sampling">초당 처리할 최대 프레임 <input id="import-sample-fps" type="number" value="5" min="0.1" max="30" step="0.1" aria-describedby="saved-sampling-note"></label>
             <label id="import-frame-timing">프레임 촬영 FPS <input id="import-frame-fps" type="number" value="2" min="0.1" max="240" step="0.1"></label>
-            <p id="saved-sampling-note">추출 프레임이 많을수록 처리할 이미지와 복원 시간이 늘어납니다.</p>
+            <p id="saved-sampling-note">빠른 복원은 재생 속도에 맞춰 최신 프레임으로 지도를 갱신합니다. 처리가 밀리면 대기 프레임을 건너뜁니다. AI 추정 깊이는 실측 치수가 아닙니다.</p>
     <div id="profile-slot-saved">
     <section id="camera-profile-panel" class="profile-panel" aria-label="카메라 보정 프로필">
       <details id="profile-manager"><summary>카메라 보정 프로필 <span>보정값 선택 · 가져오기</span></summary>
@@ -158,19 +159,33 @@
             <label class="saved-confirm"><input id="import-confirm" type="checkbox"> 영상의 카메라·해상도 또는 프레임 순서·FPS를 확인했습니다.</label>
           </div>
           <div id="saved-processing" hidden><h2 id="saved-processing-title">공간을 복원하고 있습니다.</h2><ol id="saved-processing-steps" class="saved-processing-steps" aria-label="실제 처리 단계"></ol><p id="saved-elapsed"></p><details><summary>입력 · 적용 설정</summary><p id="saved-processing-settings"></p></details></div>
+          <section id="progressive-workspace" hidden aria-label="영상과 생성 중인 3D 지도">
+            <div class="progressive-heading"><h2>영상에서 공간이 만들어지는 과정</h2><span id="progressive-state" role="status">모델 준비 중</span></div>
+            <p id="progressive-pose" class="progressive-pose" role="status">카메라 위치·방향 확정 대기 · 확정된 프레임만 깊이를 복원합니다.</p>
+            <div class="progressive-replay">
+              <div class="import-actions"><button id="progressive-play" type="button" disabled>재생</button><button id="progressive-follow" type="button" aria-pressed="true">최신 복원으로</button><label>배속 <select id="progressive-speed"><option value="0.5">0.5×</option><option value="1" selected>1×</option><option value="2">2×</option><option value="4">4×</option></select></label><a id="progressive-download" hidden download>전체 복원 기록 다운로드 ↓</a></div>
+              <label for="progressive-timeline">복원 시각 <output id="progressive-replay-time">0 / 0초</output></label><input id="progressive-timeline" type="range" min="0" max="0" step="0.01" value="0" disabled aria-label="복원 시각 이동">
+              <div class="import-actions"><label>이동할 시각 <input id="progressive-seek" type="number" min="0" step="0.1" value="0">초</label><button id="progressive-seek-go" type="button" disabled>이 시각으로</button><span id="progressive-replay-state" role="status">기록 대기 중</span></div>
+            </div>
+            <div class="progressive-panels">
+              <section class="progressive-video"><div class="section-title"><h2>실제 촬영 영상 · 현재 처리 프레임</h2><span id="progressive-frame-time">—</span></div><div class="progressive-media"><img id="progressive-frame" alt="현재 지도 갱신에 사용한 실제 영상 프레임" hidden><p id="progressive-video-empty">모델 준비 후 영상 처리를 시작합니다.</p></div><p id="progressive-frame-detail">영상 프레임과 지도는 같은 처리 시점을 표시합니다.</p></section>
+              <section class="progressive-map"><div class="section-title"><h2>생성 중인 3D 지도</h2></div><div id="progressive-viewport"><p id="progressive-map-empty">첫 깊이 추정을 기다리고 있습니다.</p></div><p id="progressive-map-detail">드래그 회전 · 휠 확대 · 오른쪽 드래그 이동</p></section>
+            </div>
+            <div class="progressive-stats"><span id="progressive-count">처리 0프레임</span><span id="progressive-latency">지도 반영 지연 측정 대기</span><span>위치 추적 → 자세 고정 → 깊이 복원 · 단안 상대 좌표</span></div>
+          </section>
           <div class="import-actions"><button id="import-start" class="saved-primary" hidden>3D 지도 만들기</button><a id="import-open" hidden>저장 지도 열기 ↗</a><button id="import-cancel" hidden>복원 취소</button></div>
         </div>
         <p id="import-status" role="status" aria-live="polite">먼저 촬영 영상을 선택하세요.</p>
         <progress id="import-progress" hidden max="100" aria-label="자료 전송 및 처리 진행"></progress>
         <p id="saved-output-note" hidden>선택한 원본을 덮어쓰지 않고 이 PC에 별도 결과로 저장합니다.</p>
       </details>
-      <section id="saved-library-section" class="saved-library-section" aria-label="최근 복원 기록"><div class="saved-library-heading"><h2>최근 복원</h2><div><button id="saved-current" type="button" hidden>이미 연결된 지도 보기</button><button id="saved-existing" type="button" aria-expanded="false" aria-controls="saved-existing-tools">기존 지도 열기</button><button id="import-refresh" type="button">새로고침</button></div></div>
+      <section id="saved-library-section" class="saved-library-section" aria-label="최근 복원 기록"><div class="saved-library-heading"><h2>최근 복원</h2><div><button id="saved-current" type="button" hidden>이미 연결된 지도 보기</button><button id="saved-existing" type="button">기존 지도 열기</button><button id="saved-open-zip" type="button">&#51648;&#46020; ZIP &#50676;&#44592;</button><button id="import-refresh" type="button">새로고침</button></div></div>
         <p id="saved-library-empty">저장 기록을 읽고 있습니다.</p><div id="saved-library" class="saved-library"></div>
         <div id="saved-existing-tools" hidden><p>세션 ZIP 또는 결과 폴더를 선택하세요. 프레임 폴더도 불러올 수 있습니다.</p><div class="import-actions"><label>지도 ZIP 선택<input id="saved-archive" type="file" accept=".zip"></label><label>결과 폴더 선택<input id="saved-result-folder" type="file" webkitdirectory multiple></label></div>
           <div class="import-actions"><select id="import-library" aria-label="이 PC의 저장 기록"><option value="">저장 기록 선택</option></select><button id="import-local" type="button">기록 열기</button></div>
         </div>
       </section>
-      <div id="import-selected" hidden><strong id="import-selected-name"></strong><p id="import-selected-warnings"></p><div class="import-actions"><button id="saved-show-frame" type="button" aria-pressed="true">촬영 이미지</button><button id="saved-show-video" type="button" aria-pressed="false" hidden>원본 영상</button></div><div id="saved-original" hidden><select id="import-media" aria-label="저장 녹화 구간"></select><video id="import-video" controls playsinline hidden></video><a id="import-media-download" hidden download>녹화 파일 내려받기</a><p id="import-media-note" hidden>영상은 독립 재생합니다. 지도 시간 슬라이더와 자동 동기화하지 않습니다.</p></div></div>
+      <div id="import-selected" hidden><strong id="import-selected-name"></strong><p id="import-selected-warnings"></p><div class="import-actions"><button id="saved-replay" type="button" hidden>&#48373;&#50896; &#44284;&#51221; &#45796;&#49884; &#48372;&#44592;</button><button id="saved-show-frame" type="button" aria-pressed="true">촬영 이미지</button><button id="saved-show-video" type="button" aria-pressed="false" hidden>원본 영상</button></div><div id="saved-original" hidden><select id="import-media" aria-label="저장 녹화 구간"></select><video id="import-video" controls playsinline hidden></video><a id="import-media-download" hidden download>녹화 파일 내려받기</a><p id="import-media-note" hidden>영상은 독립 재생합니다. 지도 시간 슬라이더와 자동 동기화하지 않습니다.</p></div></div>
     </section>
     <div id="reconstruction-stage" hidden>
     <div id="map-content">
@@ -230,13 +245,11 @@
           <div id="viewport" tabindex="0" aria-label="회전하고 객체를 선택할 수 있는 3D 복원 공간"><div class="loading">복원된 공간을 준비하고 있습니다…</div></div>
           <div id="map-empty" class="map-empty" role="status"><strong id="empty-title">지도를 불러오는 중</strong><p id="empty-detail">잠시 기다려 주세요.</p></div>
           <div id="object-labels" aria-label="3D 객체 이름"></div>
-          <div class="view-buttons" role="group" aria-label="시점 선택"><button data-view="perspective" class="active">입체</button><button data-view="front">정면</button><button data-view="top">위에서</button><button id="reset" title="전체 점군과 경로에 맞추기">↺ 전체 보기</button></div>
-          <div class="mode-tabs" role="tablist" aria-label="지도 표현 모드"><button role="tab" data-mode="objects" aria-selected="true">객체 · 영상 표면</button><button role="tab" data-mode="hologram" aria-selected="false" aria-controls="hologram-controls" aria-expanded="false">홀로그램</button><button role="tab" data-mode="points" aria-selected="false">원본 점군</button></div>
+          <div class="mode-tabs" role="tablist" aria-label="지도 표현 모드"><button role="tab" data-mode="objects" aria-selected="true">객체 · 영상 표면</button><button role="tab" data-mode="points" aria-selected="false">원본 점군</button></div>
           <button id="explore" aria-pressed="false">공간 안으로 이동 ↗</button>
           <div id="move-controls" hidden><span id="explorer-position"></span><div role="group" aria-label="공간 이동"><button data-move="forward">앞으로</button><button data-move="back">뒤로</button><button data-move="left">왼쪽</button><button data-move="right">오른쪽</button><button data-move="up">위로</button><button data-move="down">아래로</button></div></div>
           <div class="legend"><span><i class="point-dot"></i> 복원 점</span><span><i class="path-line"></i> 촬영 경로</span><span id="scale-badge">스케일 확인 중</span></div>
           <div class="viewer-hint" id="viewer-hint">드래그 회전 · 휠 확대 · 오른쪽 드래그 이동</div>
-          <div class="axis-key"><span>X</span><span>Y</span><span>Z</span></div>
         </section>
         <section id="hologram-controls" class="hologram-controls" hidden aria-label="홀로그램 점 좌표 조정">
           <div class="hologram-hud">

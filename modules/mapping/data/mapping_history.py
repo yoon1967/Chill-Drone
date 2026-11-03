@@ -1,0 +1,160 @@
+"""Append-only reconstruction observations and bounded-display replay.
+
+The preview may forget old voxels; observations retain full processed depth,
+color, intrinsics, fixed pose and map identity for later integration. Replay
+uses the exact displayed point sample, without running inference again.
+"""
+from __future__ import annotations
+
+import io
+import json
+import math
+from pathlib import Path
+import queue
+import threading
+import zipfile
+
+import numpy as np
+
+SCHEMA = 'pose-depth-history/1.0'
+
+
+def _array_bytes(array):
+    output = io.BytesIO()
+    np.save(output, np.asarray(array), allow_pickle=False)
+    return output.getvalue()
+
+
+class HistoryWriter:
+    def __init__(self, output, write_json, render_window_s=10.):
+        self.root = Path(output) / 'history'
+        (self.root / 'frames').mkdir(parents=True)
+        self.write_json = write_json
+        self.manifest = {'schema_version': SCHEMA, 'status': 'recording', 'frames': 0,
+            'coordinate_system': 'native ORB map; camera x-right/y-down/z-forward',
+            'scale': 'arbitrary; depth converted to fixed monocular pose units',
+            'render_window_s': render_window_s, 'preview_points_limit': 12000,
+            'observation_fields': ['depth', 'rgb', 'world_from_camera', 'intrinsics', 'map_id', 'depth_scale'],
+            'integration': 'unproject depth with intrinsics, transform by world_from_camera; integrate only within the same map_id until maps are explicitly aligned'}
+        self.write_json(self.root / 'manifest.json', self.manifest)
+        self.pending = queue.Queue(maxsize=8)
+        self.error = None
+        self.closed = False
+        self.thread = threading.Thread(target=self._write, daemon=True)
+        self.thread.start()
+
+    def append(self, snapshot, observation=None):
+        if self.closed:
+            raise RuntimeError('history_writer_closed')
+        while True:
+            if self.error:
+                raise RuntimeError('history_recording_failed: ' + str(self.error)) from self.error
+            try:
+                self.pending.put((snapshot, observation), timeout=.1)
+                return
+            except queue.Full:
+                continue  # Never drop reconstructed observations to protect the preview.
+
+    def _write(self):
+        try:
+            with (self.root / 'index.jsonl').open('a', encoding='utf-8') as index:
+                while True:
+                    item = self.pending.get()
+                    if item is None:
+                        break
+                    snapshot, observation = item
+                    revision = snapshot['revision']
+                    path = self.root / 'frames' / f'{revision:08d}.npz'
+                    temporary = path.with_suffix('.npz.tmp')
+                    arrays = {'points': np.asarray(snapshot['points'], dtype=np.float32).reshape(-1, 6),
+                              'camera_path': np.asarray(snapshot['cameras'], dtype=np.float32).reshape(-1, 3)}
+                    if observation:
+                        arrays.update(observation)
+                    # Low compression level keeps disk I/O outside the rendering loop.
+                    with zipfile.ZipFile(temporary, 'w', compression=zipfile.ZIP_DEFLATED, compresslevel=1) as archive:
+                        for name, array in arrays.items():
+                            archive.writestr(name + '.npy', _array_bytes(array))
+                    from modules.mapping.localization.orbslam3 import replace_file
+                    replace_file(temporary, path)
+                    entry = {key: value for key, value in snapshot.items() if key not in {'points', 'cameras'}}
+                    entry.update(observation=bool(observation), visible_points=len(snapshot['points']))
+                    index.write(json.dumps(entry, ensure_ascii=False, allow_nan=False) + '\n')
+                    index.flush()  # An index entry is published only after its chunk is complete.
+                    self.manifest.update(frames=self.manifest['frames'] + 1, last_timestamp_s=entry['timestamp_s'])
+                    self.write_json(self.root / 'manifest.json', self.manifest)
+        except Exception as error:
+            self.error = error
+
+    def close(self, status='complete'):
+        if self.closed:
+            return
+        self.closed = True
+        while self.thread.is_alive():
+            try:
+                self.pending.put(None, timeout=.1)
+                break
+            except queue.Full:
+                if self.error:
+                    break
+        self.thread.join()
+        if self.error:
+            raise RuntimeError('history_recording_failed: ' + str(self.error)) from self.error
+        self.manifest['status'] = status
+        self.write_json(self.root / 'manifest.json', self.manifest)
+
+
+class HistoryReader:
+    def __init__(self, output):
+        self.root = Path(output) / 'history'
+        self.offset = 0
+        self.entries = []
+        self.lock = threading.RLock()
+
+    def refresh(self):
+        with self.lock:
+            manifest = json.loads((self.root / 'manifest.json').read_text(encoding='utf-8'))
+            if manifest.get('schema_version') != SCHEMA:
+                raise ValueError('unsupported_reconstruction_history')
+            path = self.root / 'index.jsonl'
+            if not path.is_file():
+                return []
+            if path.stat().st_size < self.offset:
+                self.offset, self.entries = 0, []
+            with path.open('rb') as stream:
+                stream.seek(self.offset)
+                for line in stream:
+                    if not line.endswith(b'\n'):
+                        break
+                    value = json.loads(line)
+                    revision, stamp = value.get('revision'), value.get('timestamp_s')
+                    if type(revision) is not int or revision != len(self.entries) + 1 or type(stamp) not in (int, float) or not math.isfinite(stamp) or stamp < 0:
+                        raise ValueError('invalid_reconstruction_history_index')
+                    if self.entries and stamp < self.entries[-1]['timestamp_s']:
+                        raise ValueError('history_timestamps_not_ordered')
+                    self.entries.append(value)
+                    self.offset = stream.tell()
+            return self.entries
+
+    def timeline(self):
+        entries = self.refresh()
+        return {'schema_version': SCHEMA, 'entries': [{key: e.get(key) for key in (
+            'revision', 'timestamp_s', 'frame_number', 'map_id', 'tracking', 'observation', 'map_points')} for e in entries],
+            'available': bool(entries), 'count': len(entries), 'last_timestamp_s': entries[-1]['timestamp_s'] if entries else 0.}
+
+    def snapshot(self, revision):
+        with self.lock:
+            entries = self.refresh()
+            if type(revision) is not int or not 1 <= revision <= len(entries):
+                raise ValueError('unknown_history_revision')
+            path = self.root / 'frames' / f'{revision:08d}.npz'
+            if path.is_symlink() or not path.resolve().is_relative_to(self.root.resolve()):
+                raise ValueError('invalid_history_chunk_path')
+            with zipfile.ZipFile(path) as archive:
+                for name, limit in [('points.npy', 12000 * 6 * 4 + 4096), ('camera_path.npy', 300 * 3 * 4 + 4096)]:
+                    if archive.getinfo(name).file_size > limit:
+                        raise ValueError('history_preview_too_large')
+                points = np.load(io.BytesIO(archive.read('points.npy')), allow_pickle=False)
+                cameras = np.load(io.BytesIO(archive.read('camera_path.npy')), allow_pickle=False)
+            if points.ndim != 2 or points.shape[1] != 6 or cameras.ndim != 2 or cameras.shape[1] != 3 or not np.isfinite(points).all() or not np.isfinite(cameras).all():
+                raise ValueError('invalid_history_preview')
+            return {**entries[revision - 1], 'points': points.tolist(), 'cameras': cameras.tolist(), 'recorded': True}

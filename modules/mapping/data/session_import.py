@@ -17,6 +17,7 @@ import sqlite3
 import subprocess
 import sys
 import threading
+import time
 import uuid
 import zipfile
 
@@ -252,6 +253,22 @@ class ImportedMap:
             for name, expected in self.manifest.get('asset_sha256', {}).items():
                 verify(name, expected)
         self._check_images()
+        self.history_frames = 0
+        history = self.result_root / 'history'
+        if (history / 'manifest.json').exists() or (history / 'index.jsonl').exists():
+            from modules.mapping.data.mapping_history import HistoryReader
+            for name in ('history/manifest.json', 'history/index.jsonl'):
+                if not inside(self.result_root, name).is_file():
+                    raise ValueError('reconstruction_history_incomplete')
+            entries = HistoryReader(self.result_root).refresh()
+            for entry in entries:
+                name = entry.get('frame_id', '')
+                if not re.fullmatch(r'frame_\d{7,}\.jpg', name):
+                    raise ValueError('invalid_history_frame_name')
+                for asset in (f"history/frames/{entry['revision']:08d}.npz", 'frames/' + name):
+                    if not inside(self.result_root, asset).is_file():
+                        raise ValueError('reconstruction_history_incomplete')
+            self.history_frames = len(entries)
 
     @property
     def manifest_id(self):
@@ -274,7 +291,7 @@ class ImportedMap:
             scene = scene_at(result)
             self.points, self.cameras = len(scene['points']), len(scene['cameras'])
             if not self.is_session and read_json(result / 'status.json').get('status') == 'partial':
-                self.warnings.append('부분 복원 결과입니다. 연결되지 않은 프레임과 다른 모델의 좌표는 합치지 않았습니다.')
+                self.warnings.append('미정렬 지도 구간 또는 부족한 관측이 있습니다. 구간별 전체 관측은 보존되지만 하나의 좌표계로 연결되지 않았을 수 있습니다.' if scene.get('depth_mapping', {}).get('integration_scope') == 'all_recorded_observations' else '부분 복원 결과입니다. 연결되지 않은 프레임과 다른 모델의 좌표는 합치지 않았습니다.')
             images = self.image_root(result)
             missing = sum(not images or not inside(images, c['frame_id']).is_file() for c in scene['cameras'])
             if missing:
@@ -285,7 +302,7 @@ class ImportedMap:
     def summary(self):
         return {'kind': 'session' if self.is_session else 'result', 'name': self.root.name,
             'session_id': self.state.get('session_id'), 'points': self.points, 'keyframes': self.cameras,
-            'revisions': len(self.entries), 'warnings': self.warnings,
+            'revisions': len(self.entries), 'history_frames': self.history_frames, 'warnings': self.warnings,
             'media': [{k: v for k, v in m.items() if k != 'path'} for m in self.media],
             'recording': self.manifest.get('recording') if self.manifest else None}
 
@@ -311,6 +328,7 @@ class ImportManager:
         self.root.mkdir(parents=True, exist_ok=True)
         self.jobs = {}
         self.lock = threading.RLock()
+        self.history_readers = {}
 
     def create(self, name='불러온 자료'):
         with self.lock:
@@ -336,7 +354,7 @@ class ImportManager:
                     raise ValueError('external_import_requires_reselection')
                 record = ImportedMap(map_root)
                 self.jobs[key] = {**info, 'id': key, 'path': path, 'record': record, 'summary': record.summary(),
-                    'cancel': threading.Event(), 'files': set()}
+                    'output': map_root, 'cancel': threading.Event(), 'files': set()}
             return self.jobs[key]
 
     def public(self, key):
@@ -345,6 +363,10 @@ class ImportManager:
             value = {k: v for k, v in job.items() if k in {'id', 'name', 'status', 'stage', 'bytes', 'summary', 'error', 'options', 'feature_progress', 'progress'}}
             source = job.get('source')
             value['source_video'] = bool(source and Path(source).suffix.lower() in {'.mp4', '.mov', '.avi', '.mkv'})
+            output = self.preview_root(job)
+            record = job.get('record')
+            value['history_available'] = bool(record.history_frames) if record else bool(
+                output and (output / 'history/manifest.json').is_file() and (output / 'history/index.jsonl').is_file())
             return value
 
     def source_video(self, key):
@@ -445,6 +467,8 @@ class ImportManager:
                         record._check_images()
                     job.update(record=record, summary=record.summary(), status='ready', stage='ready')
                 else:
+                    if root.is_dir() and (root / 'history/manifest.json').is_file():
+                        raise ValueError('reconstruction_result_not_ready')
                     from modules.mapping.data.frame_input import inspect_input
                     info = inspect_input(root)
                     job.update(source=root, summary=info, status='awaiting_options', stage='confirm')
@@ -528,15 +552,82 @@ class ImportManager:
             root = Path(info.get('map_root', '')).resolve()
             if not root.is_relative_to(self.root):
                 raise ValueError('external_import_requires_reselection')
-            return self.public(self.add_local(root))
+            self.job(name)
+            return self.public(name)
         if not folder.is_dir():
             raise ValueError('unknown_local_session')
         return self.public(self.add_local(folder))
+
+    def delete_local(self, name, protected_paths=()):
+        """Delete a selected managed record; never follow its external source path."""
+        if not isinstance(name, str) or not re.fullmatch(r'[A-Za-z0-9_-]{1,96}', name):
+            raise ValueError('invalid_local_id')
+        with self.lock:
+            if name in self.jobs and self.jobs[name]['status'] not in {'ready', 'complete', 'failed', 'cancelled'}:
+                raise ValueError('record_busy')
+            selected = inside(self.root, name)
+            if not selected.is_dir():
+                raise ValueError('unknown_local_session')
+            info = read_json(selected / 'import.json') if (selected / 'import.json').is_file() else {}
+            if not info and name not in self.jobs and not any((selected / n).is_file() for n in ('session.json', 'state.json', 'scene.json', 'reconstruction/scene.json')):
+                raise ValueError('unknown_local_session')
+            identity = Path(info['map_root']).resolve() if info.get('map_root') else selected.resolve()
+            targets = {selected}
+            # Imported aliases to a managed session must not bring a deleted card back.
+            if identity.is_relative_to(self.root) and identity != self.root:
+                targets.add(inside(self.root, identity.relative_to(self.root).parts[0]))
+            for folder in self.root.iterdir():
+                if not re.fullmatch(r'import_[a-f0-9]{16}', folder.name):
+                    continue
+                folder = inside(self.root, folder.name)
+                if (folder / 'import.json').is_file():
+                    alias = read_json(folder / 'import.json')
+                    if alias.get('map_root') and Path(alias['map_root']).resolve() == identity:
+                        targets.add(folder)
+            busy = {'uploading', 'inspecting', 'awaiting_options', 'running', 'cancelling',
+                    'starting', 'initializing', 'tracking', 'mapping', 'stopping'}
+            for target in targets:
+                # Verify the final absolute targets immediately before recursive removal.
+                if target.resolve().parent != self.root or target.is_symlink() or (hasattr(target, 'is_junction') and target.is_junction()):
+                    raise ValueError('invalid_delete_target')
+                if any(Path(path).resolve().is_relative_to(target) for path in protected_paths):
+                    raise ValueError('record_busy')
+                for metadata in ('import.json', 'state.json'):
+                    if (target / metadata).is_file():
+                        state = read_json(target / metadata)
+                        if state.get('status') in busy or state.get('session_status') in busy:
+                            raise ValueError('record_busy')
+                for job in self.jobs.values():
+                    if job['status'] not in busy:
+                        continue
+                    paths = [job.get('path'), job.get('source'), job.get('output')]
+                    if any(path and Path(path).resolve().is_relative_to(target) for path in paths):
+                        raise ValueError('record_busy')
+            for target in targets:
+                shutil.rmtree(target)
+            for key, job in list(self.jobs.items()):
+                if any(Path(job['path']).resolve().is_relative_to(target) for target in targets):
+                    self.jobs.pop(key)
+            for root in list(self.history_readers):
+                if any(Path(root).resolve().is_relative_to(target) for target in targets):
+                    self.history_readers.pop(root)
+            if getattr(self, 'initial', None) not in self.jobs:
+                self.initial = None
+            return {'status': 'deleted', 'local_id': name}
 
     def start(self, key, options):
         from modules.mapping.data.frame_input import validate_options
         job = self.job(key)
         options = validate_options(options, job.get('summary', {}))
+        if options['mode'] == 'depth_rgbd':
+            import importlib.util
+            if any(importlib.util.find_spec(name) is None for name in ('torch', 'transformers')):
+                raise ValueError('depth_mapping_dependencies_missing')
+            from modules.mapping.localization.orbslam3_live import require_slam_image
+            try:
+                require_slam_image()
+            except RuntimeError as error:
+                raise ValueError(str(error)) from error
         with self.lock:
             if job['status'] != 'awaiting_options':
                 raise ValueError('import_not_waiting_for_options')
@@ -549,10 +640,12 @@ class ImportManager:
         config.write_text(json.dumps(options), encoding='utf-8')
         def work():
             try:
-                command = [sys.executable, '-B', '-m', 'modules.mapping.data.frame_input', '--source', str(job['source']),
+                module = 'modules.mapping.data.stream_mapping' if options['mode'] == 'depth_rgbd' else 'modules.mapping.data.frame_input'
+                command = [sys.executable, '-B', '-m', module, '--source', str(job['source']),
                     '--output', str(output), '--options', str(config)]
                 with (job['path'] / 'worker.log').open('w', encoding='utf-8') as log:
                     proc = subprocess.Popen(command, cwd=ROOT, stdout=log, stderr=subprocess.STDOUT,
+                        env={**os.environ, 'OMP_NUM_THREADS': '2', 'PYTHONIOENCODING': 'utf-8'},
                         **({'creationflags': subprocess.CREATE_NEW_PROCESS_GROUP} if os.name == 'nt' else {'start_new_session': True}))
                     job['process'] = proc
                     if job['cancel'].is_set():
@@ -564,6 +657,8 @@ class ImportManager:
                     record = ImportedMap(output)
                     job.update(record=record, summary=record.summary(), status='complete', stage='finished')
                 else:
+                    if options['mode'] == 'depth_rgbd' and (output / 'progress.json').is_file():
+                        raise ValueError(read_json(output / 'progress.json').get('error', 'depth_mapping_failed'))
                     details = read_json(output / 'manifest.json').get('error', {}) if (output / 'manifest.json').is_file() else {}
                     raise ValueError(details.get('reason', f'reconstruction_failed_exit_{code}; worker.log'))
             except Exception as error:
@@ -593,6 +688,19 @@ class ImportManager:
             self._terminate(job['process'])
         elif job['stage'] in {'upload', 'confirm'}:
             job.update(status='cancelled', stage='cancelled')
+        # Stop transport first: it must not start a container after cancellation.
+        container = job.get('output', Path()) / 'pose_tracker/container.json'
+        if job.get('options', {}).get('mode') == 'depth_rgbd' and container.is_file():
+            name = read_json(container).get('name', '')
+            if re.fullmatch(r'ssafy-pose-[a-f0-9]{12}', name):
+                for attempt in range(6):
+                    try:
+                        stopped = subprocess.run(['docker', 'stop', '-t', '2', name], capture_output=True, timeout=10)
+                        if stopped.returncode == 0:
+                            break
+                    except (OSError, subprocess.TimeoutExpired):
+                        break
+                    time.sleep(.1)  # A daemon-side create request may still be finishing.
         self._save(job)
         return self.public(key)
 
@@ -600,16 +708,106 @@ class ImportManager:
         job = self.job(key)
         job.pop('feature_progress', None)
         job.pop('progress', None)
-        if job['status'] == 'running' and job.get('output'):
+        if job.get('output'):
             try:
-                job['stage'] = read_json(job['output'] / 'manifest.json')['stage']
+                if job.get('options', {}).get('mode') == 'depth_rgbd':
+                    job['progress'] = read_json(job['output'] / 'progress.json')
+                    if job['status'] == 'running':
+                        job['stage'] = job['progress']['stage']
+                elif job['status'] == 'running':
+                    job['stage'] = read_json(job['output'] / 'manifest.json')['stage']
             except (OSError, ValueError, KeyError):
                 pass
-            if job['stage'] == 'features':
-                job['feature_progress'] = feature_progress(job['output'])
-            else:
-                job['progress'] = stage_progress(job['output'], job['stage'])
+            if job['status'] == 'running' and job.get('options', {}).get('mode') != 'depth_rgbd':
+                if job['stage'] == 'features':
+                    job['feature_progress'] = feature_progress(job['output'])
+                else:
+                    job['progress'] = stage_progress(job['output'], job['stage'])
         return self.public(key)
+
+    def preview(self, key, revision=0):
+        job = self.job(key)
+        output = self.preview_root(job)
+        if not output:
+            raise ValueError('progressive_preview_not_available')
+        path = inside(output, 'preview.json')
+        if not path.is_file():
+            return {'revision': 0, 'waiting': True}
+        value = read_json(path)
+        return {'revision': revision, 'unchanged': True} if value['revision'] == revision else value
+
+    def preview_frame(self, key, name):
+        job = self.job(key)
+        output = self.preview_root(job)
+        if not output or not re.fullmatch(r'frame_\d{7,}\.jpg', name):
+            raise ValueError('unknown_preview_frame')
+        return inside(output, 'frames/' + name)
+
+    @staticmethod
+    def preview_root(job):
+        if job.get('output'):
+            return Path(job['output'])
+        record = job.get('record')
+        return record.result_root if record else None
+
+    def history_reader(self, key):
+        from modules.mapping.data.mapping_history import HistoryReader
+        output = self.preview_root(self.job(key))
+        if not output or not (output / 'history/manifest.json').is_file():
+            raise ValueError('reconstruction_history_not_available')
+        inside(output, 'history/manifest.json')
+        inside(output, 'history/index.jsonl')
+        with self.lock:
+            return self.history_readers.setdefault(str(output), HistoryReader(output))
+
+    def history_timeline(self, key):
+        return self.history_reader(key).timeline()
+
+    def history_snapshot(self, key, revision):
+        return self.history_reader(key).snapshot(revision)
+
+    def history_archive(self, key):
+        if self.job(key)['status'] not in {'ready', 'complete'}:
+            raise ValueError('reconstruction_result_not_ready')
+        reader = self.history_reader(key)
+        output = reader.root.parent
+        try:
+            scene = scene_at(output)
+        except (OSError, ValueError, KeyError) as error:
+            raise ValueError('reconstruction_result_not_ready') from error
+        # Keep the exported index and its chunks on the same revision.
+        entries = [dict(entry) for entry in reader.refresh()]
+        manifest = read_json(reader.root / 'manifest.json')
+        manifest.update(frames=len(entries), exported_last_revision=entries[-1]['revision'] if entries else 0)
+        metadata = {'history/manifest.json': json.dumps(manifest, ensure_ascii=False),
+                    'history/index.jsonl': ''.join(json.dumps(e, ensure_ascii=False) + '\n' for e in entries)}
+        if entries:
+            metadata['preview.json'] = json.dumps(reader.snapshot(entries[-1]['revision']), ensure_ascii=False)
+        files = []
+        frames = {}
+        for entry in entries:
+            chunk = f"history/frames/{entry['revision']:08d}.npz"
+            files.append((inside(output, chunk), chunk))
+            name = entry.get('frame_id', '')
+            if not re.fullmatch(r'frame_\d{7,}\.jpg', name):
+                raise ValueError('invalid_history_frame_name')
+            frames[name] = inside(output, 'frames/' + name)
+        for camera in scene['cameras']:
+            name = camera['frame_id']
+            if not re.fullmatch(r'frame_\d{7,}\.jpg', name):
+                raise ValueError('invalid_history_frame_name')
+            frames[name] = inside(output, 'frames/' + name)
+        files.extend((path, 'frames/' + name) for name, path in frames.items())
+        metadata['local_assets.json'] = json.dumps({'images_root': 'frames', 'frames': list(frames)}, ensure_ascii=False)
+        for name in ('scene.json', 'status.json', 'poses.json', 'trajectory.csv', 'points.ply', 'pose_tracker/camera.yaml', 'pose_tracker/native.json'):
+            if (output / name).is_file():
+                files.append((inside(output, name), name))
+        for path in (output / 'submaps').glob('*.json'):
+            name = path.relative_to(output).as_posix()
+            files.append((inside(output, name), name))
+        if any(not path.is_file() for path, _ in files):
+            raise ValueError('reconstruction_history_incomplete')
+        return files, metadata
 
     def shutdown(self):
         for key, job in list(self.jobs.items()):

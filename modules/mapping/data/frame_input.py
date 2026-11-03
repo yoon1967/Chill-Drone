@@ -95,6 +95,14 @@ def validate_options(options, summary):
         camera.setdefault('calibration_status', 'user_supplied; accuracy_not_independently_verified')
         result['camera'] = camera
     result['confirmed'] = True
+    mode = options.get('mode', 'sfm')
+    if mode not in {'sfm', 'depth_rgbd'}:
+        raise ValueError('invalid_reconstruction_mode')
+    result['mode'] = mode
+    window = options.get('render_window_s', 10.)
+    if type(window) not in (int, float) or not math.isfinite(window) or not 1 <= window <= 120:
+        raise ValueError('invalid_render_window_s')
+    result['render_window_s'] = window
     return result
 
 

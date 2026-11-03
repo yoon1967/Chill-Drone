@@ -224,6 +224,7 @@ int main(int argc,char** argv) {
         cv::FileStorage calibration(argv[2],cv::FileStorage::READ);
         const int width=int(calibration["Camera.width"]), height=int(calibration["Camera.height"]);
         const double configured_fps=double(calibration["Camera.fps"]);
+        const bool pose_first=!calibration["Mapping.poseFirst"].empty() && int(calibration["Mapping.poseFirst"])==1;
         const double rate=std::stod(argv[4]), max_seconds=std::stod(argv[5]);
         const bool streaming=std::string(argv[1])=="-";
         cv::VideoCapture capture;
@@ -231,7 +232,7 @@ int main(int argc,char** argv) {
         if((!streaming && !capture.isOpened()) || width<=0 || height<=0 || configured_fps<=0) throw std::runtime_error("invalid_video_or_calibration");
         const double fps=capture.get(cv::CAP_PROP_FPS)>0?capture.get(cv::CAP_PROP_FPS):configured_fps;
         System slam("/opt/ORB_SLAM3/Vocabulary/ORBvoc.txt",argv[2],System::MONOCULAR,false);
-        atomic_json(root+"/ready.json",{{"ready",true},{"transport",streaming?"jpeg_stdin":"file"}});
+        atomic_json(root+"/ready.json",{{"ready",true},{"transport",streaming?"jpeg_stdin":"file"},{"pose_first",pose_first}});
         mkdir((root+"/frames").c_str(),0755);
         mkdir((root+"/previews").c_str(),0755);
         const auto start=Clock::now();
@@ -311,7 +312,7 @@ int main(int argc,char** argv) {
             const auto map_id=slam.GetAtlasForExport()->GetCurrentMap()->GetId();
             if(map_id!=previous_map) previous.clear();
             previous_map=map_id;
-            json features=json::array(); std::set<unsigned long> current;
+            json features=json::array(), depth_anchors=json::array(); std::set<unsigned long> current;
             int reused=0;
             const auto keys=slam.GetTrackedKeyPointsUn(); const auto points=slam.GetTrackedMapPoints();
             int candidates = 0;
@@ -341,6 +342,11 @@ int main(int argc,char** argv) {
                     auto* p=points[i]; if(!p || p->isBad() || p->Observations()<1) continue;
                     const bool same=previous.count(p->mnId); reused+=same; current.insert(p->mnId);
                     features.push_back({keys[i].pt.x,keys[i].pt.y,p->mnId,same});
+                    if(pose_first && depth_anchors.size()<256) {
+                        const auto camera_point=pose*p->GetWorldPos();
+                        if(camera_point.allFinite() && camera_point.z()>0)
+                            depth_anchors.push_back({keys[i].pt.x,keys[i].pt.y,camera_point.z()});
+                    }
                 }
             }
             previous=std::move(current); ++count;
@@ -364,6 +370,14 @@ int main(int argc,char** argv) {
                 {"tracking_ratio",double(tracked)/count},{"width",width},{"height",height},
                 {"features",features},{"revision",publisher.revision.load()},{"snapshots",publisher.revision.load()}};
             if(good) progress["T_cw"]=matrix(pose);
+            // Pose-first clients get one immutable, timestamp-bound result per input.
+            // Depth inference never feeds back into native camera tracking.
+            if(streaming && pose_first) {
+                json camera_pose={{"timestamp_s",pts},{"tracking_state",state},{"map_id",map_id},
+                    {"frame_id",name.str()},{"depth_anchors",depth_anchors},{"tracking_ms",ms}};
+                if(good) camera_pose["T_cw"]=matrix(pose);
+                std::cout << "ORB_POSE " << camera_pose.dump() << std::endl;
+            }
             if(seconds(start)>=next_preview) {
                 preview_publisher.submit(last_image,progress);
                 journal.flush();

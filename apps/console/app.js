@@ -1,4 +1,5 @@
 import * as THREE from 'three';
+import {connectAxisGizmo} from '/axis-gizmo.js';
 import { connectDrones, renderDroneStages } from '/drone-view.js';
 import {connectWorkflowGuide, liveStep} from '/workflow-guide.js';
 import { connectMapSave } from '/map-save.js';
@@ -21,7 +22,7 @@ const timeOf = (c) => c.source_pts_s ?? c.timestamp_s;
 let run, root, cloud, route, frustums, grid, selected;
 let center, radius = 1, fullCenter, fullRadius = 1, direction;
 let currentIndex = 0, playing = false, previousTime = 0,
-  mode = new URLSearchParams(location.search).get('mode') === 'hologram' ? 'hologram' : 'objects';
+  mode = 'objects';
 let navigating = false, dragging = false, busy = null, revision = null;
 let pollDelay = 2000;
 let pollTimer, captureState = {state: 'idle'}, captureHandle, lastLiveState = {};
@@ -114,6 +115,7 @@ $('viewport').replaceChildren(renderer.domElement);
 const scene = new THREE.Scene();
 const camera = new THREE.PerspectiveCamera(48, 1, .001, 10000);
 const controls = new OrbitControls(camera, renderer.domElement);
+const axisGizmo = connectAxisGizmo({host: $('viewport'), camera, controls, enabled: () => Boolean(run), beforeSelect: () => { playing = false; stopExplore(); }});
 controls.enableDamping = true;
 scene.add(new THREE.HemisphereLight(0xe8f5ff, 0x68756c, 2.2));
 const light = new THREE.DirectionalLight(0xffffff, 2);
@@ -189,7 +191,7 @@ function selectSource(next, force = false) {
   revision = null;
   renderTimes.length = 0;
   pollDelay = next === 'live' ? 500 : 2000;
-  mode = views.get(next)?.mode || (new URLSearchParams(location.search).get('mode') === 'hologram' ? 'hologram' : next === 'saved' ? 'objects' : 'points');
+  mode = views.get(next)?.mode || (next === 'saved' ? 'objects' : 'points');
   hologramControlsOpen = mode === 'hologram';
   clearMap();
   setMode(mode);
@@ -270,7 +272,6 @@ function showCloud() {
   applyPointInterval();
   Object.assign($('viewport').dataset, {pointUpdateMs: performance.now() - started,
     pointUpdateVisited: stats.visited, pointUpdateChanged: stats.changed, pointBufferCapacity: pointDisplay.raw.capacity});
-  requestSpacing();
 }
 function resetSpacing(clearProfile = false) {
   spacingWorker?.terminate(); spacingWorker = null;
@@ -525,11 +526,12 @@ function setConfidence(value) {
   schedulePointDisplay();
 }
 function setMode(next, toggleControls = false) {
+  if (next === 'hologram') next = 'points';
   if (next !== 'hologram') hologramControlsOpen = false;
   else if (toggleControls) hologramControlsOpen = !hologramControlsOpen;
   mode = next;
   $('hologram-controls').hidden = !hologramControlsOpen;
-  document.querySelector('[data-mode="hologram"]').setAttribute('aria-expanded', String(hologramControlsOpen));
+  document.querySelector('[data-mode="hologram"]')?.setAttribute('aria-expanded', String(hologramControlsOpen));
   document.querySelectorAll('[data-mode]').forEach((b) => b.setAttribute('aria-selected', String(b.dataset.mode === next)));
   updateIntervalLabel();
   if (!run) return;
@@ -694,7 +696,7 @@ function applyRun(value) {
   $('run-date').textContent = new Date(run.created_utc).toLocaleDateString('ko-KR');
   $('frames').textContent = `${quality.registered_frames} / ${quality.input_frames}`;
   $('registration').textContent = `${Math.round(quality.registration_ratio * 100)}% 등록 · ${quality.excluded_frames.length}장 기하 제외${quality.result_status === 'partial' ? ' · 부분 복원' : ''}`;
-  $('reprojection').textContent = `${quality.mean_reprojection_error_px.toFixed(2)} px`;
+  $('reprojection').textContent = Number.isFinite(quality.mean_reprojection_error_px) ? `${quality.mean_reprojection_error_px.toFixed(2)} px` : '미측정';
   $('elapsed').textContent = `${quality.processing_seconds.toFixed(1)} s`;
   document.querySelector('.object-panel').hidden = Boolean(run.slam && !run.planar_objects);
   $('object-analysis').hidden = !run.planar_objects;
@@ -711,6 +713,29 @@ function applyRun(value) {
   $('scale-badge').textContent = run.scale.unit === 'm' ? '44cm 기준 · m' : '임의 단위 · 크기 미보정';
   $('scale-note').textContent = run.scale.unit === 'm' ? '44cm 기준 스케일을 모든 점·객체·경로에 동일 적용했습니다. 독립 치수 정확도와 중력 방향은 미검증입니다.' :
     '단안 영상의 임의 단위입니다. 좌표와 객체 크기를 cm·m로 해석할 수 없습니다. 실제 거리 센서나 실측 기준으로 스케일을 검증해야 합니다.';
+  if (['predicted_rgbd', 'orb_slam3_depth'].includes(run.pose_source)) {
+    const poseFirst = run.pose_source === 'orb_slam3_depth';
+    $('scale-badge').textContent = poseFirst ? '단안 상대 좌표 · 실측 미보정' : 'AI 추정 거리 · 실측 미검증';
+    $('scale-note').textContent = poseFirst ? 'ORB-SLAM3가 영상에서 먼저 계산한 위치·방향을 고정하고, 깊이의 배율만 그 좌표계에 맞춰 복원했습니다. 위치·방향은 단안 상대 추정이며 절대 실측값이 아닙니다.' : '단안 AI가 예측한 깊이를 직접 정합해 만든 지도입니다. 미터 단위 출력은 실측 보정이나 치수 정확도를 보장하지 않습니다.';
+    $('scale-note').nextElementSibling.textContent = '자세가 확인된 프레임의 깊이를 누적한 점군입니다. 추적 실패 프레임은 합치지 않으며, 서로 다른 지도 구간은 분리 보존합니다.';
+    document.querySelector('.notes h2').innerHTML = '영상의 깊이를 더해,<br>공간을 빠르게 살펴봅니다.';
+    document.querySelector('.notes .muted').textContent = 'SIFT 일괄 매칭·정밀 재투영 검증·전역 최적화를 생략한 빠른 복원 결과입니다.';
+    document.querySelector('footer > span').textContent = poseFirst ? 'ORB-SLAM3 POSE → DEPTH RECONSTRUCTION' : 'AI DEPTH · PROGRESSIVE RGB-D MAPPING';
+    $('reprojection').textContent = '미측정';
+    $('reprojection').nextElementSibling.textContent = '빠른 복원에서 생략';
+    $('points').nextElementSibling.textContent = 'AI 깊이 기반 누적 점군';
+    $('elapsed').nextElementSibling.textContent = '모델 준비·영상 재생·처리 포함';
+    $('saved-result-status').textContent = `${quality.result_status === 'partial' ? '부분 복원' : '빠른 복원 결과'} · ${quality.registered_frames}프레임 반영 · ${poseFirst ? '위치·방향 확정 후 깊이 복원 · 단안 상대 좌표' : 'AI 추정 깊이 · 실측 정확도 미검증'}`;
+    if (run.depth_mapping?.integration_scope === 'all_recorded_observations') {
+      const coverage = quality.coverage;
+      $('saved-result-status').textContent = `${quality.result_status === 'partial' ? '전체 관측 통합 · 미정렬 구간 또는 관측 부족' : '전체 경로 통합 지도'} · ${coverage.integrated_frames}프레임 통합 · ${coverage.map_count}개 지도 구간`;
+      $('registration').textContent = `처리 ${coverage.recorded_frames} · 통합 ${coverage.integrated_frames} · 깊이 미복원 ${coverage.unmapped_frames}프레임`;
+      $('points').nextElementSibling.textContent = '전체 경로 통합 점군';
+      $('scale-note').nextElementSibling.textContent = '촬영 경로 전체의 저장된 깊이와 확정 자세를 통합한 지도입니다. 실시간 화면의 시간·점 수 제한은 최종 지도에 적용하지 않습니다. 촬영하지 않은 공간이나 추적 실패 구간의 형상을 보장하지 않습니다.';
+      document.querySelector('.notes h2').innerHTML = '이동하며 모은 관측을,<br>하나의 공간으로 통합합니다.';
+    }
+    $('hologram-confidence').value = $('hologram-confidence-number').value = '1';
+  }
   $('frame-timeline').max = run.cameras.length - 1;
   const previousIndex = run.cameras.findIndex((c) => c.frame_id === frame);
   const objectIndex = run.cameras.findIndex((c) => c.frame_id === objectLayer.current()?.source_frame_id);
@@ -1019,7 +1044,6 @@ $('show-cameras').addEventListener('change', (e) => { if (frustums) frustums.vis
 $('show-grid').addEventListener('change', (e) => { if (grid) grid.visible = e.target.checked; });
 document.querySelectorAll('[data-mode]').forEach((b) => b.addEventListener('click', () => setMode(b.dataset.mode, true)));
 document.querySelectorAll('[data-view]').forEach((b) => b.addEventListener('click', () => { if (run) setView(b.dataset.view); }));
-$('reset').addEventListener('click', () => { if (run) setView('perspective', true); });
 $('camera-view').addEventListener('click', () => { if (run) cameraView(); });
 // Pick a recorded camera in screen space; dragging remains orbit navigation.
 let cameraPickStart = null;
@@ -1117,6 +1141,7 @@ function animate(time) {
   if (navigating) $('explorer-position').textContent = `탐색 위치 ${camera.position.toArray().map((n) => n.toFixed(2)).join(' / ')} ${run.scale.unit === 'm' ? 'm' : '(임의 단위)'}`;
   objectLayer.render(time);
   const renderStarted = performance.now();
+  axisGizmo.update();
   renderer.render(scene, camera);
   if (pendingPresentation && !pendingPresentation.scheduled && root?.visible && cloud?.geometry.drawRange.count > 0 && run === pendingPresentation.scene &&
       source.source === 'live' && replay.following && document.visibilityState === 'visible') {

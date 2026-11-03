@@ -1,0 +1,6 @@
+# Install CUDA PyTorch separately for the GPU, then install this file.
+transformers>=4.45,<5
+av>=13
+opencv-python-headless==4.13.0.92
+Pillow>=10
+numpy>=1.26,<3

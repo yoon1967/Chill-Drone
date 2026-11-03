@@ -3,6 +3,18 @@ import assert from 'node:assert/strict';
 import { MapSource } from '../map-source.js';
 import { connectImport, importMessage, openUrl, savedPhase, processingSteps } from '../import-view.js';
 
+test('fast reconstruction shows frame work instead of offline SIFT stages', () => {
+  const job = {status: 'running', stage: 'tracking', options: {mode: 'depth_rgbd'}, progress: {processed: 12, points: 3000}};
+  assert.match(importMessage(job), /카메라 위치·방향 추적 중 · 12프레임 처리 · 3000점/);
+  const steps = processingSteps(job);
+  assert.equal(steps.length, 6);
+  assert.deepEqual(steps.map(s => s.state), ['done', 'active', 'waiting', 'waiting', 'waiting', 'waiting']);
+  assert.ok(steps.every(s => !s.label.includes('특징점')));
+  const integration = {...job, stage: 'integration', progress: {integrated_frames: 3, integration_total: 8}};
+  assert.match(importMessage(integration), /전체 경로 지도 통합 중 · 3 \/ 8관측/);
+  assert.equal(processingSteps(integration)[4].state, 'active');
+});
+
 test('feature extraction shows observed frame counts and switches to matching', () => {
   const job = {status: 'running', stage: 'features', feature_progress: {phase: 'extraction', completed: 12, total: 30}};
   assert.match(importMessage(job), /12 \/ 총 30프레임 완료/);
@@ -60,7 +72,7 @@ test('stage display marks only observed earlier stages complete and does not inv
   assert.equal(processingSteps({status: 'failed', stage: 'features'}).filter(step => step.state === 'active').length, 0);
 });
 
-test('opening an already ready record navigates once without starting another status poll', async t => {
+test('opening a completed depth record navigates to its final map once without another status poll', async t => {
   const originals = new Map();
   function replace(name, value) {
     originals.set(name, Object.getOwnPropertyDescriptor(globalThis, name));
@@ -83,7 +95,7 @@ test('opening an already ready record navigates once without starting another st
   replace('window', {addEventListener() {}});
   replace('location', {hash: '#saved', search: '', assign: url => assignments.push(url)});
   replace('Option', class { constructor(text, value) { this.text = text; this.value = value; } });
-  const record = {id: 'import_ready', status: 'ready', summary: {kind: 'result', name: 'map', points: 2, keyframes: 1, revisions: 0}};
+  const record = {id: 'import_ready', status: 'complete', options: {mode: 'depth_rgbd'}, summary: {kind: 'result', name: 'map', points: 2, keyframes: 1, revisions: 0}};
   replace('fetch', async url => {
     requests.push(url);
     return {ok: true, json: async () => url.endsWith('/library') ? {items: [record]} : record};
@@ -102,4 +114,54 @@ test('open link and import status keep reconstruct and view separate', () => {
   assert.match(importMessage({status: 'ready'}), /지도를 열/);
   assert.match(importMessage({status: 'running', stage: 'features'}), /매칭/);
   assert.match(importMessage({status: 'failed', error: 'frame_dimensions_differ'}), /해상도/);
+});
+
+test('a completed map can be reopened after replaying its reconstruction repeatedly', async t => {
+  const originals = new Map();
+  function replace(name, value) {
+    originals.set(name, Object.getOwnPropertyDescriptor(globalThis, name));
+    Object.defineProperty(globalThis, name, {configurable: true, value, writable: true});
+  }
+  t.after(() => {
+    for (const [name, descriptor] of originals)
+      descriptor ? Object.defineProperty(globalThis, name, descriptor) : delete globalThis[name];
+  });
+  const nodes = new Map(), handlers = {}, assignments = [];
+  function node() {
+    return {dataset: {}, children: [], handlers: {}, value: '', checked: false,
+      setAttribute() {}, removeAttribute() {}, pause() {}, load() {}, focus() {},
+      addEventListener(name, handler) { this.handlers[name] = handler; },
+      append(...children) { this.children.push(...children); },
+      replaceChildren(...children) { this.children = children; }};
+  }
+  const get = id => { if (!nodes.has(id)) nodes.set(id, node()); return nodes.get(id); };
+  const classes = new Set();
+  const body = {dataset: {}, classList: {
+    toggle(name, enabled) { enabled ? classes.add(name) : classes.delete(name); },
+    remove(name) { classes.delete(name); },
+  }};
+  const record = {id: 'import_ready', status: 'complete', history_available: true, options: {mode: 'depth_rgbd'},
+    summary: {kind: 'result', name: 'map', points: 2, keyframes: 1, revisions: 0}};
+  replace('document', {body, getElementById: get, createElement: node});
+  replace('window', {addEventListener(name, handler) { handlers[name] = handler; }});
+  replace('location', {hash: '#saved', search: '?asset=import_ready', assign: url => assignments.push(url)});
+  replace('Option', class { constructor(text, value) { this.text = text; this.value = value; } });
+  replace('fetch', async url => ({ok: true, json: async () => url.endsWith('/library') ? {items: []} : record}));
+  connectImport();
+  await new Promise(setImmediate);
+  handlers['saved-map-ready']();
+  assert.equal(body.dataset.savedPhase, 'result');
+  for (let visit = 0; visit < 2; visit++) {
+    get('saved-replay').handlers.click();
+    await new Promise(setImmediate);
+    assert.equal(body.dataset.savedPhase, 'processing');
+    assert.equal(get('import-open').href, '/?asset=import_ready#saved');
+    get('import-open').handlers.click?.({button: 0, preventDefault() {}});
+    await new Promise(setImmediate);
+    assert.equal(body.dataset.savedPhase, 'result', 'same-page map links must leave reconstruction replay');
+    assert.equal(get('import-details').open, false);
+    assert.equal(get('progressive-workspace').hidden, true);
+    assert.equal(classes.has('progressive-processing'), false);
+  }
+  assert.deepEqual(assignments, [], 'the already loaded completed map does not need another navigation');
 });
