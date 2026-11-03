@@ -174,6 +174,7 @@ def extract_video(video: Path, output: Path | None = None, *, run_id: str | None
             next_sample = Fraction(0)
             extraction_started = time.perf_counter()
             phase = "decode_frames"
+            last_progress = 0.
             with (output / "frame_decisions.jsonl").open("w", encoding="utf-8") as audit:
                 for index, frame in enumerate(container.decode(stream)):
                     manifest["decoded_frames"] += 1
@@ -224,6 +225,11 @@ def extract_video(video: Path, output: Path | None = None, *, run_id: str | None
                         raise
                     finally:
                         audit.write(json.dumps(decision, ensure_ascii=False, allow_nan=False) + "\n")
+                    if time.monotonic() - last_progress >= .25:
+                        write_json(output / 'status.json', {'status': 'extracting', 'phase': 'decode',
+                                   'completed': manifest['decoded_frames'], 'total': stream.frames or None,
+                                   'selected': len(manifest['frames'])})
+                        last_progress = time.monotonic()
             extraction_seconds = time.perf_counter() - extraction_started
             manifest["source"]["last_pts_s"] = float(previous) if previous is not None else None
             if not manifest["decoded_frames"]:
@@ -233,6 +239,8 @@ def extract_video(video: Path, output: Path | None = None, *, run_id: str | None
             if len(manifest["frames"]) < 3:
                 raise VideoInputError("insufficient_frames", "Fewer than three sampled frames; increase sample_fps or provide a longer video")
         phase = "verify_source"
+        write_json(output / 'status.json', {'status': 'extracting', 'phase': 'verify_source',
+                   'completed': manifest['decoded_frames'], 'selected': len(manifest['frames'])})
         if video.stat().st_size != manifest["source"]["bytes"] or sha256(video) != initial_hash:
             raise VideoInputError("source_changed", "Source video changed during extraction")
         manifest["source"]["unchanged_after_decode"] = True

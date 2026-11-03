@@ -107,7 +107,9 @@ def prepare_frames(source, output, run_id, fps):
     frames = []
     decisions = []
     size = None
-    for index, path in enumerate(frame_paths(source)):
+    paths = frame_paths(source)
+    last_progress = 0.
+    for index, path in enumerate(paths):
         path = inside(source, path.relative_to(source).as_posix())
         with Image.open(path) as raw:
             image = ImageOps.exif_transpose(raw).convert('RGB')
@@ -125,6 +127,10 @@ def prepare_frames(source, output, run_id, fps):
         frames.append({**decision, 'path': 'frames/' + name, 'width': size[0], 'height': size[1],
             'sha256': sha256(target), 'bytes': target.stat().st_size,
             'original_name': path.relative_to(source).as_posix(), 'original_sha256': sha256(path)})
+        if time.monotonic() - last_progress >= .25:
+            write_json(output / 'status.json', {'status': 'preparing', 'phase': 'copy_frames',
+                       'completed': index + 1, 'total': len(paths)})
+            last_progress = time.monotonic()
     audit = output / 'frame_decisions.jsonl'
     audit.write_text(''.join(json.dumps(r) + '\n' for r in decisions), encoding='utf-8')
     write_json(output / 'manifest.json', {'schema_version': 'phone-video-input/1.0', 'run_id': run_id,

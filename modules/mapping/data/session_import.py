@@ -4,6 +4,7 @@ Input files are never executed, rewritten, or used as absolute asset paths.
 """
 from __future__ import annotations
 
+from contextlib import closing
 import hashlib
 import json
 import math
@@ -12,6 +13,7 @@ from pathlib import Path, PurePosixPath
 import re
 import shutil
 import signal
+import sqlite3
 import subprocess
 import sys
 import threading
@@ -37,6 +39,48 @@ def read_json(path):
     if not isinstance(value, dict):
         raise ValueError('json_object_required')
     return value
+
+
+def feature_progress(output):
+    """Read committed extraction results without changing the native worker."""
+    output = Path(output)
+    try:
+        total = read_json(output / 'input/manifest.json')['selected_frames']
+        if type(total) is not int or total <= 0:
+            return None
+    except (OSError, ValueError, KeyError):
+        return None
+    completed = 0
+    database = output / 'features/database.db'
+    try:
+        with closing(sqlite3.connect(database.resolve().as_uri() + '?mode=ro', uri=True, timeout=0.05)) as connection:
+            completed = connection.execute(
+                'SELECT COUNT(*) FROM keypoints JOIN descriptors USING (image_id)').fetchone()[0]
+            pairs_completed = connection.execute('SELECT COUNT(*) FROM two_view_geometries').fetchone()[0] if completed >= total else 0
+    except sqlite3.Error:
+        # The worker may not have created its schema yet or may be committing.
+        return {'phase': 'extraction', 'completed': None, 'total': total}
+    result = {'phase': 'matching' if completed >= total else 'extraction',
+              'completed': min(completed, total), 'total': total}
+    if completed >= total:
+        try:
+            result.update(pairs_total=len((output / 'features/pairs.txt').read_text(encoding='utf-8').splitlines()),
+                          pairs_completed=pairs_completed)
+        except OSError:
+            pass
+    try:
+        result['phase'] = read_json(output / 'features/status.json').get('phase', result['phase'])
+    except (OSError, ValueError):
+        pass
+    return result
+
+
+def stage_progress(output, stage):
+    try:
+        status = read_json(Path(output) / stage / 'status.json')
+        return {key: status[key] for key in ('phase', 'stage', 'completed', 'total', 'selected') if key in status}
+    except (OSError, ValueError):
+        return None
 
 
 def relative_path(name):
@@ -298,7 +342,7 @@ class ImportManager:
     def public(self, key):
         with self.lock:
             job = self.job(key)
-            value = {k: v for k, v in job.items() if k in {'id', 'name', 'status', 'stage', 'bytes', 'summary', 'error', 'options'}}
+            value = {k: v for k, v in job.items() if k in {'id', 'name', 'status', 'stage', 'bytes', 'summary', 'error', 'options', 'feature_progress', 'progress'}}
             source = job.get('source')
             value['source_video'] = bool(source and Path(source).suffix.lower() in {'.mp4', '.mov', '.avi', '.mkv'})
             return value
@@ -554,11 +598,17 @@ class ImportManager:
 
     def status(self, key):
         job = self.job(key)
+        job.pop('feature_progress', None)
+        job.pop('progress', None)
         if job['status'] == 'running' and job.get('output'):
             try:
                 job['stage'] = read_json(job['output'] / 'manifest.json')['stage']
             except (OSError, ValueError, KeyError):
                 pass
+            if job['stage'] == 'features':
+                job['feature_progress'] = feature_progress(job['output'])
+            else:
+                job['progress'] = stage_progress(job['output'], job['stage'])
         return self.public(key)
 
     def shutdown(self):

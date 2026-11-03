@@ -155,12 +155,14 @@ def _process_features(source, OUTPUT, *, export_only, pair_window, threads, max_
     if not export_only:
         pycolmap.set_random_seed(42)
         print(f"EXTRACT: {len(names)} stored-resolution frames", flush=True)
+        write_json(OUTPUT / 'status.json', {'status': 'processing', 'phase': 'extraction'})
         started = time.perf_counter()
         pycolmap.extract_features(database_path=db_path, image_path=image_dir, image_names=names,
                                  camera_mode=pycolmap.CameraMode.SINGLE, reader_options=reader,
                                  extraction_options=extraction, device=pycolmap.Device.cpu)
         timings["feature_extraction_seconds"] = time.perf_counter() - started
         print(f"MATCH: {len(pair_names)} pairs", flush=True)
+        write_json(OUTPUT / 'status.json', {'status': 'processing', 'phase': 'matching'})
         started = time.perf_counter()
         pairing = pycolmap.ImportedPairingOptions()
         pairing.match_list_path = pair_file
@@ -168,6 +170,7 @@ def _process_features(source, OUTPUT, *, export_only, pair_window, threads, max_
                                   pairing_options=pairing, verification_options=verification,
                                   device=pycolmap.Device.cpu)
         timings["matching_and_geometry_seconds"] = time.perf_counter() - started
+    write_json(OUTPUT / 'status.json', {'status': 'processing', 'phase': 'export'})
     if not export_only:
         with closing(sqlite3.connect(db_path)) as connection:
             if connection.execute("PRAGMA wal_checkpoint(TRUNCATE)").fetchone()[0] != 0:
@@ -351,6 +354,7 @@ def run_features(input_dir=INPUT, output_dir=OUTPUT, *, export_only=False, pair_
                                    threads=threads, max_features=max_features, feature_run_id=feature_run_id, timings=timings)
         from validate_features import validate_features
         validation_started = time.perf_counter()
+        write_json(output / 'status.json', {'status': 'processing', 'phase': 'validation'})
         validation = validate_features(source["root"], output)
         timings["validation_seconds"] = time.perf_counter() - validation_started
         if load_feature_input(source["root"])["manifest_sha256"] != source["manifest_sha256"]:
