@@ -13,12 +13,48 @@ const errors = {
   calibration_dimensions_must_match_input: '보정 JSON의 해상도가 현재 영상·프레임과 다릅니다. 같은 크기·방향·크롭의 보정 파일을 선택하세요.',
   confirm_input_order_and_camera: '카메라·해상도 또는 프레임 순서·FPS 확인란을 체크하세요.',
 };
+const details = {
+  upload: '선택한 자료를 이 PC의 작업 폴더로 전송하고 있습니다.',
+  inspect: '파일 형식·해상도·프레임 순서와 저장 결과의 구성을 확인하고 있습니다.',
+  confirm: '프레임 추출 간격과 카메라 설정을 확인한 뒤 복원을 시작하세요.',
+  input: '영상의 방향과 시각을 확인하고 복원에 사용할 프레임을 준비하고 있습니다.',
+  reconstruction: '같은 특징점으로 카메라 위치와 3D 점을 계산·최적화하고 있습니다.',
+  preview: '복원 결과를 검사하고 3D 전체 보기와 투영 이미지를 만들고 있습니다.',
+  finalization: '지도·이미지·메타데이터의 연결과 파일 체크섬을 검증하고 있습니다.',
+};
 export function importMessage(job) {
   if (job.status === 'complete') return '복원 완료';
   if (job.status === 'failed') return `불러오기 실패: ${errors[job.error] || job.error}`;
   if (job.status === 'cancelled') return '취소했습니다. 원본 자료와 이미 생성된 진단은 보존합니다.';
   if (job.status === 'ready') return '저장 자료를 확인했습니다. 지도를 열 수 있습니다.';
-  return stages[job.stage] || job.status;
+  if (job.status === 'cancelling') return '현재 계산을 중단하고 작업 프로세스를 종료하고 있습니다.';
+  const progress = job.progress || {};
+  const count = progress.total ? `${progress.completed} / 총 ${progress.total}` : `${progress.completed ?? 0}`;
+  if (job.status === 'running' && job.stage === 'input') {
+    if (progress.phase === 'decode') return `프레임 준비 중 · 원본 ${count}프레임 읽음 · 복원용 ${progress.selected}프레임 저장`;
+    if (progress.phase === 'copy_frames') return `프레임 준비 중 · ${count}장 변환·복사 완료`;
+    if (progress.phase === 'verify_source') return `프레임 준비 중 · ${progress.selected}프레임 저장 완료 · 원본 파일 변경 여부 검증 중`;
+  }
+  if (job.status === 'running' && job.stage === 'features' && job.feature_progress) {
+    const {phase, completed, total, pairs_completed, pairs_total} = job.feature_progress;
+    if (phase === 'export') return '특징점 결과 정리 중 · 좌표·대응 관계·품질 보고서와 매칭 미리보기 저장 중';
+    if (phase === 'validation') return '특징점 결과 검증 중 · 입력 프레임·특징점·매칭 DB의 일치 여부 확인 중';
+    if (phase === 'matching') return pairs_total ? `특징점 매칭 중 · ${pairs_completed} / 총 ${pairs_total}쌍 기하 검증 완료 · ${total}프레임 추출 완료` :
+      `특징점 매칭·결과 정리 중 · 총 ${total}프레임 추출 완료`;
+    return completed === null ? `특징점 추출 중 · 총 ${total}프레임 · 진행 수 확인 중` :
+      `특징점 추출 중 · ${completed} / 총 ${total}프레임 완료 · 나머지 프레임 병렬 처리 중`;
+  }
+  if (job.status === 'running' && job.stage === 'reconstruction') {
+    const task = {input_validation: '입력 프레임·특징점·카메라 설정 검증 중',
+      mapping: '카메라 위치 등록·3D 점 생성·위치 최적화 중', export: '점 색상 추출·지도와 카메라 경로 저장 중'}[progress.stage];
+    if (task) return `3D 지도 복원 중 · ${task}`;
+  }
+  if (job.status === 'running' && job.stage === 'preview') {
+    const task = {validation: '저장 지도와 파일 무결성 검사 중', overview: '3D 전체 보기 이미지 그리는 중 · 0 / 2장 저장',
+      projections: 'XY·XZ·YZ 투영 이미지 그리는 중 · 1 / 2장 저장', save: '2 / 2장 저장 완료 · 미리보기 메타데이터와 체크섬 저장 중'}[progress.phase];
+    if (task) return `미리보기 생성 중 · ${task}`;
+  }
+  return details[job.stage] ? `${stages[job.stage]} · ${details[job.stage]}` : stages[job.stage] || job.status;
 }
 
 export function openUrl(id) { return `/?asset=${encodeURIComponent(id)}#saved`; }
@@ -33,7 +69,7 @@ export function savedPhase(job) {
 
 export function processingSteps(job) {
   const index = job.status === 'complete' ? processingStages.length : processingStages.indexOf(job.stage);
-  return processingStages.map((stage, i) => ({label: stages[stage],
+  return processingStages.map((stage, i) => ({label: job.status === 'running' && job.stage === stage ? importMessage(job) : stages[stage],
     state: i < index ? 'done' : i === index && job.status === 'running' ? 'active' : 'waiting'}));
 }
 
@@ -165,7 +201,7 @@ export function connectImport({profiles = null, onPhase = () => {}} = {}) {
     }));
     if (job.status === 'running' && !startedAt) {
       startedAt = Date.now();
-      const tick = () => { $('saved-elapsed').textContent = `이 화면에서 처리 시간 ${Math.floor((Date.now() - startedAt) / 1000)}초 · 계산 진행률은 단계로 표시합니다.`; };
+      const tick = () => { $('saved-elapsed').textContent = `이 화면에서 처리 시간 ${Math.floor((Date.now() - startedAt) / 1000)}초 · 처리 수는 저장된 결과 기준이며 병렬 계산 중에는 잠시 유지될 수 있습니다.`; };
       tick(); timer = setInterval(tick, 1000);
     }
     if (['complete', 'failed', 'cancelled', 'ready'].includes(job.status)) { clearInterval(timer); timer = null; }

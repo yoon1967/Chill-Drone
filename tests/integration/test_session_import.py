@@ -3,6 +3,7 @@ from functools import partial
 from http.client import HTTPConnection
 from io import BytesIO
 import json
+import sqlite3
 from pathlib import Path
 import tempfile
 import threading
@@ -13,7 +14,7 @@ import zipfile
 from PIL import Image
 
 from apps.console.serve import ObservationCache, Timeline, ViewerHandler, ViewerServer
-from modules.mapping.data.session_import import ImportManager, ImportedMap, extract_zip, relative_path
+from modules.mapping.data.session_import import ImportManager, ImportedMap, extract_zip, relative_path, feature_progress
 from modules.mapping.data.frame_input import inspect_input, prepare_frames, validate_options
 
 
@@ -39,6 +40,35 @@ def make_session(root):
 
 
 class SessionImportTests(unittest.TestCase):
+    def test_feature_progress_reads_only_committed_complete_frames(self):
+        with tempfile.TemporaryDirectory() as folder:
+            root = Path(folder)
+            write(root / 'input/manifest.json', {'selected_frames': 3})
+            self.assertEqual(feature_progress(root), {'phase': 'extraction', 'completed': None, 'total': 3})
+            self.assertFalse((root / 'features/database.db').exists())
+            (root / 'features').mkdir()
+            connection = sqlite3.connect(root / 'features/database.db')
+            try:
+                connection.executescript('CREATE TABLE keypoints (image_id INTEGER); CREATE TABLE descriptors (image_id INTEGER); CREATE TABLE two_view_geometries (pair_id INTEGER);')
+                connection.executemany('INSERT INTO keypoints VALUES (?)', [(1,), (2,), (3,)])
+                connection.execute('INSERT INTO descriptors VALUES (1)')
+                connection.commit()
+                self.assertEqual(feature_progress(root), {'phase': 'extraction', 'completed': 1, 'total': 3})
+                connection.execute('INSERT INTO descriptors VALUES (2)')
+                self.assertEqual(feature_progress(root)['completed'], 1)
+                connection.execute('INSERT INTO descriptors VALUES (3)')
+                connection.commit()
+                self.assertEqual(feature_progress(root), {'phase': 'matching', 'completed': 3, 'total': 3})
+                (root / 'features/pairs.txt').write_text('one two\ntwo three\n', encoding='utf-8')
+                connection.execute('INSERT INTO two_view_geometries VALUES (1)')
+                connection.commit()
+                self.assertEqual(feature_progress(root)['pairs_completed'], 1)
+                self.assertEqual(feature_progress(root)['pairs_total'], 2)
+                write(root / 'features/status.json', {'phase': 'export'})
+                self.assertEqual(feature_progress(root)['phase'], 'export')
+            finally:
+                connection.close()
+
     def setUp(self):
         self.temp = tempfile.TemporaryDirectory()
         self.root = Path(self.temp.name)

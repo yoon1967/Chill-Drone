@@ -25,7 +25,7 @@ def render_preview(result_dir, output):
     if output.is_relative_to(ROOT) and not output.is_relative_to(ROOT / "output"):
         raise ValueError("Generated repository files must be below output/")
     output.mkdir(parents=True, exist_ok=False)
-    write_json(output / "status.json", {"status": "running"})
+    write_json(output / "status.json", {"status": "running", "phase": "validation"})
     try:
         scene, validation = validate_saved_result(source)
         write_json(output / "validation.json", validation)
@@ -34,6 +34,7 @@ def render_preview(result_dir, output):
         import matplotlib
         matplotlib.use("Agg")
         import matplotlib.pyplot as plt
+        write_json(output / 'status.json', {'status': 'running', 'phase': 'overview', 'completed': 0, 'total': 2})
         points = np.asarray(scene["points"], dtype=float)
         xyz, rgb = points[:, 1:4], points[:, 4:7] / 255
         route = np.asarray([camera["position"] for camera in scene["cameras"]])
@@ -58,6 +59,7 @@ def render_preview(result_dir, output):
             fig.suptitle(label + "\nSparse observed points; axes are not measured floor/gravity", fontsize=12)
             fig.savefig(output / "overview.png", dpi=140)
             plt.close(fig)
+            write_json(output / 'status.json', {'status': 'running', 'phase': 'projections', 'completed': 1, 'total': 2})
             fig, axes = plt.subplots(1, 3, figsize=(15, 5.5), layout="constrained")
             for ax, (a, b) in zip(axes, [(0, 1), (0, 2), (1, 2)]):
                 ax.scatter(xyz[:, a], xyz[:, b], c=rgb, s=3, rasterized=True)
@@ -70,6 +72,7 @@ def render_preview(result_dir, output):
             fig.savefig(output / "projections.png", dpi=140)
             plt.close(fig)
         files = ("overview.png", "projections.png", "validation.json")
+        write_json(output / 'status.json', {'status': 'running', 'phase': 'save', 'completed': 2, 'total': 2})
         write_json(output / "manifest.json", {"schema_version": "phone-preview/1.0", "input_run_id": scene["input_run_id"],
                    "scene_sha256": validation["export_sha256"]["scene.json"], "unit": unit,
                    "result_status": validation["result_status"], "matplotlib": matplotlib.__version__,

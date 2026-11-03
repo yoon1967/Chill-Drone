@@ -3,6 +3,37 @@ import assert from 'node:assert/strict';
 import { MapSource } from '../map-source.js';
 import { connectImport, importMessage, openUrl, savedPhase, processingSteps } from '../import-view.js';
 
+test('feature extraction shows observed frame counts and switches to matching', () => {
+  const job = {status: 'running', stage: 'features', feature_progress: {phase: 'extraction', completed: 12, total: 30}};
+  assert.match(importMessage(job), /12 \/ 총 30프레임 완료/);
+  assert.equal(processingSteps(job)[2].label, importMessage(job));
+  job.feature_progress.completed = null;
+  assert.match(importMessage(job), /진행 수 확인 중/);
+  job.feature_progress = {phase: 'matching', completed: 30, total: 30};
+  assert.match(importMessage(job), /매칭·결과 정리 중 · 총 30프레임 추출 완료/);
+  job.stage = 'reconstruction';
+  assert.match(importMessage(job), /3D 지도 복원 중/);
+});
+
+test('every processing stage describes its work and preserves observed counts', () => {
+  const message = (stage, progress) => importMessage({status: 'running', stage, progress});
+  assert.match(message('input', {phase: 'decode', completed: 120, total: 834, selected: 4}), /120 \/ 총 834프레임 읽음 · 복원용 4프레임 저장/);
+  assert.match(message('input', {phase: 'copy_frames', completed: 4, total: 28}), /4 \/ 총 28장 변환/);
+  assert.match(message('input', {phase: 'verify_source', selected: 28}), /원본 파일 변경 여부 검증/);
+  assert.match(message('reconstruction', {stage: 'mapping'}), /카메라 위치 등록·3D 점 생성/);
+  assert.match(message('reconstruction', {stage: 'export'}), /점 색상 추출/);
+  assert.match(message('preview', {phase: 'projections'}), /1 \/ 2장 저장/);
+  assert.match(message('finalization'), /체크섬/);
+  assert.match(importMessage({status: 'inspecting', stage: 'inspect'}), /해상도·프레임 순서/);
+  const job = {status: 'running', stage: 'features', feature_progress: {
+    phase: 'matching', completed: 28, total: 28, pairs_completed: 52, pairs_total: 102}};
+  assert.match(importMessage(job), /52 \/ 총 102쌍 기하 검증 완료/);
+  job.feature_progress.phase = 'export';
+  assert.match(importMessage(job), /결과 정리 중/);
+  job.feature_progress.phase = 'validation';
+  assert.match(importMessage(job), /결과 검증 중/);
+});
+
 test('import binding applies to saved reads and never live input', async () => {
   const urls = [];
   const source = new MapSource('saved', async url => { urls.push(url); return {ok: true, status: 200, json: async () => ({})}; });
