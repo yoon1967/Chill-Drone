@@ -11,6 +11,8 @@
 - GET /snapshot.jpg        최신 프레임 1장 + 헤더 X-Input-Id·X-Frame-Id·X-Frame-Time (탐지 결과 연결용)
 - POST /api/detections    사람 탐지 이벤트(person-detection-event/1.0). 기본은 같은 PC에서만 받는다
 - GET  /api/detections    발견 목록·탐지 상태, GET·PUT /api/detections/<event_id>.jpg 사진
+- PUT /api/perception/overlay.jpg  AI 합성 영상 1장(헤더 X-Input-Id·X-Frame-Id = 원본 프레임). 같은 PC에서만
+- GET /overlay.mjpg        AI 합성 영상(최신 장만). 2초 넘게 안 오면 보내지 않는다
 이륙·rc가 허용된 상태로 뜨므로, 실제 기체에서는 주변을 비우고 실행한다. 이륙은 화면에서 주변 확인 뒤에만 된다.
 check_server.py(연결 점검·첫 조작 화면)와 같은 포트를 쓰므로 동시에 켜지 않는다. Tello는 처음 command를 보낸 쪽에만 답한다.
 """
@@ -179,20 +181,35 @@ def build_app(args) -> FastAPI:
         status, out = await asyncio.to_thread(gw.detections.put_photo, event_id, await request.body())
         return JSONResponse(out, status)
 
-    @app.get("/video.mjpg")
-    async def video_mjpg(request: Request):
-        if gw.video is None:
-            raise HTTPException(404, "영상이 꺼져 있습니다")
+    @app.put("/api/perception/overlay.jpg")
+    async def put_overlay(request: Request):
+        if not detection_sender_ok(request):
+            return JSONResponse({"ok": False, "reason": "not_local"}, 403)
+        h = request.headers
+        status, out = gw.overlay.put(await request.body(), h.get("x-input-id"), h.get("x-frame-id"))
+        return JSONResponse(out, status)
 
+    def mjpeg(request: Request, latest, running):
         async def gen():  # 최신 프레임만 보낸다. 쌓지 않는다.
             last = None
-            while gw.video.running and not await request.is_disconnected():
-                data = await asyncio.to_thread(gw.video.jpeg)
+            while running() and not await request.is_disconnected():
+                data = await asyncio.to_thread(latest)
                 if data is not None and data is not last:
                     last = data
                     yield b"--frame\r\nContent-Type: image/jpeg\r\n\r\n" + data + b"\r\n"
                 await asyncio.sleep(0.04)
         return StreamingResponse(gen(), media_type="multipart/x-mixed-replace; boundary=frame")
+
+    @app.get("/video.mjpg")
+    async def video_mjpg(request: Request):
+        if gw.video is None:
+            raise HTTPException(404, "영상이 꺼져 있습니다")
+        return mjpeg(request, gw.video.jpeg, lambda: gw.video.running)
+
+    @app.get("/overlay.mjpg")
+    async def overlay_mjpg(request: Request):
+        # 탐지 프로그램이 멈추면 화면이 원본으로 돌아가며 이 연결을 끊는다. 여기서는 끊지 않는다.
+        return mjpeg(request, gw.overlay.latest, lambda: True)
 
     if os.path.isdir(CONTROLLER_DIR):
         app.mount("/", StaticFiles(directory=CONTROLLER_DIR, html=True), name="controller")

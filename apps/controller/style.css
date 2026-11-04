@@ -42,6 +42,9 @@ main{max-width:1280px;margin:0 auto;padding:16px 20px 90px;display:grid;gap:12px
 .panel{background:var(--panel);border:1px solid var(--line);border-radius:12px;padding:12px;min-width:0}
 .panel>header{display:flex;align-items:center;flex-wrap:wrap;gap:2px;margin-bottom:10px}
 .video-ctl{margin-left:auto;display:flex;align-items:center;gap:6px}.video-ctl button{padding:3px 10px;font-size:12px}
+.feed-sel{display:inline-flex;margin-left:8px}.feed-sel button{padding:3px 10px;font-size:12px;border-radius:0}
+.feed-sel button:first-child{border-radius:6px 0 0 6px}.feed-sel button:last-child{border-radius:0 6px 6px 0;margin-left:-1px}
+.feed-sel button[aria-pressed="true"]{background:var(--accent);border-color:var(--accent);color:#fff}
 .frame-wrap{container-type:inline-size}
 .frame{position:relative;aspect-ratio:4/3;width:100%;background:var(--video);border-radius:9px;overflow:hidden}
 .placeholder{position:absolute;inset:0;display:flex;align-items:center;justify-content:center;color:#8a9a90;font-size:13px}
