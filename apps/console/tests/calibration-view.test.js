@@ -50,6 +50,27 @@ test('tutorial requires explicit board confirmation and keeps useful collection 
   assert.match(calibrationMessage('checkerboard_duplicate_pose'),/바꿔/);
 });
 
+test('drone preview refreshes independently of collection polling and stops with its session', async t => {
+  const f = fixture(t, {fetcher: async url => url === '/api/calibration' ? {enabled: true, busy: false} :
+    {...state(), source: 'tello'}});
+  f.get('calibration-source').value = 'tello';
+  await f.start();
+  const image = f.get('calibration-preview');
+  const first = image.src;
+  assert.match(first, /preview\?id=calibration_test/);
+  image.handlers.load();
+  await new Promise(resolve => setTimeout(resolve, 130));
+  assert.notEqual(image.src, first);
+  assert.equal(f.calls.filter(call => call.url.includes('/state?')).length, 1);
+  assert.equal(f.calls.some(call => call.url.includes('/frame?')), false);
+  assert.equal(image.hidden, false);
+  await f.stop();
+  const stopped = image.src;
+  image.handlers.load();
+  await new Promise(resolve => setTimeout(resolve, 130));
+  assert.equal(image.src, stopped);
+});
+
 test('permission denial never starts a server session and restores mapping controls',async t=>{
   const f=fixture(t,{permission:async()=>{throw new DOMException('denied','NotAllowedError');}});
   await f.start();assert.equal(f.calls.some(x=>x.url.endsWith('/start')),false);

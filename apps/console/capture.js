@@ -291,7 +291,7 @@ export async function connectCapture({onStart = () => {}, onStatus = () => {}, o
         }
         return;
       }
-      const file = $('camera-calibration').files[0];
+      const file = profiles?.liveCalibrationEnabled?.() === false ? null : $('camera-calibration').files[0];
       if (!demo && file && file.size > 65536) throw new Error('보정 JSON은 64KB 이하 파일을 사용하세요.');
       let camera = demo ? info.demo_camera : kind === 'tello-map' ? info.tello_camera || null : null;
       const profile = !demo && profiles ? await profiles.selected('live') : null;
@@ -438,6 +438,7 @@ export async function connectCapture({onStart = () => {}, onStatus = () => {}, o
   return {update,
     prepareDrone() {
       if (current) return;
+      profiles?.resetLiveCalibration?.();
       $('input-source').value = 'tello-map'; sourceChanged();
     },
     async startDroneMapping() {

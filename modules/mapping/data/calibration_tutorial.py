@@ -113,12 +113,15 @@ class CalibrationSession:
         self.status, self.error, self.reason = 'collecting', None, 'show_checkerboard'
         self.points, self.size, self.result, self.preview = [], None, None, None
         self.last_seen, self.created = time.monotonic(), time.monotonic()
-        self.worker = self.input_worker = None
+        self.worker = self.input_worker = self.collection_worker = None
+        self.latest_frame = None
+        self.frame_ready = threading.Event()
 
     @property
     def busy(self):
         return (not self.cancel.is_set() and self.status in {'collecting', 'calculating'}
-                or bool(self.worker and self.worker.is_alive()) or bool(self.input_worker and self.input_worker.is_alive()))
+                or any(worker and worker.is_alive() for worker in
+                       (self.worker, self.input_worker, self.collection_worker)))
 
     def snapshot(self):
         with self.lock:
@@ -185,11 +188,15 @@ class CalibrationSession:
                             reason = 'calibration_collection_full'
                         elif not self.cancel.is_set() and self.status == 'collecting':
                             self.points.append(corners.copy())
-                cv2.drawChessboardCorners(frame, (self.board['columns'], self.board['rows']), corners, found)
-            _, encoded = cv2.imencode('.jpg', frame, [cv2.IMWRITE_JPEG_QUALITY, 80])
+                if self.source != 'tello':
+                    cv2.drawChessboardCorners(frame, (self.board['columns'], self.board['rows']), corners, found)
+            if self.source != 'tello':
+                _, encoded = cv2.imencode('.jpg', frame, [cv2.IMWRITE_JPEG_QUALITY, 80])
             with self.lock:
                 if not self.cancel.is_set():
-                    self.preview, self.reason = encoded.tobytes(), reason
+                    if self.source != 'tello':
+                        self.preview = encoded.tobytes()
+                    self.reason = reason
             return self.snapshot()
         finally:
             self.frame_lock.release()
@@ -217,6 +224,7 @@ class CalibrationSession:
 
     def stop(self):
         self.cancel.set()
+        self.frame_ready.set()
         with self.lock:
             if self.status not in {'complete', 'failed'}:
                 self.status = 'stopped'
@@ -255,18 +263,45 @@ class CalibrationTutorial:
                         break
             threading.Thread(target=lease, daemon=True, name='checkerboard-lease').start()
             if session.source == 'tello':
+                def collect():
+                    sampled = -math.inf
+                    try:
+                        while not session.cancel.is_set():
+                            if session.status in {'complete', 'failed', 'stopped'}:
+                                break
+                            if not session.frame_ready.wait(.2):
+                                continue
+                            session.frame_ready.clear()
+                            with session.lock:
+                                if session.status in {'complete', 'failed', 'stopped'}:
+                                    break
+                                frame = session.latest_frame if session.status == 'collecting' else None
+                            if frame and frame[1] - sampled >= .75:
+                                sampled = frame[1]
+                                try:
+                                    session.feed(frame[0])
+                                except ValueError:
+                                    # A solve/stop may have won the race after selecting a frame.
+                                    if session.cancel.is_set() or session.status != 'collecting':
+                                        continue
+                                    raise
+                    except Exception as error:
+                        with session.lock:
+                            if not session.cancel.is_set():
+                                session.error, session.status = str(error), 'failed'
                 def receive():
                     source = None
                     try:
                         source = self.source_factory()
                         source.open(session.cancel.is_set)
-                        sampled = -math.inf
                         for jpeg, stamp in source.frames(session.cancel.is_set):
-                            if session.cancel.is_set() or session.status == 'complete':
+                            if session.cancel.is_set() or session.status in {'complete', 'failed'}:
                                 break
-                            if jpeg and session.status == 'collecting' and stamp - sampled >= .75:
-                                sampled = stamp
-                                session.feed(jpeg)
+                            if jpeg:
+                                with session.lock:
+                                    session.preview = jpeg
+                                    session.latest_frame = (jpeg, stamp)
+                                session.frame_ready.set()
                     except Exception as error:
                         with session.lock:
                             if not session.cancel.is_set():
@@ -274,6 +309,8 @@ class CalibrationTutorial:
                     finally:
                         if source:
                             source.close()
+                session.collection_worker = threading.Thread(target=collect, daemon=True, name='checkerboard-collect')
+                session.collection_worker.start()
                 session.input_worker = threading.Thread(target=receive, daemon=True, name='checkerboard-tello')
                 session.input_worker.start()
             return session.snapshot()
@@ -281,6 +318,6 @@ class CalibrationTutorial:
     def shutdown(self):
         if self.current:
             self.current.stop()
-            for worker in (self.current.input_worker, self.current.worker):
+            for worker in (self.current.input_worker, self.current.collection_worker, self.current.worker):
                 if worker:
                     worker.join(timeout=5)

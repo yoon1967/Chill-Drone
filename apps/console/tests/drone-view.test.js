@@ -130,6 +130,7 @@ test('connected state never opens the panel or probes resources until details is
   await settle();
   assert.equal(f.get('drone-resource-panel').hidden, false);
   assert.equal(f.get('drone-details').attrs['aria-expanded'], 'true');
+  assert.equal(f.get('drone-details').textContent, '상세 정보 접기');
   const request = f.requests.find(r => r.url.endsWith('explore'));
   assert.equal(request.options.headers['X-Mapping-Client'], '1');
   assert.equal(f.get('drone-resources').children[0].children[0].textContent, '<sensor>');
@@ -137,6 +138,12 @@ test('connected state never opens the panel or probes resources until details is
   f.get('drone-details').handlers.click();
   await settle();
   assert.equal(f.get('drone-resource-panel').hidden, true);
+  assert.equal(f.get('drone-details').textContent, '자세히 보기');
+  await f.timers.shift()();
+  assert.equal(f.get('drone-resource-panel').hidden, true);
+  f.get('drone-details').handlers.click();
+  await settle();
+  assert.equal(f.get('drone-resource-panel').hidden, false);
   assert.equal(f.requests.some(r => r.url.endsWith('preview/stop')), false);
   assert.equal(f.get('drone-camera-panel').hidden, false);
 });

@@ -71,6 +71,11 @@ export function connectDrones({element = id => document.getElementById(id), fetc
     element('drone-wifi-empty').textContent = '표시할 Wi-Fi가 없습니다. 검색 안내를 확인한 뒤 다시 검색하세요.';
   }
   const message = value => { element('drone-status').textContent = value; element('drone-status').hidden = !value; };
+  function resourceVisibility() {
+    element('drone-resource-panel').hidden = !open;
+    element('drone-details').setAttribute('aria-expanded', String(open));
+    element('drone-details').textContent = open ? '상세 정보 접기' : '자세히 보기';
+  }
   function refreshPreview() {
     previewTimer = null;
     if (previewActive) element('drone-resource-image').src = `/api/drones/preview.jpg?t=${Date.now()}`;
@@ -120,8 +125,7 @@ export function connectDrones({element = id => document.getElementById(id), fetc
       preview = false;
       element('drone-resource-image').hidden = true;
       open = false;
-      element('drone-resource-panel').hidden = true;
-      element('drone-details').setAttribute('aria-expanded', 'false');
+      resourceVisibility();
     }
     if (!open) return;
     const list = element('drone-resources');
@@ -155,15 +159,14 @@ export function connectDrones({element = id => document.getElementById(id), fetc
       if (path === 'scan') {
         renderWifi(state.items);
         report(state.warning ? (errors[state.warning] || 'Wi-Fi 목록을 조회하지 못했습니다. Wi-Fi가 켜져 있는지와 OS 권한·어댑터를 확인한 뒤 다시 검색하세요.') :
-          state.items.length ? `${state.items.length}개 Wi-Fi. 목록에서 드론의 Wi-Fi 이름을 직접 선택하세요. 더블클릭하거나 선택한 Wi-Fi 연결 버튼을 누르면 연결합니다.` :
+          state.items.length ? `${state.items.length}개 Wi-Fi. 목록에서 드론의 Wi-Fi 이름을 선택하세요.` :
           '검색된 Wi-Fi가 없습니다. 노트북 Wi-Fi와 드론 전원을 켜고 다시 검색하세요.');
       } else {
         if (path === 'connect' && state.connected) element('drone-workspace').open = true;
         if (path === 'preview/start') preview = !state.video?.error;
         if (path === 'preview/stop') preview = false;
         if (path === 'explore') open = true;
-        element('drone-resource-panel').hidden = !open;
-        element('drone-details').setAttribute('aria-expanded', String(open));
+        resourceVisibility();
         render(state);
         if (path === 'disconnect') await onDisconnected(state);
         report(path === 'explore' ? '실제 응답한 자원과 미확인 자원을 구분해 표시합니다.' : state.connected ? 'SDK 연결을 확인했습니다.' : '연결을 해제했습니다.');
@@ -232,8 +235,7 @@ export function connectDrones({element = id => document.getElementById(id), fetc
   });
   element('drone-details').addEventListener('click', () => {
     if (!open) { action('explore'); return; }
-    open = false; element('drone-resource-panel').hidden = true;
-    element('drone-details').setAttribute('aria-expanded', 'false');
+    open = false; resourceVisibility();
   });
   poll();
   return {action, mappingStatus(status) {
