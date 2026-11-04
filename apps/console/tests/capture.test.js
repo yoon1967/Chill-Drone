@@ -412,3 +412,36 @@ test('browser frame transport failure records the error and its stop cause', asy
   assert.deepEqual(JSON.parse(f.requests.find(r => r.url === '/api/live/stop').options.body),
     {session_id: 'live_test', reason: 'client_error', error: 'synthetic upload failure'});
 });
+
+test('dense live capture waits for preparation and admission, and display timeouts do not start another frame', async (t) => {
+  const loading = deferred(); let prepared = false, plays = 0, uploads = 0;
+  const dense = {session_id: 'live_test', backend: 'orb_slam3_depth', session_status: 'receiving', can_accept_frame: true};
+  const f = fixture(t, {fetcher: (url, options, value) => {
+    if (url === '/api/live/start') return reply({...dense, session_status: 'starting', can_accept_frame: false});
+    if (url.startsWith('/api/live/state')) { loading.resolve(); return reply({...dense, transport_ready: prepared}); }
+    if (url.startsWith('/api/live/frame')) {
+      if (++uploads === 1) throw new DOMException('waiting for display', 'TimeoutError');
+      return reply({...dense, frame_drops: 0});
+    }
+    return reply(value);
+  }});
+  f.get('input-preview').play = async () => { plays++; };
+  const handle = await f.connect();
+  const starting = f.get('camera-start').handlers.click(); await loading.promise;
+  assert.equal(plays, 0); assert.equal(uploads, 0);
+  prepared = true; await starting;
+  assert.equal(plays, 1);
+  handle.update({...dense, can_accept_frame: false});
+  await f.deliver({mediaTime: 1, presentedFrames: 1});
+  assert.equal(uploads, 0);
+  handle.update(dense);
+  await f.deliver({mediaTime: 2, presentedFrames: 2});
+  assert.equal(uploads, 1);
+  await f.deliver({mediaTime: 3, presentedFrames: 3});
+  assert.equal(uploads, 1);
+  assert.equal(f.requests.some(r => r.url === '/api/live/stop'), false);
+  handle.update({...dense, can_accept_frame: true});
+  await f.deliver({mediaTime: 4, presentedFrames: 4});
+  assert.equal(uploads, 2);
+  await f.get('camera-stop').handlers.click();
+});

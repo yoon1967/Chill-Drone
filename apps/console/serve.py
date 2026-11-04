@@ -7,6 +7,7 @@ from functools import lru_cache, partial
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 import json
 import mimetypes
+import os
 from pathlib import Path
 import re
 import sys
@@ -17,6 +18,7 @@ from types import SimpleNamespace
 from urllib.parse import parse_qs, unquote, urlsplit
 
 APP = Path(__file__).resolve().parent
+os.environ.setdefault('OMP_NUM_THREADS', '2')
 sys.path.insert(0, str(APP.parents[1]))
 from modules.mapping.localization.observations import native_observations
 from modules.mapping.data.live_recording import archive_files
@@ -205,7 +207,7 @@ class ViewerHandler(BaseHTTPRequestHandler):
         return value
 
     def json_response(self, value, status=200):
-        payload = json.dumps(value, ensure_ascii=False, allow_nan=False).encode("utf-8")
+        payload = json.dumps(value, ensure_ascii=False, allow_nan=False, separators=(',', ':')).encode("utf-8")
         self.json_payload(payload, status)
 
     def json_payload(self, payload, status=200):
@@ -232,6 +234,8 @@ class ViewerHandler(BaseHTTPRequestHandler):
         if state is None:
             state = load_json(self.session / "state.json")
         state.pop("surface", None)  # Retired point-connectivity mesh statistics in older sessions.
+        if state.get('backend') == 'orb_slam3_depth' and state.get('revision_path') == 'reconstruction':
+            return self.session / 'reconstruction', state
         name = f"revisions/{revision}" if revision else state.get("revision_path", "")
         if not re.fullmatch(r"revisions/\d{6}", name):
             return None, state
@@ -686,7 +690,8 @@ class ViewerHandler(BaseHTTPRequestHandler):
                 elif action == 'status':
                     self.json_response(self.imports.status(key))
                 elif action == 'preview':
-                    self.json_response(self.imports.preview(key, int(query.get('revision', ['0'])[0])))
+                    self.json_response(self.imports.preview(key, int(query.get('revision', ['0'])[0]),
+                        2 if query.get('wait') == ['1'] else 0))
                 elif action == 'history':
                     self.json_response(self.imports.history_timeline(key))
                 elif action == 'history-frame':
@@ -762,7 +767,9 @@ class ViewerHandler(BaseHTTPRequestHandler):
                     raise ValueError('stop_live_mapping_before_reconstruction')
                 summary = self.imports.job(key).get('summary', {})
                 body = self.profile_config(body, 'file', (summary.get('width'), summary.get('height')))
-                value = self.imports.start(key, body)
+                value = self.imports.start(key, body, presentation_sync=True)
+            elif action == 'presented':
+                value = self.imports.presented(key, body.get('revision'))
             elif action == 'cancel':
                 value = self.imports.cancel(key)
             else:
@@ -999,6 +1006,15 @@ class ViewerHandler(BaseHTTPRequestHandler):
             if self.source == 'live' and self.current and self.current.input_kind == 'tello_camera' and not self.drone_state().get('can_save'):
                 self.json_response({'error': 'disconnect_drone_and_wait_for_map'}, 409)
                 return
+            if self.source == 'live' and self.current and getattr(self.current, 'depth_job_id', None):
+                if not self.current.done or not state.get('map_available'):
+                    self.json_response({'error': 'map_history_not_available'}, 409)
+                    return
+                self.send_response(302)
+                self.send_header('Location', '/api/import/history.zip?id=' + self.current.depth_job_id)
+                self.send_header('Content-Length', '0')
+                self.end_headers()
+                return
             names = ('scene.json', 'status.json', 'points.ply', 'poses.json', 'trajectory.csv', 'manifest.json')
             files, metadata = [], {}
             if self.session:
@@ -1091,6 +1107,7 @@ class ViewerHandler(BaseHTTPRequestHandler):
                   "/point-surface-worker.js": APP / "point-surface-worker.js", "/map-delta.js": APP / "map-delta.js",
                   "/map-source.js": APP / "map-source.js", "/wide-surfaces.js": APP / "wide-surfaces.js",
                   "/frame-latency.js": APP / "frame-latency.js",
+                  "/live-depth-view.js": APP / "live-depth-view.js",
                   "/point-display.js": APP / "point-display.js", "/point-worker-state.js": APP / "point-worker-state.js",
                   "/point-spacing-worker.js": APP / "point-spacing-worker.js",
                   "/tracking-preview.js": APP / "tracking-preview.js",
@@ -1216,10 +1233,11 @@ def main():
         parser.error("Select a complete or partial reconstruction result")
     if not (APP / "node_modules/three/build/three.module.js").is_file():
         parser.error("Install apps/console dependencies first: pnpm install --frozen-lockfile")
+    imports = ImportManager(args.live_root)
     live = None
     if args.enable_camera or args.enable_tello_map or args.tello_gateway:
         from modules.mapping.localization.orbslam3_live import LiveManager
-        live = LiveManager(args.live_root)
+        live = LiveManager(args.live_root, imports=imports)
     tello_map = None
     if args.enable_tello_map or args.tello_gateway:
         from modules.mapping.localization.tello_input import TelloMapInput
@@ -1244,7 +1262,6 @@ def main():
                 calibration_result=args.demo_calibration_result, session=args.session)
         except (OSError, ValueError, KeyError, TypeError) as error:
             parser.error(str(error))
-    imports = ImportManager(args.live_root)
     profiles = CameraProfiles(args.profiles_root)
     calibrations = CalibrationTutorial(tello_map.source_factory if tello_map else None)
     from modules.autonomy.tello_link.discovery import DroneDiscovery
@@ -1272,11 +1289,11 @@ def main():
         server.server_close()
         drones.release()
         calibrations.shutdown()
-        imports.shutdown()
         if tello_map:
             tello_map.shutdown()
         if live:
             live.shutdown()
+        imports.shutdown()
         if tello and tello.running:
             tello.stop()
 

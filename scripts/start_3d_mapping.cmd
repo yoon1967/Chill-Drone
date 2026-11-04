@@ -67,15 +67,7 @@ def ensure_python_environment():
                 print('[ERROR] Mapping package installation failed. Check the messages above and retry this CMD.', flush=True)
                 return False
             importlib.invalidate_caches()
-        print('Checking the depth model. Missing model files will download automatically; cached files are reused.', flush=True)
-        # A separate process checks real imports and model loading, then releases GPU memory before the server starts.
-        code = subprocess.call([sys.executable, '-B', '-c',
-            'from modules.mapping.data.stream_mapping import DepthEstimator; '
-            'model = DepthEstimator(); '
-            'print("Fast reconstruction is ready (" + model.device + ").", flush=True)'], cwd=ROOT)
-        if code:
-            print('[ERROR] Could not prepare fast reconstruction. Check the messages above, internet and disk space, then retry this CMD.', flush=True)
-            return False
+        print('Mapping packages are ready. The server prepares the depth model once when reconstruction starts; video waits until it is ready.', flush=True)
         return True
     except OSError as error:
         print('[ERROR] Mapping setup failed: ' + str(error) + '. Retry this CMD after fixing the error.', flush=True)

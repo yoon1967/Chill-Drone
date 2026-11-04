@@ -379,10 +379,11 @@ class LiveSession:
 
 
 class LiveManager:
-    def __init__(self, root):
+    def __init__(self, root, imports=None):
         self.root = Path(root).resolve()
         self.lock = threading.Lock()
         self.current = None
+        self.imports = imports
 
     def start(self, config, *, input_kind="browser_camera", timestamp_basis="browser_media_time", image_id=None):
         camera = live_camera(config)
@@ -391,7 +392,15 @@ class LiveManager:
                 raise RuntimeError("another_camera_session_is_active")
             # Fail before changing the viewer's selected result when Docker isn't available.
             image_id = image_id or require_slam_image()
-            self.current = LiveSession(self.root, camera, image_id, input_kind=input_kind, timestamp_basis=timestamp_basis)
+            if self.imports is not None:
+                with self.imports.lock:
+                    if any(job['status'] in {'running', 'cancelling'} for job in self.imports.jobs.values()):
+                        raise RuntimeError('reconstruction_busy')
+                    from .live_depth import LiveDepthSession
+                    self.current = LiveDepthSession(self.root, camera, image_id, self.imports,
+                        input_kind=input_kind, timestamp_basis=timestamp_basis)
+            else:
+                self.current = LiveSession(self.root, camera, image_id, input_kind=input_kind, timestamp_basis=timestamp_basis)
             return self.current.stats()
 
     def require(self, session_id):
@@ -404,6 +413,6 @@ class LiveManager:
     def shutdown(self):
         if self.current and not self.current.done:
             self.current.stop("server_shutdown")
-            self.current.worker.join(timeout=20)
+            self.current.worker.join(timeout=30)
         if self.current and getattr(self.current, 'recording', None):
             self.current.recording.wait(timeout=30)

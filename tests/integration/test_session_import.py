@@ -313,6 +313,46 @@ class SessionImportTests(unittest.TestCase):
         with self.assertRaises(OSError):
             self.manager.thumbnail('saved_session')
 
+    def test_depth_model_is_prepared_once_and_failed_preparation_is_retryable(self):
+        from unittest.mock import MagicMock
+        from modules.mapping.data.depth_worker import DepthModelCache
+        cache = DepthModelCache()
+        estimator = MagicMock()
+        with patch('modules.mapping.data.stream_mapping.DepthEstimator', return_value=estimator) as factory:
+            estimator.prepare.side_effect = [RuntimeError('model unavailable'), None]
+            with self.assertRaisesRegex(RuntimeError, 'model unavailable'):
+                cache.get()
+            self.assertIs(cache.get(), estimator)
+            self.assertIs(cache.get(), estimator)
+            self.assertEqual(factory.call_count, 2)
+            self.assertEqual(estimator.prepare.call_count, 2)
+
+    def test_presentation_acknowledgement_is_bounded_and_cancellation_wakes_waiters(self):
+        key = self.manager.create()['id']
+        job = self.manager.job(key)
+        output = job['path'] / 'output'
+        output.mkdir()
+        job.update(output=output, status='running', options={'mode': 'depth_rgbd'},
+            presentation_sync=True, preview={'revision': 1, 'points': [], 'cameras': []})
+        self.assertTrue(self.manager.preview(key)['needs_presentation'])
+        for revision in (0, 2, True, '1'):
+            with self.assertRaises(ValueError):
+                self.manager.presented(key, revision)
+        self.manager.presented(key, 1)
+        self.assertFalse(self.manager.preview(key, 1)['needs_presentation'])
+        done = threading.Event()
+        def waiter():
+            self.manager.preview(key, 1, wait=2)
+            done.set()
+        thread = threading.Thread(target=waiter)
+        thread.start()
+        self.manager.cancel(key)
+        job['status'] = 'cancelled'
+        with self.manager.preview_changed:
+            self.manager.preview_changed.notify_all()
+        thread.join(1)
+        self.assertTrue(done.is_set())
+
     def test_recent_library_lists_one_card_for_reopened_local_map(self):
         source = self.manager.root / 'saved_session'
         make_session(source)

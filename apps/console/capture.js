@@ -233,7 +233,7 @@ export async function connectCapture({onStart = () => {}, onStatus = () => {}, o
     if (run.sourceBase === null && data.presentedFrames != null) run.sourceBase = data.presentedFrames;
     const sequence = data.presentedFrames != null ? data.presentedFrames - run.sourceBase : run.sequence;
     run.skipped += Math.max(0, sequence - run.sequence); run.sequence = sequence + 1;
-    if (run.sending) { run.skipped++; return; }
+    if (run.sending || (serverState.backend === 'orb_slam3_depth' && !serverState.can_accept_frame)) { run.skipped++; return; }
     run.sending = true;
     try {
       if (run.base === null) run.base = data.mediaTime;
@@ -245,14 +245,23 @@ export async function connectCapture({onStart = () => {}, onStatus = () => {}, o
       if (!jpeg) throw new Error('영상 프레임 인코딩 실패');
       onFrameTiming({session: run.session, pts, encodedAtMs: performance.now()});
       const state = await post('/api/live/frame?session=' + encodeURIComponent(run.session), jpeg,
-        {'Content-Type': 'image/jpeg', 'X-Frame-Timestamp': String(pts), 'X-Frame-Sequence': String(sequence)});
+        {'Content-Type': 'image/jpeg', 'X-Frame-Timestamp': String(pts), 'X-Frame-Sequence': String(sequence)},
+        serverState.backend === 'orb_slam3_depth' ? 60000 : 10000);
       if (!owns(run)) return;
+      if (state.backend === 'orb_slam3_depth') serverState = state;
       onFrameTiming({session: run.session, pts, ackAtMs: performance.now()});
       run.sent++;
-      message('수신 중 · 전송 ' + run.sent + '장 · 전송 대기 중 생략 ' + run.skipped + '장 · 처리 대기 교체/입력 누락 ' + state.frame_drops + '장 · 대기 ' + state.queue_depth + '/1', 'receiving', run);
+      message(state.backend === 'orb_slam3_depth' ? `순차 복원 중 · 현재 프레임의 저장·표시 완료 후 다음 프레임 진행 · 수신 ${run.sent}장` :
+        '수신 중 · 전송 ' + run.sent + '장 · 전송 대기 중 생략 ' + run.skipped + '장 · 처리 대기 교체/입력 누락 ' + state.frame_drops + '장 · 대기 ' + state.queue_depth + '/1', 'receiving', run);
       Object.assign($('camera-status').dataset, {sent: run.sent, skipped: run.skipped, dropped: state.frame_drops, session: run.session});
     } catch (error) {
-      if (owns(run)) { run.lastError = error.message; await stop(run, '영상 수신 중단: ' + error.message, 'disconnected', 'client_error'); }
+      if (owns(run)) {
+        if (serverState.backend === 'orb_slam3_depth' && ['TimeoutError', 'AbortError'].includes(error.name)) {
+          serverState.can_accept_frame = false;
+          message('현재 프레임 표시를 기다리고 있습니다. 최신 복원 화면으로 돌아오면 이어갑니다.', 'receiving', run);
+        }
+        else { run.lastError = error.message; await stop(run, '영상 수신 중단: ' + error.message, 'disconnected', 'client_error'); }
+      }
     }
     finally { run.sending = false; }
   }
@@ -332,7 +341,7 @@ export async function connectCapture({onStart = () => {}, onStatus = () => {}, o
         serverState = started; onStart(run.session);
         message('영상 연결과 SLAM을 준비하고 있습니다.', 'connecting', run);
       } finally { creating = false; controls(); }
-      const deadline = Date.now() + 65000;
+      const deadline = Date.now() + (serverState.backend === 'orb_slam3_depth' ? 1800000 : 65000);
       while (owns(run)) {
         if (Date.now() > deadline) throw new Error('SLAM 시작 시간 초과');
         if (!drone) await heartbeat(run);
@@ -345,7 +354,7 @@ export async function connectCapture({onStart = () => {}, onStatus = () => {}, o
         if (!response.ok) throw new Error(state.error || '영상 세션 상태를 읽지 못했습니다.');
         if (state.status === 'failed' || state.session_status === 'failed') throw new Error(state.last_error || 'SLAM 시작 실패');
         if (terminal(state) || state.session_status === 'stopping') throw new Error('영상 세션이 시작 전에 종료되었습니다.');
-        if (state.transport_ready) break;
+        if (state.transport_ready) { serverState = state; break; }
         if (Date.now() > deadline) throw new Error('SLAM 시작 시간 초과');
         await new Promise((resolve) => setTimeout(resolve, 250));
       }

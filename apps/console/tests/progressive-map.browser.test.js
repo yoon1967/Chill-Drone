@@ -65,6 +65,7 @@ test('reconstruction has no axis widget and completed maps reopen after replay o
         assert.equal(await page.locator('#progressive-viewport .axis-gizmo').count(), 0);
         await page.locator('#import-open').click();
         await page.waitForFunction(() => document.body.dataset.savedPhase === 'result');
+        await page.locator('#viewport canvas').waitFor({state: 'visible'});
         assert.equal(await page.locator('#map-content').isVisible(), true);
         assert.equal(await page.locator('#viewport canvas').isVisible(), true);
         assert.equal(await page.locator('#viewport .axis-gizmo button').count(), 6, 'completed maps keep their axis controls');

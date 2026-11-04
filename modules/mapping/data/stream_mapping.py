@@ -6,6 +6,7 @@ The map is an AI depth estimate, not a measured survey or a navigation map.
 from __future__ import annotations
 
 import argparse
+from collections import OrderedDict
 import csv
 from datetime import datetime, timezone
 import json
@@ -26,7 +27,7 @@ MODEL = 'depth-anything/Depth-Anything-V2-Metric-Indoor-Small-hf'
 def write_json(path, value):
     path = Path(path)
     temporary = path.with_suffix(path.suffix + '.tmp')
-    temporary.write_text(json.dumps(value, ensure_ascii=False, allow_nan=False), encoding='utf-8')
+    temporary.write_text(json.dumps(value, ensure_ascii=False, allow_nan=False, separators=(',', ':')), encoding='utf-8')
     # Windows readers briefly prevent replacement; retry without exposing half JSON.
     for attempt in range(7):
         try:
@@ -55,6 +56,11 @@ class DepthEstimator:
         self.model = model.to(self.device).eval()
         if self.device == 'cuda':
             self.model.half()
+
+    def prepare(self):
+        if not getattr(self, 'prepared', False):
+            self.estimate(np.zeros((144, 256, 3), dtype=np.uint8))
+            self.prepared = True
 
     def estimate(self, rgb):
         torch = self.torch
@@ -124,89 +130,84 @@ def frames(source, fps, rate=None, long_side=256):
                 yield index + 1, stamp, np.asarray(image.convert('RGB')), original_size
 
 
-class LatestFrames:
-    """Playback runs independently; slow mapping replaces pending frames."""
-    def __init__(self, source, fps, rate):
-        self.source, self.fps, self.rate = source, fps, rate
-        self.condition = threading.Condition()
-        self.latest = None
-        self.done = False
-        self.error = None
-        self.dropped = 0
-        self.stop = threading.Event()
-        self.thread = threading.Thread(target=self.produce, daemon=True)
-
-    def produce(self):
-        started, next_stamp = time.monotonic(), 0.
-        try:
-            for number, stamp, rgb, original_size in frames(self.source, self.fps, self.rate):
-                if self.stop.wait(max(0., started + stamp - time.monotonic())):
-                    break
-                if stamp + 1e-6 < next_stamp:
-                    continue
-                next_stamp = stamp + 1 / self.rate
-                with self.condition:
-                    self.dropped += self.latest is not None
-                    self.latest = (number, stamp, rgb, started + stamp, original_size)
-                    self.condition.notify()
-        except Exception as error:
-            self.error = error
-        finally:
-            with self.condition:
-                self.done = True
-                self.condition.notify()
-
-    def take(self):
-        with self.condition:
-            self.condition.wait_for(lambda: self.latest is not None or self.done)
-            value, self.latest = self.latest, None
-            if value is None and self.error:
-                raise self.error
-            return value
-
-
-class PoseFrames(LatestFrames):
-    """Track every candidate first; depth consumes a latest-only pose/frame pair."""
+class PoseFrames:
+    """Pull one fixed pose at a time; callers finish its depth/map before pulling again."""
     def __init__(self, source, fps, rate, output, camera=None, tracker_factory=None):
-        super().__init__(source, fps, rate)
         from modules.mapping.localization.pose_first import OrbPoseTracker
+        self.source, self.fps, self.rate = source, fps, rate
         self.output, self.camera = output, camera
         self.tracker_factory = tracker_factory or OrbPoseTracker
         self.native = None
+        self.iterator = None
+        self.next_output = 0.
+        self.dropped = 0
+        self.stop = threading.Event()
+        self.cancel_event = None
 
-    def produce(self):
-        started, next_output = None, 0.
+    def cancelled(self):
+        return self.stop.is_set() or (self.cancel_event is not None and self.cancel_event.is_set())
+
+    def take(self):
+        if self.iterator is None:
+            self.iterator = iter(frames(self.source, self.fps, 15, 640))
+        while not self.cancelled():
+            item = next(self.iterator, None)
+            if item is None:
+                return None
+            number, stamp, rgb, original_size = item
+            if self.native is None:
+                self.native = self.tracker_factory(self.output, (rgb.shape[1], rgb.shape[0]), original_size, self.camera, 15)
+            if self.cancelled():
+                return None
+            received = time.monotonic()
+            # Keep all tracking candidates, even if inference or storage was slow.
+            result = self.native.track(rgb, stamp)
+            if stamp + 1e-6 < self.next_output:
+                continue
+            self.next_output = stamp + 1 / self.rate
+            return number, stamp, rgb, received, original_size, result
+        return None
+
+    def close(self):
+        self.stop.set()
         try:
-            for number, stamp, rgb, original_size in frames(self.source, self.fps, 15, 640):
-                if self.stop.is_set():
-                    break
-                if self.native is None:
-                    self.native = self.tracker_factory(self.output, (rgb.shape[1], rgb.shape[0]), original_size, self.camera, 15)
-                    started = time.monotonic() - stamp
-                if self.stop.wait(max(0., started + stamp - time.monotonic())):
-                    break
-                if time.monotonic() - (started + stamp) > .2:
-                    continue
-                # This tracker sees RGB only. Predicted depth cannot alter its pose.
-                result = self.native.track(rgb, stamp)
-                if stamp + 1e-6 < next_output:
-                    continue
-                next_output = stamp + 1 / self.rate
-                with self.condition:
-                    self.dropped += self.latest is not None
-                    self.latest = (number, stamp, rgb, started + stamp, original_size, result)
-                    self.condition.notify()
-        except Exception as error:
-            self.error = error
-        finally:
             if self.native:
-                try:
-                    self.native.close()
-                except Exception as error:
-                    self.error = self.error or error
-            with self.condition:
-                self.done = True
-                self.condition.notify()
+                self.native.close()
+                self.native = None
+        finally:
+            if self.iterator and hasattr(self.iterator, 'close'):
+                self.iterator.close()
+
+
+class LivePoseFrames(PoseFrames):
+    """Request fresh live input only after the preceding output was presented."""
+    def __init__(self, receive, fps, rate, output, camera, tracker_factory=None):
+        super().__init__('live', fps, rate, output, camera, tracker_factory)
+        self.receive = receive
+        width, height = camera['width'], camera['height']
+        factor = min(1., 640 / max(width, height))
+        self.size = (round(width * factor), round(height * factor))
+        self.original_size = (width, height)
+        # Known live geometry lets Docker finish loading before admitting the first frame.
+        self.native = self.tracker_factory(output, self.size, self.original_size, camera, 15)
+
+    def take(self):
+        while not self.cancelled():
+            packet = self.receive()
+            if packet is None:
+                return None
+            jpeg, stamp, sequence = packet
+            image = cv2.imdecode(np.frombuffer(jpeg, dtype=np.uint8), cv2.IMREAD_COLOR)
+            if image is None or (image.shape[1], image.shape[0]) != self.original_size:
+                raise ValueError('frame_dimensions_do_not_match_calibration')
+            rgb = cv2.cvtColor(cv2.resize(image, self.size), cv2.COLOR_BGR2RGB)
+            received = time.monotonic()
+            result = self.native.track(rgb, stamp)
+            if stamp + 1e-6 < self.next_output:
+                continue
+            self.next_output = stamp + 1 / self.rate
+            return sequence + 1, stamp, rgb, received, self.original_size, result
+        return None
 
 
 def camera_intrinsic(shape, original_size, camera):
@@ -227,16 +228,20 @@ def add_points(cells, rgb, depth, pose, params, max_points=40000, voxel_size=.06
     xyz = np.column_stack(((u[good] - cx) * z[good] / fx, (v[good] - cy) * z[good] / fy, z[good]))
     xyz = xyz @ pose[:3, :3].T + pose[:3, 3]
     colors = rgb[v[good], u[good]]
-    for point, color in zip(xyz, colors):
-        key = tuple(np.floor(point / voxel_size).astype(int))
+    keys = np.floor(xyz / voxel_size).astype(np.int64).tolist()
+    for values, point, color in zip(keys, np.round(xyz, 4).tolist(), colors.tolist()):
+        key = tuple(values)
         if seen is not None:
             cells.pop(key, None)
             seen[key] = stamp
-        cells[key] = [*np.round(point, 4).tolist(), *color.tolist()]
+        cells[key] = [*point, *color]
     removed = 0
     while len(cells) > max_points:
-        key = next(iter(cells))
-        del cells[key]
+        if isinstance(cells, OrderedDict):
+            key, _ = cells.popitem(last=False)
+        else:
+            key = next(iter(cells))
+            del cells[key]
         if seen is not None:
             seen.pop(key, None)
         removed += 1
@@ -255,37 +260,57 @@ def expire_render_points(cells, seen, stamp, window_s):
     return removed
 
 
-def run(source, output, options, estimator_factory=DepthEstimator, tracker_factory=None):
+def run(source, output, options, estimator_factory=DepthEstimator, tracker_factory=None,
+        stop_event=None, on_preview=None, live_receive=None):
     output = Path(output)
     output.mkdir(parents=True, exist_ok=False)
     (output / 'frames').mkdir()
     started = time.monotonic()
-    run_id = output.parent.name + '_' + output.name
+    run_id = options.get('run_id', output.parent.name + '_' + output.name)
     status = {'status': 'running', 'stage': 'model', 'backend': 'depth_rgbd', 'processed': 0,
-              'registered': 0, 'dropped': 0, 'revision': 0, 'points': 0, 'timestamp_s': 0., 'tracking': 'initializing'}
+              'registered': 0, 'dropped': 0, 'revision': 0, 'points': 0, 'timestamp_s': 0.,
+              'tracking': 'initializing', 'processing_policy': 'sequential'}
     producer = history = None
-    cameras, cells = [], {}
+    cameras, cells = [], OrderedDict()
     seen = {}
     last_nonempty_points = []
     render_window_s = options.get('render_window_s', 10.)
+    def check_cancelled():
+        if stop_event is not None and stop_event.is_set():
+            raise InterruptedError('cancelled')
     def publish(**fields):
+        if fields.get('status') not in {'cancelled', 'failed'}:
+            check_cancelled()
         status.update(fields, elapsed_seconds=round(time.monotonic() - started, 3))
         write_json(output / 'progress.json', status)
     try:
         from modules.mapping.data.mapping_history import HistoryWriter
-        history = HistoryWriter(output, write_json, render_window_s)
+        history = HistoryWriter(output, write_json, render_window_s, synchronous=True)
         publish()
+        model_started = time.perf_counter()
         estimator = estimator_factory()
         # Warm up before starting playback so model loading never consumes the input.
-        estimator.estimate(np.zeros((144, 256, 3), dtype=np.uint8))
-        publish(stage='tracking', device=getattr(estimator, 'device', 'test'))
-        producer = PoseFrames(source, options['frame_fps'], min(options['sample_fps'], 10.), output, options.get('camera'), tracker_factory)
-        producer.thread.start()
+        if hasattr(estimator, 'prepare'):
+            estimator.prepare()
+        else:
+            estimator.estimate(np.zeros((144, 256, 3), dtype=np.uint8))
+        check_cancelled()
+        publish(stage='tracking', device=getattr(estimator, 'device', 'test'),
+                model_preparation_ms=round((time.perf_counter() - model_started) * 1000, 2))
+        producer = (LivePoseFrames(live_receive, options['frame_fps'], min(options['sample_fps'], 10.),
+                    output, options['camera'], tracker_factory) if live_receive is not None else
+                    PoseFrames(source, options['frame_fps'], min(options['sample_fps'], 10.), output, options.get('camera'), tracker_factory))
+        producer.cancel_event = stop_event
         from modules.mapping.localization.pose_first import fixed_camera_pose, depth_in_pose_units
         active_map = None
         submaps = []
         voxel_size = None
-        while (item := producer.take()) is not None:
+        while True:
+            check_cancelled()
+            item = producer.take()
+            check_cancelled()
+            if item is None:
+                break
             number, stamp, display_rgb, received, original_size, native_pose = item
             tick = time.monotonic()
             # Admit pose before invoking depth. The returned matrix is immutable here.
@@ -322,7 +347,7 @@ def run(source, output, options, estimator_factory=DepthEstimator, tracker_facto
                         write_json(output / archive, {'map_id': active_map,
                             'points': list(cells.values()), 'cameras': cameras})
                         submaps.append({'map_id': active_map, 'file': archive})
-                        cells, cameras, seen = {}, [], {}
+                        cells, cameras, seen = OrderedDict(), [], {}
                         voxel_size = None
                     active_map = map_id
                     voxel_size = voxel_size or max(.0001, .06 * depth_scale)
@@ -356,25 +381,33 @@ def run(source, output, options, estimator_factory=DepthEstimator, tracker_facto
                 'dropped': producer.dropped, 'processing_ms': round((time.monotonic() - tick) * 1000),
                 'latency_ms': round((time.monotonic() - received) * 1000)}
             history.append(snapshot, observation)
-            write_json(output / 'preview.json', snapshot)
+            check_cancelled()
+            if on_preview is None:
+                write_json(output / 'preview.json', snapshot)
+            else:
+                publish(stage='presentation', tracking=state, points=len(points), frame_id=name)
+                on_preview(snapshot)
             publish(stage='mapping' if mapped else 'pose_wait', tracking=state, pose_confirmed=pose is not None,
                     points=len(points), frame_id=name, latency_ms=round((time.monotonic() - received) * 1000))
         if not last_nonempty_points or not cameras:
             raise ValueError('no_valid_depth_map')
+        producer.close()
+        producer = None
         history.close('complete')
         publish(stage='integration', integrated_frames=0, integration_total=status['registered'])
         finalize_history(output, status, run_id, started, publish)
         publish(status='complete', stage='finished')
         return status
     except BaseException as error:
-        publish(status='cancelled' if isinstance(error, KeyboardInterrupt) else 'failed', error=str(error)[:400])
+        publish(status='cancelled' if isinstance(error, (KeyboardInterrupt, InterruptedError)) else 'failed', error=str(error)[:400])
         raise
     finally:
-        if producer:
-            producer.stop.set()
-            producer.thread.join(timeout=5)
-        if history:
-            history.close(status['status'])
+        try:
+            if producer:
+                producer.close()
+        finally:
+            if history:
+                history.close(status['status'])
 
 
 def finalize_history(output, status, run_id, started, publish=lambda **fields: None):

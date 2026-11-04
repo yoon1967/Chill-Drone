@@ -4,6 +4,7 @@ import { connectDrones, renderDroneStages } from '/drone-view.js';
 import {connectWorkflowGuide, liveStep} from '/workflow-guide.js';
 import { connectMapSave } from '/map-save.js';
 import { connectImport } from '/import-view.js';
+import {connectLiveDepth} from '/live-depth-view.js';
 import { connectProfiles } from '/profile-view.js';
 import { connectCalibration } from '/calibration-view.js';
 import { OrbitControls } from '/vendor/OrbitControls.js';
@@ -27,6 +28,7 @@ let navigating = false, dragging = false, busy = null, revision = null;
 let pollDelay = 2000;
 let pollTimer, captureState = {state: 'idle'}, captureHandle, lastLiveState = {};
 const source = new MapSource(location.hash === '#live' ? 'live' : 'saved');
+const liveDepth = connectLiveDepth();
 source.asset = new URLSearchParams(location.search).get('asset');
 function closeDroneWorkspace(focus = true) {
   $('drone-workspace').open = false;
@@ -896,6 +898,11 @@ setInterval(() => {
   if (!replay.following) drawReplay();
 }, 100);
 function showState(state) {
+  if (state.backend === 'orb_slam3_depth') {
+    pollDelay = 500;
+    $('slam-panel').hidden = true;
+    $('frame-latency').hidden = true;
+  }
   if (state.source === 'live') liveStatus(state);
   else {
     $('slam-panel').hidden = true;
@@ -958,7 +965,9 @@ async function poll() {
     await refreshTimeline(state, context);
     if (!source.isCurrent(context)) return;
     showState(state);
+    liveDepth.update(state, context.source);
     $('error').hidden = true;
+    if (state.backend === 'orb_slam3_depth' && state.depth_job_id) return;
     if (!replay.following) return;
     if (!state.map_available) {
       const ended = (state.session_status || state.status) === 'complete';
