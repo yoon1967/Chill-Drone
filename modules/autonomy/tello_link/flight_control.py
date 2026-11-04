@@ -22,10 +22,12 @@ AIRBORNE_M = 0.2           # takeoff 응답이 없을 때 이보다 높으면 �
 RC_RATE_HZ = 20
 DEADMAN_S = 0.3            # 입력이 이 시간 동안 없으면 제자리
 STATE_STALE_S = 1.0        # 비행 중 상태가 이보다 오래 끊기면 자동 착륙
-BATTERY_MIN_TAKEOFF = 30   # 이륙 전 최소 배터리(%)
-BATTERY_LAND = 15          # 비행 중 이 아래면 자동 착륙
-TEMP_MAX_TAKEOFF_C = 80    # 이륙 전 최고 온도
-TEMP_LAND_C = 85           # 비행 중 이 이상이면 자동 착륙
+BATTERY_MIN_TAKEOFF = 20   # 이륙 전 최소 배터리(%). Tello 앱에는 없는 기준이라 실내 짧은 비행 여유만 둔다
+BATTERY_LAND = 15          # 비행 중 이 아래면 자동 착륙. 기체도 약 10%에서 스스로 착륙한다(사용자 보고)
+# 온도는 막지 않고 알리기만 한다. Tello는 팬이 없어 지상에서 뜨거워지고 날면 식으므로, 뜨거울 때 이륙을 막으면 역효과다.
+# 위험한 온도에서는 기체가 스스로 꺼진다(임계값 비공개). Tello 앱도 온도로 이륙을 막지 않는다.
+TEMP_WARN_C = 75           # 이 이상이면 이륙 전 점검에 경고(이륙은 허용)
+TEMP_LAND_C = None         # 비행 중 고온 자동 착륙. None이면 끔(기체 자체 보호에 맡긴다)
 TAKEOFF_TIMEOUT_S = 20
 LAND_TIMEOUT_S = 15
 
@@ -36,6 +38,7 @@ class Check:
     title: str
     ok: bool
     detail: str
+    blocking: bool = True  # False면 알리기만 하고 이륙은 막지 않는다
 
 
 class FlightController:
@@ -84,15 +87,16 @@ class FlightController:
                   "없음" if age is None else f"{age:.1f}초 전"),
             Check("battery", f"배터리 {BATTERY_MIN_TAKEOFF}% 이상", isinstance(bat, (int, float)) and bat >= BATTERY_MIN_TAKEOFF,
                   "없음" if bat is None else f"{bat}%"),
-            Check("temp", f"온도 {TEMP_MAX_TAKEOFF_C}°C 미만", isinstance(temp, (int, float)) and temp < TEMP_MAX_TAKEOFF_C,
-                  "없음" if temp is None else f"{temp}°C"),
+            Check("temp", f"온도 {TEMP_WARN_C}°C 미만(권장)", isinstance(temp, (int, float)) and temp < TEMP_WARN_C,
+                  "없음" if temp is None else (f"{temp}°C" if temp < TEMP_WARN_C else f"{temp}°C · 바로 띄우거나 식히기"),
+                  blocking=False),
             Check("operator", "주변 비움·가드 장착·안전 담당 확인", self.operator_confirmed,
                   "확인함" if self.operator_confirmed else "체크 필요"),
         ]
 
     def can_takeoff(self) -> tuple[bool, list[Check]]:
         checks = self.preflight()
-        return all(c.ok for c in checks) and not self.flying and self.busy is None, checks
+        return all(c.ok for c in checks if c.blocking) and not self.flying and self.busy is None, checks
 
     def confirm_operator(self, confirmed: bool) -> None:
         self.operator_confirmed = confirmed
@@ -102,7 +106,7 @@ class FlightController:
     def takeoff(self, source: str = "operator") -> dict:
         ok, checks = self.can_takeoff()
         if not ok:
-            failed = [c.key for c in checks if not c.ok]
+            failed = [c.key for c in checks if c.blocking and not c.ok]
             self.link.event("takeoff_refused", {"failed": failed, "flying": self.flying, "busy": self.busy})
             return {"ok": False, "reason": "preflight_failed", "failed": failed}
         self.link.update_manifest(operator_controlled=True)
@@ -191,7 +195,7 @@ class FlightController:
         bat, temp = si.get("battery_pct"), si.get("temp_high_c")
         if isinstance(bat, (int, float)) and bat < BATTERY_LAND:
             return "battery_low"
-        if isinstance(temp, (int, float)) and temp >= TEMP_LAND_C:
+        if TEMP_LAND_C is not None and isinstance(temp, (int, float)) and temp >= TEMP_LAND_C:
             return "overheat"
         return None
 
