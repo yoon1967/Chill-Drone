@@ -184,6 +184,72 @@ link.close()                      # metrics.json 기록
 - `K_LIN` 100 rc/(m/s), `K_YAW` 57 rc/(rad/s)는 가정값이다. rc 보정 실험(-274)으로 확정한다.
 - 시험: `python -B -m unittest discover -s modules/autonomy/tello_link/tests -p "test_rc_mixer.py"`
 
+## 게이트웨이 모드 판정 (서버 연결 전)
+
+감독 화면·폰·자율 비행이 한 기체를 함께 쓸 때 "지금 누구의 입력을 보낼지"를 정하는 순수 로직(`mode_arbiter.py`)이다.
+계약은 `contracts/api/DRONE_CONTROL_V0_1.md`(화면 ↔ 게이트웨이), `AUTONOMY_BRIDGE_V0_1.md`(게이트웨이 ↔ 자율)를 따른다.
+아직 서버(`/ws/drone`, `/ws/autonomy`)에는 연결하지 않았다.
+
+- 모드 7개: `disconnected`·`grounded`·`manual`·`auto`·`paused`·`landing`·`emergency`. 전이, 우선순위, `allowed` 목록, 경고, 개입 횟수를 맡는다.
+
+```python
+from mode_arbiter import ModeArbiter
+
+arb = ModeArbiter(source="tello")       # tello / fake / replay(모든 명령 거절)
+arb.on_link(True)                       # 상태 패킷 수신 중 → grounded
+arb.on_autonomy_connected()             # 지상에서 연결해야 auto_start 가능
+result = arb.handle_cmd("takeoff", client="monitor", cmd_id="c-1")   # result 메시지
+for action in arb.drain():              # flight: FlightController, autonomy: control 메시지, event: 화면
+    ...
+out = arb.tick()                        # 20Hz. out.rc가 None이 아니면 FlightController.set_input(*(v / 100 for v in out.rc))
+```
+
+- 실행(이륙·착륙·비상 정지, 20Hz rc 전송, 안전 착륙, 높이 상한, 데드맨)은 `FlightController`가 그대로 맡는다.
+  안전 착륙이 나면 서버가 `arb.on_safety_landing(reason)`, 착륙이 끝나면 `arb.on_landed()`를 부른다.
+- 자율 속도 명령은 `auto`일 때만 쓴다. 0.5초 끊기면 제자리(`auto` 유지), 2초면 `paused`, 연결이 끊기면 바로 `paused`.
+- `auto`·`paused`에서 사람 조이스틱이 데드존 밖이면 넘겨받기(`manual`)다. 자율에 `stop`을 보내고 개입 횟수를 올린다.
+- 자율의 `takeoff`·`emergency` 요청은 거절한다. `land`는 `auto`·`paused`에서만 받는다.
+- 시험: `python -B -m unittest discover -s modules/autonomy/tello_link/tests -p "test_mode_arbiter.py"` (실제 시계·네트워크 없이 끝난다)
+
+## 드론 게이트웨이 서버 (`gateway_server.py`)
+
+관제 화면(`apps/controller`)과 상태·명령을 주고받는다. 계약은 `contracts/api/DRONE_CONTROL_V0_1.md`를 따른다.
+
+```powershell
+python modules/autonomy/tello_link/gateway_server.py --fake      # 드론 없이 가짜 Tello
+python modules/autonomy/tello_link/gateway_server.py             # 실제 Tello (드론 Wi-Fi에 연결된 PC)
+```
+
+브라우저에서 `http://127.0.0.1:8010`을 연다(실시간 감독 `#/live`, 현장 조작 `#/control`).
+`apps/controller`가 있으면 서버가 그 화면을 함께 내준다. 폰에서 열려면 `--host 0.0.0.0`(같은 망 안에서만).
+
+| 경로 | 내용 |
+| --- | --- |
+| `GET /api/drone/state` | 최신 `drone_state` 1개 |
+| `WS /ws/drone` | 서버 → 화면: `drone_state` 약 10Hz, `event`, `result`. 화면 → 서버: `cmd`, `rc` |
+| `GET /video.mjpg` | 영상. 최신 프레임만 |
+| `GET /snapshot.jpg` | 최신 프레임 1장. 헤더 `X-Input-Id`(영상 세션, 켤 때마다 새 값)·`X-Frame-Id`·`X-Frame-Time`(게이트웨이 디코딩 시각, UTC)·`X-Frame-Age-Ms`·`X-Image-Size`. 영상이 꺼졌거나 끊겼으면 503(`video_off`·`video_stale`·`no_frame`), `--no-video`면 404 |
+| `POST /api/detections` | 사람 탐지 이벤트 `person-detection-event/1.0` 1개. 201 저장, 200 중복(`event_id`), 400 검증 실패, 403 다른 PC, 500 저장 실패 |
+| `GET /api/detections` | 발견 목록(최신순)과 탐지 상태 |
+| `GET`·`PUT /api/detections/<event_id>.jpg` | 발견 사진. PUT은 게이트웨이 프레임이 아닌 이벤트의 사진 올리기(JPEG) |
+
+- `gateway.py`가 화면 메시지 → 모드 판정기 → `FlightController`를 잇는다. 20Hz 루프에서 연결·안전 착륙·착륙 완료·비상 정지 뒤 지상을
+  판정기에 알리고, 판정기가 고른 rc를 `FlightController.set_input()`에 넣는다.
+- 이륙은 이륙 전 점검(주변 확인 포함)을 통과해야만 판정기로 넘긴다. 실패하면 `preflight_failed`와 실패 항목을 돌려준다.
+- 화면 연결이 끊기면 그 화면의 rc는 바로 0이다. `height_m`은 하방 tof 값이며 무효면 `null`이다.
+- 사람 탐지 연결(`detection_inbox.py`): 탐지 프로그램은 `/snapshot.jpg`를 받아 처리하고, 헤더의 `X-Input-Id`·`X-Frame-Id`를 이벤트
+  `input_id`·`frame_id`에, `X-Frame-Time`을 `detected_at_utc`에 넣어 `POST /api/detections`로 보낸다. 사람이 없어도 보낸다(동작 중 근거).
+  - 게이트웨이는 같은 프레임의 사진·수신 시각·그때 드론 상태(모드·높이·배터리)를 붙여 회차 폴더 `detections.jsonl`·`detections/<event_id>.jpg`에 남기고,
+    사람이 있으면 화면에 `detection` 메시지를 보낸다. `drone_state.detection`에 동작 여부·초당 처리 수·발견 수가 있다.
+  - 발견: 사람이 3초 넘게 안 보이다 다시 보이면 새 발견(사람 구분은 하지 않음). 대표 사진은 신뢰도가 가장 높은 장면, 사진은 발견마다 초당 1장까지.
+  - 기본은 같은 PC에서 온 결과만 받는다(인증이 없음). 다른 PC에서 탐지를 돌리면 `--allow-remote-detections`(같은 망 시험에서만).
+  - 드론을 자동으로 멈추지 않는다. 시험·시연용 가짜 탐지: `python modules/autonomy/tello_link/fake_detector.py`(영상을 켠 뒤)
+- 프레임 번호: `/snapshot.jpg`로 내준 프레임은 최근 64장(최대 10초)을 보관한다(`frame_store.py`). 탐지처럼 프레임을 가져가 처리하는 쪽은
+  결과에 `input_id`·`frame_id`만 담으면 게이트웨이가 같은 사진과 시각을 다시 찾는다. 영상을 켜기 전에 남아 있던 프레임은 내주지 않는다.
+- 아직 없는 것: 자율 비행 연결(`/ws/autonomy`), 전방 ToF 조회(`front_tof`는 `not_polled`), 통신 품질(`link`), 기록 재생(`--replay`).
+- `check_server.py`와 같은 기본 포트(8010)를 쓴다. Tello는 처음 `command`를 보낸 쪽에만 답하므로 둘을 동시에 켜지 않는다.
+- 시험: `python -B -m unittest discover -s modules/autonomy/tello_link/tests -p "test_gateway.py"` (가짜 Tello, 약 6초)
+
 ## 회차 로그
 
 `log_root/<run_id>/`에 남는다. 기본 위치 `data/outputs/tello/`는 Git에서 제외된다.
