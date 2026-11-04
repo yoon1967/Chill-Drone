@@ -87,6 +87,17 @@ class GatewayTest(GatewayCase):
         ov = self.gw.drone_state()["overlay"]
         self.assertEqual((ov["alive"], ov["frame_id"]), (True, "f-7"))
 
+    def test_map_snapshot_reaches_state_and_screen(self):
+        self.assertEqual(self.gw.drone_state()["map"]["upstream"], None)   # 지도 연결기 없음
+        msg = {"schema_version": "gateway-map/0.1", "kind": "snapshot", "upstream": "ok", "source_url": "http://m",
+               "mapping_state": "mapping", "source": {"session_id": "s", "segment_id": 0, "revision": 3},
+               "scale": {"unit": "arbitrary"}, "points": [[0, 0, 1, 255, 0, 0]], "points_total": 1, "cameras": [[0, 0, 0]]}
+        self.assertEqual(self.gw.map.receive(msg)[0], 201)
+        m = self.gw.drone_state()["map"]
+        self.assertEqual((m["upstream"], m["revision"], m["points"], m["mapping_state"]), ("ok", 3, 1, "mapping"))
+        self.assertTrue(any(s.get("type") == "map" and s["revision"] == 3 for s in self.sent))   # 화면에 새 버전 알림
+        self.assertTrue(os.path.isfile(os.path.join(self.link.log.dir, "map", "latest.json")))
+
     def test_takeoff_needs_area_confirm(self):
         r = self.cmd("takeoff")
         self.assertEqual((r["ok"], r["reason"]), (False, "preflight_failed"))
