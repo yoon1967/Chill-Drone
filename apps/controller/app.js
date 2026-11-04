@@ -10,7 +10,11 @@ const ui = {
   scenario: "person", reviews: {},      // reviews: event_id → confirmed / false_positive
   live: false, ws: null, wsOpen: false, everOpen: false, state: null, timeline: [], seq: 0, cache: {}, view: null,
   findings: new Map(), lastDet: null, newFindingAt: 0,   // 실시간 사람 탐지: finding_id → 발견, 영상 위 윤곽선용 최근 탐지
+  feed: savedFeed(),                    // 영상 칸: raw(원본) / ai(사람 탐지 합성 영상). 합성이 끊기면 원본을 보여 준다
 };
+function savedFeed() {
+  try { return localStorage.getItem("controller.feed") === "ai" ? "ai" : "raw"; } catch (e) { return "raw"; }
+}
 const DET_OVERLAY_MS = 1000;   // 탐지 결과는 실시간 영상보다 조금 늦게 온다. 윤곽선은 1초만 보이고 지연을 함께 적는다
 const PERSON_ALERT_MS = 10000; // 새 발견 알림을 띄워 두는 시간
 
@@ -50,6 +54,7 @@ function adapt(st) {
     front_tof: st.front_tof || { m: null, valid: false, reason: "missing" },
     down_tof: st.down_tof || { m: null, valid: false, reason: "missing" },
     video: st.video || { available: false },
+    overlay: st.overlay || { alive: false },
     allowed: st.allowed || ["emergency"],
     warnings: st.warnings || [],
   };
@@ -149,15 +154,24 @@ function videoControl(st) {
     <span data-part="videobtn"><button data-cmd="${name}" class="${off ? "off" : ""}" ${off ? 'aria-disabled="true"' : ""}>${CMD_LABEL[name]}</button></span></span>`;
 }
 
+// 원본 / AI 합성 고르기. 합성 영상은 사람 탐지 프로그램이 게이트웨이 영상에 윤곽선·장면 분할을 그려 보낸 것이다.
+function feedSelect(st) {
+  const ai = st.overlay.alive;
+  const btn = (key, label, off) => `<button data-feed="${key}" class="${off ? "off" : ""}" aria-pressed="${ui.feed === key}" ${off ? 'aria-disabled="true"' : ""}>${label}</button>`;
+  return `<span class="feed-sel" data-part="feedsel" role="group" aria-label="영상 고르기">${btn("raw", "원본", false)}${btn("ai", "AI 합성", !ai)}</span>`;
+}
+
 function videoPanel(st, events, big = true) {
   const latest = events[0];
-  const box = ui.live ? liveOutline() : latest && st.mode !== "grounded" ? (() => {
+  const aiOn = ui.live && st.video.available && ui.feed === "ai" && st.overlay.alive;
+  const box = aiOn ? "" : ui.live ? liveOutline() : latest && st.mode !== "grounded" ? (() => {
     const [x1, y1, x2, y2] = latest.bbox_xyxy_px;
     const w = latest.image_width, h = latest.image_height;
     return `<div class="bbox" style="left:${(x1 / w) * 100}%;top:${(y1 / h) * 100}%;width:${((x2 - x1) / w) * 100}%;height:${((y2 - y1) / h) * 100}%">
       <span>사람 ${latest.confidence.toFixed(2)}</span></div>`;
   })() : "";
-  const media = ui.live && st.video.available
+  const media = aiOn ? `<img class="feed" src="/overlay.mjpg" alt="사람 탐지 합성 영상">`
+    : ui.live && st.video.available
     ? `<img class="feed" src="/video.mjpg" alt="드론 카메라 실시간 영상">`
     : `<div class="placeholder">${!ui.live ? "영상 연결 전 · 960×720"
       : st.video.enabled === false ? "영상 수신 안 함 · 게이트웨이가 --no-video로 실행됐습니다"
@@ -165,12 +179,15 @@ function videoPanel(st, events, big = true) {
       : "영상 없음 · 게이트웨이가 아직 프레임을 받지 못했습니다"}</div>`;
   const tof = st.front_tof.valid ? `앞 ${meters(st.front_tof.m)}` : "앞 거리 없음";
   return `<section class="panel video ${big ? "" : "small"}" aria-label="드론 영상">
-    <header><h2>영상</h2>${src("video")}${chip("탐지 상자: 사람 탐지", "neutral", "src-inline")}${videoControl(st)}</header>
+    <header><h2>영상</h2>${src("video")}${chip(aiOn ? "합성: 사람 탐지" : "탐지 상자: 사람 탐지", "neutral", "src-inline")}${feedSelect(st)}${videoControl(st)}</header>
     <div class="frame-wrap"><div class="frame">
       <div class="media" data-part="media">${media}</div>
       <div class="overlays" data-part="overlay">${box}
         <span class="overlay bl">${tof} · 높이 ${meters(st.height_m)}</span>
-        <span class="overlay br">${st.video.available ? `${st.video.fps ?? "?"}fps` : "영상 없음"}</span></div>
+        <span class="overlay br">${!st.video.available ? "영상 없음"
+          : aiOn ? `AI 합성 ${st.overlay.fps ?? "?"}fps · 원본 ${st.video.fps ?? "?"}fps`
+          : ui.live && ui.feed === "ai" ? `원본 ${st.video.fps ?? "?"}fps · AI 합성 끊김`
+          : `${st.video.fps ?? "?"}fps`}</span></div>
     </div></div>
     ${big ? detailLine(st) : ""}
   </section>`;
@@ -521,6 +538,13 @@ document.addEventListener("click", (ev) => {
   if (pick) {
     document.querySelectorAll("[data-event]").forEach((el) => el.classList.toggle("sel", el.dataset.event === pick.dataset.event));
     return;
+  }
+  const fb = ev.target.closest("[data-feed]");
+  if (fb) {
+    if (fb.classList.contains("off")) return toast("AI 합성: 사람 탐지 프로그램이 합성 영상을 보내고 있지 않습니다");
+    ui.feed = fb.dataset.feed;
+    try { localStorage.setItem("controller.feed", ui.feed); } catch (e) { /* 저장 안 돼도 이번 화면에서는 바뀐다 */ }
+    return render();
   }
   const b = ev.target.closest("[data-cmd]");
   if (!b) return;

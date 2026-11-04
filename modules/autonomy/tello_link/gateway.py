@@ -9,6 +9,7 @@
   `video_frame()`은 내준 프레임에 영상 세션·프레임 번호를 붙여 최근 것만 보관한다(frame_store.py, 탐지 결과 연결용).
 - 사람 탐지: `detections`(detection_inbox.py)가 탐지 결과를 받아 회차 폴더에 저장하고 화면에 `detection` 메시지로 보낸다.
   드론을 자동으로 멈추지 않는다(운용자가 정함).
+- AI 합성 영상: `overlay`(overlay_store.py)가 탐지 프로그램이 그려 보낸 최신 장을 들고 있다. 화면이 원본 대신 볼 수 있다.
 실행(이륙·착륙·비상 정지, rc 전송, 안전 착륙, 높이 상한, 데드맨)은 실기체로 검증한 FlightController가 그대로 맡는다.
 웹 서버는 gateway_server.py에 있다. 자율 비행 연결(`/ws/autonomy`)은 다음 작업이다.
 """
@@ -21,6 +22,7 @@ import time
 from flight_control import STATE_STALE_S, FlightController
 from detection_inbox import DetectionInbox
 from frame_store import FrameStore
+from overlay_store import OverlayStore
 from mode_arbiter import SCHEMA_VERSION, ModeArbiter
 from tello_link import TelloLink, now_iso
 
@@ -66,6 +68,7 @@ class Gateway:
         self.frames = FrameStore(link.run_id, clock=clock)  # 내준 프레임 번호·최근 프레임
         self.detections = DetectionInbox(self.frames, run_dir=link.log.dir if link.log else None,
                                          emit=self._emit, clock=clock)
+        self.overlay = OverlayStore(clock=clock)
 
     # ---------- 수명 ----------
     def start(self) -> "Gateway":
@@ -370,5 +373,6 @@ class Gateway:
             "operator_interventions": snap["operator_interventions"],
             "autonomy_used": snap["autonomy_used"],
             "detection": self.detections.status(),
+            "overlay": self.overlay.status(),
             "preflight": [c.__dict__ for c in self.flight.preflight()] if snap["mode"] == "grounded" else None,
         }

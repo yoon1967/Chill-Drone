@@ -81,6 +81,12 @@ class GatewayTest(GatewayCase):
         self.assertFalse(st["front_tof"]["valid"])
         self.assertIn("takeoff", st["allowed"])
 
+    def test_state_reports_ai_overlay(self):
+        self.assertFalse(self.gw.drone_state()["overlay"]["alive"])   # 탐지 프로그램 없음
+        self.gw.overlay.put(b"\xff\xd8\xff\xe0jpeg", "in-1", "f-7")
+        ov = self.gw.drone_state()["overlay"]
+        self.assertEqual((ov["alive"], ov["frame_id"]), (True, "f-7"))
+
     def test_takeoff_needs_area_confirm(self):
         r = self.cmd("takeoff")
         self.assertEqual((r["ok"], r["reason"]), (False, "preflight_failed"))
