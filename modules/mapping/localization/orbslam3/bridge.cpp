@@ -242,6 +242,7 @@ int main(int argc,char** argv) {
         std::deque<double> retained;
         std::set<std::string> stored;
         MapPublisher publisher([&](int revision,bool final){
+            if(pose_first) return false; // The host builds the dense map from fixed poses.
             std::map<double,FrameInfo> copy;
             {std::lock_guard<std::mutex> lock(frames_mutex);copy=frames;}
             return export_map(slam,root,copy,stored,revision,final);
@@ -379,7 +380,7 @@ int main(int argc,char** argv) {
                 std::cout << "ORB_POSE " << camera_pose.dump() << std::endl;
             }
             if(seconds(start)>=next_preview) {
-                preview_publisher.submit(last_image,progress);
+                if(!pose_first) preview_publisher.submit(last_image,progress);
                 journal.flush();
                 next_preview=seconds(start)+.1;
             }
@@ -388,10 +389,11 @@ int main(int argc,char** argv) {
         if(preview_publisher.failed) throw std::runtime_error(preview_publisher.error);
         publisher.stop();
         slam.Shutdown();
-        publisher.finalize();
-        if(!last_image.empty()) cv::imwrite(root+"/previews/"+progress["frame_id"].get<std::string>(),last_image);
+        if(!pose_first) publisher.finalize();
+        if(!pose_first && !last_image.empty()) cv::imwrite(root+"/previews/"+progress["frame_id"].get<std::string>(),last_image);
         progress["revision"]=publisher.revision.load(); progress["snapshots"]=publisher.revision.load();
-        progress["status"]=publisher.revision?"complete":"failed";
+        const bool completed=pose_first?tracked>0:publisher.revision.load()>0;
+        progress["status"]=completed?"complete":"failed";
         progress["elapsed_seconds"]=seconds(start);
         progress["performance_target_met"]=count>30 && rate==1 && double(tracked)/count>=.9 &&
             timings.percentile(.95)<=1000./fps && lags.percentile(.95)<=2;
@@ -399,7 +401,7 @@ int main(int argc,char** argv) {
         atomic_json(root+"/tracking.json",progress);
         auto summary=progress; summary.erase("features"); summary.erase("T_cw");
         std::cout << "ORB_RESULT " << summary.dump() << std::endl;
-        return publisher.revision?0:3;
+        return completed?0:3;
     } catch(const std::exception& e) {
         atomic_json(root+"/tracking.json",{{"status","failed"},{"error",e.what()}});
         std::cerr << e.what() << std::endl; return 2;

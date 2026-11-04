@@ -43,13 +43,14 @@ class PoseFirstTests(unittest.TestCase):
         class Frames:
             dropped = 0
             stop = threading.Event()
-            thread = type('Thread', (), {'start': lambda self: None, 'join': lambda self, timeout: None})()
             def __init__(self, *args):
                 self.items = iter([(1, 0., rgb, 0., (32, 32), {'timestamp_s': 0., 'tracking_state': 1}),
                     (2, .2, rgb, 0., (32, 32), {'timestamp_s': .2, 'tracking_state': 2, 'map_id': 0,
                                              'T_cw': matrix.tolist(), 'depth_anchors': anchors})])
             def take(self):
                 return next(self.items, None)
+            def close(self):
+                pass
         with tempfile.TemporaryDirectory() as folder, patch('modules.mapping.data.stream_mapping.PoseFrames', Frames):
             output = Path(folder) / 'result'
             run('unused', output, {'frame_fps': 5, 'sample_fps': 5}, estimator_factory=Estimator)

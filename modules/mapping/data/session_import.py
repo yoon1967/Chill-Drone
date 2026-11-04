@@ -329,6 +329,10 @@ class ImportManager:
         self.jobs = {}
         self.lock = threading.RLock()
         self.history_readers = {}
+        self.preview_changed = threading.Condition()
+        from modules.mapping.data.depth_worker import DepthWorker
+        self.depth_worker = DepthWorker()
+        self.thumbnail_cache = {}
 
     def create(self, name='불러온 자료'):
         with self.lock:
@@ -386,22 +390,63 @@ class ImportManager:
     def thumbnail(self, local_id):
         from io import BytesIO
         from PIL import Image
-        if local_id not in {row.get('local_id', row.get('id')) for row in self.library()}:
+        if not re.fullmatch(r'[A-Za-z0-9_-]{1,96}', str(local_id)):
             raise ValueError('unknown_local_record')
-        record = self.resolve(local_id) if local_id.startswith('import_') else ImportedMap(inside(self.root, local_id))
-        result = record.result()
-        if result is None:
+        folder = inside(self.root, local_id)
+        job = self.jobs.get(local_id, {})
+        record = job.get('record')
+        if not record and (not folder.is_dir() or not any((folder / name).is_file() for name in
+                ('import.json', 'status.json', 'state.json', 'reconstruction/status.json'))):
+            raise ValueError('unknown_local_record')
+        if record:
+            root, result = record.root, record.result()
+        else:
+            root = folder
+            if local_id.startswith('import_'):
+                info = read_json(inside(folder, 'import.json'))
+                if info.get('status') not in {'ready', 'complete'}:
+                    raise ValueError('thumbnail_unavailable')
+                selected = Path(info['map_root']).resolve()
+                if not selected.is_relative_to(self.root):
+                    raise ValueError('invalid_local_record')
+                root = inside(self.root, selected.relative_to(self.root).as_posix())
+            result = root / 'reconstruction' if (root / 'reconstruction/scene.json').is_file() else root
+            if (root / 'revisions').is_dir():
+                try:
+                    state = read_json(inside(root, 'state.json'))
+                except (OSError, ValueError):
+                    state = {}
+                preferred = state.get('revision_path', '')
+                result = inside(root, preferred) if re.fullmatch(r'revisions/\d{6}', preferred) else None
+                if result is None or not (result / 'status.json').is_file():
+                    result = next((inside(root, 'revisions/' + p.name) for p in sorted((root / 'revisions').iterdir(), reverse=True)
+                        if re.fullmatch(r'\d{6}', p.name) and (p / 'status.json').is_file()), None)
+        if result is None or read_json(inside(result, 'status.json')).get('status') not in {'complete', 'partial'}:
             raise ValueError('thumbnail_unavailable')
-        images = record.image_root(result)
-        cameras = scene_at(result)['cameras']
-        if images is None or not cameras:
+        # Poses/assets contain frame references without loading all points or old revisions.
+        assets = result / 'local_assets.json'
+        poses = result / 'poses.json'
+        metadata = assets if assets.is_file() else poses if poses.is_file() else result / 'scene.json'
+        signature = (str(result), metadata.stat().st_mtime_ns)
+        cached = self.thumbnail_cache.get(local_id)
+        if cached and cached[0] == signature and cached[2].stat().st_mtime_ns == cached[3]:
+            return cached[1]
+        value = read_json(inside(result, metadata.name))
+        names = value.get('frames') if metadata == assets else [c['frame_id'] for c in value.get('cameras', [])]
+        images = next((p for p in [root / 'frames', root / 'input/frames', root / 'images',
+            result / 'images', result / 'frames'] if p.is_relative_to(root) and p.is_dir()), None)
+        if images is None or not names:
             raise ValueError('thumbnail_unavailable')
-        target = inside(images, cameras[len(cameras) // 2]['frame_id'])
+        target = inside(images, names[len(names) // 2])
         with Image.open(target) as image:
             image.thumbnail((480, 270))
             output = BytesIO()
             image.convert('RGB').save(output, format='JPEG', quality=80)
-        return output.getvalue()
+        payload = output.getvalue()
+        if len(self.thumbnail_cache) >= 100:
+            self.thumbnail_cache.pop(next(iter(self.thumbnail_cache)))
+        self.thumbnail_cache[local_id] = (signature, payload, target, target.stat().st_mtime_ns)
+        return payload
 
     def upload(self, key, name, stream, length):
         job = self.job(key)
@@ -615,7 +660,7 @@ class ImportManager:
                 self.initial = None
             return {'status': 'deleted', 'local_id': name}
 
-    def start(self, key, options):
+    def start(self, key, options, presentation_sync=False):
         from modules.mapping.data.frame_input import validate_options
         job = self.job(key)
         options = validate_options(options, job.get('summary', {}))
@@ -631,31 +676,49 @@ class ImportManager:
         with self.lock:
             if job['status'] != 'awaiting_options':
                 raise ValueError('import_not_waiting_for_options')
-            if any(j['status'] == 'running' for j in self.jobs.values()):
+            if any(j['status'] in {'running', 'cancelling'} for j in self.jobs.values()):
                 raise ValueError('reconstruction_busy')
-            job.update(status='running', stage='input', options=options)
+            job.update(status='running', stage='input', options=options, presentation_sync=presentation_sync)
         output = job['path'] / ('reconstruction_' + uuid.uuid4().hex[:8])
         job['output'] = output
         config = job['path'] / 'options.json'
         config.write_text(json.dumps(options), encoding='utf-8')
         def work():
             try:
-                module = 'modules.mapping.data.stream_mapping' if options['mode'] == 'depth_rgbd' else 'modules.mapping.data.frame_input'
-                command = [sys.executable, '-B', '-m', module, '--source', str(job['source']),
-                    '--output', str(output), '--options', str(config)]
-                with (job['path'] / 'worker.log').open('w', encoding='utf-8') as log:
-                    proc = subprocess.Popen(command, cwd=ROOT, stdout=log, stderr=subprocess.STDOUT,
-                        env={**os.environ, 'OMP_NUM_THREADS': '2', 'PYTHONIOENCODING': 'utf-8'},
-                        **({'creationflags': subprocess.CREATE_NEW_PROCESS_GROUP} if os.name == 'nt' else {'start_new_session': True}))
-                    job['process'] = proc
-                    if job['cancel'].is_set():
-                        self._terminate(proc)
-                    code = proc.wait()
+                if options['mode'] == 'depth_rgbd':
+                    source = Path(job['source'])
+                    if source.is_dir():
+                        videos = [p for p in source.iterdir() if p.suffix.lower() in VIDEO]
+                        if len(videos) == 1 and not any(p.suffix.lower() in {'.jpg', '.jpeg', '.png'} for p in source.iterdir()):
+                            source = videos[0]
+                    def published(snapshot):
+                        with self.preview_changed:
+                            job['preview'] = snapshot
+                            self.preview_changed.notify_all()
+                            if presentation_sync:
+                                self.preview_changed.wait_for(lambda: job['cancel'].is_set() or
+                                    job.get('presented_revision', 0) >= snapshot['revision'])
+                    self.depth_worker.run(source, output, options, stop_event=job['cancel'], on_preview=published)
+                    code = 0
+                else:
+                    command = [sys.executable, '-B', '-m', 'modules.mapping.data.frame_input', '--source', str(job['source']),
+                        '--output', str(output), '--options', str(config)]
+                    with (job['path'] / 'worker.log').open('w', encoding='utf-8') as log:
+                        proc = subprocess.Popen(command, cwd=ROOT, stdout=log, stderr=subprocess.STDOUT,
+                            env={**os.environ, 'OMP_NUM_THREADS': '2', 'PYTHONIOENCODING': 'utf-8'},
+                            **({'creationflags': subprocess.CREATE_NEW_PROCESS_GROUP} if os.name == 'nt' else {'start_new_session': True}))
+                        job['process'] = proc
+                        if job['cancel'].is_set():
+                            self._terminate(proc)
+                        code = proc.wait()
                 if job['cancel'].is_set():
                     job.update(status='cancelled', stage='cancelled')
                 elif code in {0, 3}:
                     record = ImportedMap(output)
-                    job.update(record=record, summary=record.summary(), status='complete', stage='finished')
+                    if job['cancel'].is_set():
+                        job.update(status='cancelled', stage='cancelled')
+                    else:
+                        job.update(record=record, summary=record.summary(), status='complete', stage='finished')
                 else:
                     if options['mode'] == 'depth_rgbd' and (output / 'progress.json').is_file():
                         raise ValueError(read_json(output / 'progress.json').get('error', 'depth_mapping_failed'))
@@ -665,6 +728,8 @@ class ImportManager:
                 job.update(status='cancelled' if job['cancel'].is_set() else 'failed', error=str(error)[:400])
             finally:
                 self._save(job)
+                with self.preview_changed:
+                    self.preview_changed.notify_all()
         job['thread'] = threading.Thread(target=work, daemon=True)
         job['thread'].start()
         return self.public(key)
@@ -682,15 +747,22 @@ class ImportManager:
         job = self.job(key)
         if job['status'] in {'ready', 'complete', 'failed', 'cancelled'}:
             return self.public(key)
-        job['cancel'].set()
+        if job.get('live_session') is not None:
+            job['live_session'].stop('user_stop')
+            return self.public(key)
+        if job['cancel'].is_set():
+            return self.public(key)
         job['status'] = 'cancelling'
+        job['cancel'].set()
+        with self.preview_changed:
+            self.preview_changed.notify_all()
         if job.get('process'):
             self._terminate(job['process'])
         elif job['stage'] in {'upload', 'confirm'}:
             job.update(status='cancelled', stage='cancelled')
         # Stop transport first: it must not start a container after cancellation.
         container = job.get('output', Path()) / 'pose_tracker/container.json'
-        if job.get('options', {}).get('mode') == 'depth_rgbd' and container.is_file():
+        if job.get('options', {}).get('mode') == 'depth_rgbd' and job.get('process') and container.is_file():
             name = read_json(container).get('name', '')
             if re.fullmatch(r'ssafy-pose-[a-f0-9]{12}', name):
                 for attempt in range(6):
@@ -705,9 +777,13 @@ class ImportManager:
         return self.public(key)
 
     def status(self, key):
+        # Concurrent browser/status requests must not clear each other's progress.
+        with self.lock:
+            return self._status(key)
+
+    def _status(self, key):
         job = self.job(key)
         job.pop('feature_progress', None)
-        job.pop('progress', None)
         if job.get('output'):
             try:
                 if job.get('options', {}).get('mode') == 'depth_rgbd':
@@ -725,16 +801,42 @@ class ImportManager:
                     job['progress'] = stage_progress(job['output'], job['stage'])
         return self.public(key)
 
-    def preview(self, key, revision=0):
+    def preview(self, key, revision=0, wait=0):
         job = self.job(key)
         output = self.preview_root(job)
         if not output:
             raise ValueError('progressive_preview_not_available')
+        if wait and job.get('options', {}).get('mode') == 'depth_rgbd':
+            with self.preview_changed:
+                self.preview_changed.wait_for(lambda: job.get('preview', {}).get('revision', 0) > revision or
+                    job['status'] not in {'running', 'cancelling'}, timeout=min(max(wait, 0), 2))
         path = inside(output, 'preview.json')
-        if not path.is_file():
-            return {'revision': 0, 'waiting': True}
-        value = read_json(path)
-        return {'revision': revision, 'unchanged': True} if value['revision'] == revision else value
+        value = job.get('preview')
+        if value is None:
+            if path.is_file():
+                value = read_json(path)
+            else:
+                try:
+                    reader = self.history_reader(key)
+                    count = len(reader.refresh())
+                    value = reader.snapshot(count) if count else None
+                except (OSError, ValueError):
+                    value = None
+        done = job['status'] not in {'running', 'cancelling'}
+        if value is None:
+            return {'revision': 0, 'waiting': True, 'done': done}
+        flags = {'done': done, 'needs_presentation': bool(job.get('presentation_sync') and
+            job.get('presented_revision', 0) < value['revision'])}
+        return {'revision': revision, 'unchanged': True, **flags} if value['revision'] == revision else {**value, **flags}
+
+    def presented(self, key, revision):
+        job = self.job(key)
+        with self.preview_changed:
+            if type(revision) is not int or not 1 <= revision <= job.get('preview', {}).get('revision', 0):
+                raise ValueError('unknown_preview_revision')
+            job['presented_revision'] = max(job.get('presented_revision', 0), revision)
+            self.preview_changed.notify_all()
+        return {'revision': revision}
 
     def preview_frame(self, key, name):
         job = self.job(key)
@@ -811,8 +913,9 @@ class ImportManager:
 
     def shutdown(self):
         for key, job in list(self.jobs.items()):
-            if job['status'] in {'running', 'uploading', 'awaiting_options', 'inspecting'}:
+            if job['status'] in {'running', 'cancelling', 'uploading', 'awaiting_options', 'inspecting'}:
                 self.cancel(key)
         for job in list(self.jobs.values()):
             if job.get('thread'):
-                job['thread'].join(timeout=5)
+                job['thread'].join(timeout=30)
+        self.depth_worker.close()

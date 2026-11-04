@@ -300,11 +300,18 @@ class TelloMapInput:
                         last_stamp = stamp
                         with self.lock:
                             self.preview = (session.id, jpeg, time.monotonic())
+                        if hasattr(session, 'note_input_frame'):
+                            session.note_input_frame()
                         if missing_since is not None:
                             session.reconnects = getattr(session, 'reconnects', 0) + 1
                         missing_since = None
                         session.input_state, session.input_error = 'receiving', None
                         if not session.ready:
+                            if hasattr(session, 'note_skipped_frame'):
+                                session.note_skipped_frame()
+                            continue
+                        if not getattr(session, 'can_accept_frame', True):
+                            session.note_skipped_frame()
                             continue
                         if base is None:
                             base = stamp

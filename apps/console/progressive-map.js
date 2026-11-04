@@ -2,8 +2,8 @@ import {ProgressiveReplay} from '/progressive-replay.js';
 import * as THREE from '/vendor/three.module.js';
 import {OrbitControls} from '/vendor/OrbitControls.js';
 
-export function connectProgressiveMap() {
-  const $ = id => document.getElementById(id);
+export function connectProgressiveMap({prefix = 'progressive'} = {}) {
+  const $ = id => document.getElementById(id.replace(/^progressive/, prefix));
   const listeners = new AbortController();
   const on = (id, event, callback) => $(id).addEventListener(event, callback, {signal: listeners.signal});
   const host = $('progressive-viewport');
@@ -26,6 +26,15 @@ export function connectProgressiveMap() {
   let active = null, revision = 0, generation = 0, timer = null, polling = false, first = true, running = false, disposed = false, again = false;
   let replay = new ProgressiveReplay(), historyAt = 0;
   let resultReady = false;
+  let pendingPaint = null, paintedRevision = 0;
+  async function acknowledge(id, value) {
+    if (!value.needs_presentation || paintedRevision < value.revision) return;
+    const response = await fetch(`/api/import/presented?id=${encodeURIComponent(id)}`, {
+      method: 'POST', headers: {'X-Mapping-Client': '1', 'Content-Type': 'application/json'},
+      body: JSON.stringify({revision: value.revision}), signal: AbortSignal.timeout(10000)});
+    if (!response.ok) throw new Error('프레임 표시 확인을 다시 시도합니다.');
+    await response.json();
+  }
   function replayControls() {
     const available = replay.entries.length > 0;
     $('progressive-timeline').disabled = $('progressive-play').disabled = $('progressive-seek-go').disabled = !available;
@@ -38,7 +47,7 @@ export function connectProgressiveMap() {
     $('progressive-follow').setAttribute('aria-pressed', String(replay.following));
     $('progressive-replay-state').textContent = replay.following ?
       (resultReady ? '마지막 복원 기록 표시' : '최신 복원 표시') :
-      (running ? '기록 재생 · 복원은 계속 진행' : '저장된 복원 기록 재생');
+      (running ? '기록 재생 · 최신 복원은 표시 대기' : '저장된 복원 기록 재생');
     $('progressive-download').hidden = !available || !resultReady;
     $('progressive-download').href = `/api/import/history.zip?id=${encodeURIComponent(active)}`;
   }
@@ -59,12 +68,20 @@ export function connectProgressiveMap() {
     const {width, height} = host.getBoundingClientRect();
     if (width && height) { renderer.setSize(width, height, false); camera.aspect = width / height; camera.updateProjectionMatrix(); }
   }); observer.observe(host);
-  renderer.setAnimationLoop(() => { if (!disposed && !document.hidden && !host.closest('[hidden]')) { controls.update(); renderer.render(scene, camera); } });
+  renderer.setAnimationLoop(() => {
+    if (!disposed && !document.hidden && !host.closest('[hidden]') && host.getBoundingClientRect().width > 0) {
+      controls.update(); renderer.render(scene, camera);
+      if (pendingPaint) {
+        const resolve = pendingPaint; pendingPaint = null;
+        requestAnimationFrame(() => resolve(!disposed));
+      }
+    }
+  });
   async function poll() {
     if (disposed || !active) return;
     if (polling) { again = true; return; }
     again = false;
-    polling = true; const id = active, token = generation; let cursor = replay.version;
+    polling = true; const id = active, token = generation; let cursor = replay.version, retry = false;
     try {
       if (performance.now() - historyAt > 1000 || !historyAt) {
         historyAt = performance.now();
@@ -75,9 +92,12 @@ export function connectProgressiveMap() {
       replay.tick(performance.now()); replayControls(); cursor = replay.version;
       const selected = replay.selected();
       if (!replay.following && (!selected || selected.revision === revision)) return;
-      const endpoint = replay.following ? `preview?id=${encodeURIComponent(id)}&revision=${revision}` : `history-frame?id=${encodeURIComponent(id)}&revision=${selected.revision}`;
+      const endpoint = replay.following ? `preview?id=${encodeURIComponent(id)}&revision=${revision}${running ? '&wait=1' : ''}` : `history-frame?id=${encodeURIComponent(id)}&revision=${selected.revision}`;
       const response = await fetch(`/api/import/${endpoint}`, {cache: 'no-store', signal: AbortSignal.timeout(10000)});
       const value = await response.json();
+      if (token !== generation || cursor !== replay.version || disposed) return;
+      if (value.done) running = false;
+      if (token === generation && cursor === replay.version && !disposed && replay.following && value.unchanged) await acknowledge(id, value);
       if (token !== generation || cursor !== replay.version || disposed || !response.ok || value.waiting || value.unchanged) return;
       // Decode the corresponding image first; stale responses never replace another job.
       const image = new Image();
@@ -106,26 +126,34 @@ export function connectProgressiveMap() {
       geometry.setAttribute('color', new THREE.BufferAttribute(color, 3)); geometry.computeBoundingSphere();
       route.geometry.dispose(); route.geometry = new THREE.BufferGeometry().setFromPoints(value.cameras.map(p => new THREE.Vector3(...p)));
       $('progressive-map-empty').hidden = value.points.length > 0;
-      $('progressive-count').textContent = `처리 ${value.processed} · 지도 반영 ${value.registered} · 대기 교체 ${value.dropped}프레임 · ${(value.map_points ?? value.points.length).toLocaleString()}점`;
-      $('progressive-latency').textContent = `영상 시각 → 지도 ${value.latency_ms}ms · 계산 ${value.processing_ms}ms`;
+      $('progressive-count').textContent = `처리 ${value.processed} · 지도 반영 ${value.registered}프레임 · ${(value.map_points ?? value.points.length).toLocaleString()}점`;
+      $('progressive-latency').textContent = `현재 프레임 복원 ${value.processing_ms}ms · 추적 포함 ${value.latency_ms}ms`;
       $('progressive-map-detail').textContent = `\uCD5C\uADFC ${value.render_window_s ?? 10}\uCD08 \uD45C\uC2DC \u00B7 \uD654\uBA74\uC5D0\uC11C \uC81C\uC678\uD55C \uBCF5\uC6D0 \uC790\uB8CC\uB3C4 \uAE30\uB85D \uBCF4\uC874`;
       if (first && value.points.length) { first = false; fit(); }
+      if (replay.following && value.needs_presentation) {
+        const painted = await new Promise(resolve => { pendingPaint = resolve; });
+        if (!painted || token !== generation || disposed) return;
+        paintedRevision = value.revision;
+        await acknowledge(id, value);
+      }
     } catch (error) {
+      retry = true;
       if (token === generation && !disposed) $('progressive-map-detail').textContent = `지도 갱신 재시도 중 · ${error.message}`;
     } finally {
       polling = false;
-      if ((running || replay.playing || again) && !disposed) timer = setTimeout(poll, 200);
+      if ((running || replay.playing || again) && !disposed) timer = setTimeout(poll, retry ? 500 : running && replay.following ? 0 : 200);
     }
   }
   return {update(job) {
-    if (active !== job.id) { active = job.id; revision = 0; replay = new ProgressiveReplay(); historyAt = 0; generation++; first = true;
+    if (active !== job.id) { active = job.id; revision = 0; paintedRevision = 0; replay = new ProgressiveReplay(); historyAt = 0; generation++; first = true;
       geometry.setAttribute('position', new THREE.BufferAttribute(new Float32Array(), 3));
       $('progressive-frame').hidden = true; $('progressive-video-empty').hidden = false; }
     running = ['running', 'cancelling'].includes(job.status);
     resultReady = ['ready', 'complete'].includes(job.status);
-    $('progressive-state').textContent = job.status === 'ready' && job.history_available ? '저장된 복원 과정 다시보기 · 저장 지도 열기로 결과를 확인하세요' : job.status === 'complete' ? '복원 완료 · 저장 지도 열기로 계속 살펴보세요' : job.status === 'failed' ? '처리 중단 · 마지막 지도 유지' : job.status === 'cancelled' ? '취소됨 · 마지막 지도 유지' :
-      {model: '추적·깊이 모델 준비 중', depth: '자세 확정 완료 → 깊이 추정 중', tracking: '카메라 위치·방향 추적 중', pose_wait: '자세 확정 대기 · 깊이 복원 보류', mapping: '확정한 자세로 지도 복원 중', saving: '전체 통합 지도 저장 중'}[job.stage] || '영상 처리 준비 중';
+    replayControls();
+    $('progressive-state').textContent = job.status === 'ready' && job.history_available ? '저장된 복원 과정 다시보기 · 저장 지도 열기로 결과를 확인하세요' : job.status === 'complete' ? '복원 완료 · 저장 지도 열기로 계속 살펴보세요' : job.status === 'failed' ? '처리 중단 · 마지막 지도 유지' : job.status === 'cancelling' ? '현재 프레임 처리를 중단하고 있습니다' : job.status === 'cancelled' ? '취소됨 · 마지막 지도 유지' :
+      {model: '모델 준비 중 · 영상은 대기합니다', depth: '자세 확정 완료 → 깊이 추정 중', tracking: '카메라 위치·방향 추적 중', pose_wait: '자세 확정 대기 · 깊이 복원 보류', mapping: '확정한 자세로 지도 복원 중', presentation: '현재 프레임 표시 후 다음 프레임 진행', saving: '전체 통합 지도 저장 중'}[job.stage] || '영상 처리 준비 중';
     if (job.stage === 'integration') $('progressive-state').textContent = `전체 경로 통합 중 · ${job.progress?.integrated_frames || 0} / ${job.progress?.integration_total || 0}`;
     clearTimeout(timer); poll();
-  }, dispose() { listeners.abort(); disposed = true; running = false; generation++; clearTimeout(timer); observer.disconnect(); renderer.setAnimationLoop(null); controls.dispose(); geometry.dispose(); cloud.material.dispose(); route.geometry.dispose(); route.material.dispose(); markerLines.geometry.dispose(); markerLines.material.dispose(); renderer.dispose(); renderer.domElement.remove(); }};
+  }, dispose() { listeners.abort(); disposed = true; running = false; generation++; clearTimeout(timer); pendingPaint?.(false); pendingPaint = null; observer.disconnect(); renderer.setAnimationLoop(null); controls.dispose(); geometry.dispose(); cloud.material.dispose(); route.geometry.dispose(); route.material.dispose(); markerLines.geometry.dispose(); markerLines.material.dispose(); renderer.dispose(); renderer.domElement.remove(); }};
 }

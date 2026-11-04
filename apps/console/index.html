@@ -108,9 +108,9 @@
         <div id="import-summary" hidden>
           <div id="import-options" hidden><h2>복원 설정</h2>
             <label>복원 방식 <select id="import-mode"><option value="depth_rgbd" selected>빠른 복원 · 영상과 지도 함께 보기</option><option value="sfm">기존 SfM 복원 · 완료 후 보기</option></select></label>
-            <label id="import-sampling">초당 처리할 최대 프레임 <input id="import-sample-fps" type="number" value="5" min="0.1" max="30" step="0.1" aria-describedby="saved-sampling-note"></label>
+            <label id="import-sampling">영상 1초당 복원할 프레임 <input id="import-sample-fps" type="number" value="5" min="0.1" max="30" step="0.1" aria-describedby="saved-sampling-note"></label>
             <label id="import-frame-timing">프레임 촬영 FPS <input id="import-frame-fps" type="number" value="2" min="0.1" max="240" step="0.1"></label>
-            <p id="saved-sampling-note">빠른 복원은 재생 속도에 맞춰 최신 프레임으로 지도를 갱신합니다. 처리가 밀리면 대기 프레임을 건너뜁니다. AI 추정 깊이는 실측 치수가 아닙니다.</p>
+            <p id="saved-sampling-note">모델 준비가 끝나면 선택한 프레임을 순서대로 복원합니다. 현재 프레임의 저장과 화면 표시를 마친 뒤 다음 프레임으로 진행합니다. AI 추정 깊이는 실측 치수가 아닙니다.</p>
     <div id="profile-slot-saved">
     <section id="camera-profile-panel" class="profile-panel" aria-label="카메라 보정 프로필">
       <details id="profile-manager"><summary>카메라 보정 프로필 <span>보정값 선택 · 가져오기</span></summary>

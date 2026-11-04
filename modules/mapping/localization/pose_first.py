@@ -83,7 +83,7 @@ class OrbPoseTracker:
             '--mount', f'type=bind,source={self.root.resolve()},target=/output', IMAGE,
             '-', '/output/camera.yaml', '/output', '1', '0']
         self.process = subprocess.Popen(command, stdin=subprocess.PIPE, stdout=subprocess.PIPE,
-                                        stderr=subprocess.STDOUT, bufsize=0)
+                                        stderr=subprocess.STDOUT, bufsize=65536)
         self.reader = threading.Thread(target=self._read, daemon=True)
         self.reader.start()
         started = time.monotonic()

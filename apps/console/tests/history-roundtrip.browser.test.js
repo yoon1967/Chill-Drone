@@ -23,7 +23,10 @@ test('downloaded reconstruction ZIPs reopen their map and replay through the ini
         return response.json();
       };
       await page.goto(url + '/#saved');
-      await page.locator('button.saved-record').filter({hasText: source}).click();
+      const library = await api('/api/import/library');
+      const sourceRecord = library.items.find(item => (item.local_id || item.id) === source);
+      assert.ok(sourceRecord, 'the requested history source exists in the library');
+      await page.locator('button.saved-record').filter({hasText: sourceRecord.summary?.name || sourceRecord.name}).click();
       await page.waitForFunction(() => document.body.dataset.savedPhase === 'result');
       let asset = new URL(page.url()).searchParams.get('asset');
       const original = await api('/api/saved/run?asset=' + asset);

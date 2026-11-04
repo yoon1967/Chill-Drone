@@ -33,13 +33,13 @@ export function importMessage(job) {
   if (job.status === 'failed') return `불러오기 실패: ${errors[job.error] || job.error}`;
   if (job.status === 'cancelled') return '취소했습니다. 원본 자료와 이미 생성된 진단은 보존합니다.';
   if (job.status === 'ready') return '저장 자료를 확인했습니다. 지도를 열 수 있습니다.';
+  if (job.status === 'cancelling') return '현재 프레임 처리를 중단하고 작업을 정리하고 있습니다.';
   if (job.options?.mode === 'depth_rgbd') {
     const progress = job.progress || {};
     const task = {input: '영상 준비 중', model: '깊이 모델 준비 중 · 첫 실행은 모델 다운로드가 필요합니다', depth: '현재 프레임 깊이 추정 중',
-      tracking: '카메라 위치·방향 추적 중', pose_wait: '위치·방향 확정 대기 · 깊이 복원 보류', mapping: '확정한 자세로 3D 지도 복원 중', integration: `전체 경로 지도 통합 중 · ${progress.integrated_frames || 0} / ${progress.integration_total || 0}관측`, saving: '전체 통합 지도 저장 중'}[job.stage] || '프레임 처리 중';
+      tracking: '카메라 위치·방향 추적 중', pose_wait: '위치·방향 확정 대기 · 깊이 복원 보류', mapping: '확정한 자세로 3D 지도 복원 중', presentation: '현재 프레임 표시 대기 · 표시 후 다음 프레임 진행', integration: `전체 경로 지도 통합 중 · ${progress.integrated_frames || 0} / ${progress.integration_total || 0}관측`, saving: '전체 통합 지도 저장 중'}[job.stage] || '프레임 처리 중';
     return `${task} · ${progress.processed || 0}프레임 처리 · ${progress.points || 0}점`;
   }
-  if (job.status === 'cancelling') return '현재 계산을 중단하고 작업 프로세스를 종료하고 있습니다.';
   const progress = job.progress || {};
   const count = progress.total ? `${progress.completed} / 총 ${progress.total}` : `${progress.completed ?? 0}`;
   if (job.status === 'running' && job.stage === 'input') {
@@ -82,7 +82,7 @@ export function savedPhase(job) {
 export function processingSteps(job) {
   if (job.options?.mode === 'depth_rgbd') {
     const entries = [['model', '추적·깊이 모델 준비'], ['tracking', '① 위치·방향 확정'], ['depth', '② 깊이 추정'], ['mapping', '③ 확정 자세로 복원'], ['integration', '④ 전체 경로 통합'], ['saving', '전체 지도 저장']];
-    const index = job.status === 'complete' ? entries.length : job.stage === 'pose_wait' ? 1 : Math.max(0, entries.findIndex(([stage]) => stage === job.stage));
+    const index = job.status === 'complete' ? entries.length : job.stage === 'pose_wait' ? 1 : job.stage === 'presentation' ? 3 : Math.max(0, entries.findIndex(([stage]) => stage === job.stage));
     return entries.map(([stage, label], i) => ({label, state: i < index ? 'done' : i === index && job.status === 'running' ? 'active' : 'waiting'}));
   }
   const index = job.status === 'complete' ? processingStages.length : processingStages.indexOf(job.stage);
@@ -216,6 +216,9 @@ export function connectImport({profiles = null, onPhase = () => {}} = {}) {
     $('saved-processing').hidden = value !== 'processing';
   }
   function render(job, navigateToResult = true) {
+    if (['running', 'cancelling'].includes(job.status)) {
+      $('saved-preview').pause(); $('import-video').pause(); $('saved-preview-wrap').hidden = true;
+    }
     if (active !== job.id) { $('import-confirm').checked = false; $('import-camera').value = ''; profiles?.resetFileConfirmation(); }
     const previousPhase = document.body.dataset.savedPhase;
     active = job.id;
@@ -403,6 +406,8 @@ export function connectImport({profiles = null, onPhase = () => {}} = {}) {
   $('import-confirm').addEventListener('change', () => { $('import-start').disabled = !$('import-confirm').checked || working; });
   $('import-start').addEventListener('click', async () => {
     if (working) return;
+    $('saved-preview').pause(); $('import-video').pause(); $('saved-preview').currentTime = 0;
+    $('saved-preview-wrap').hidden = true;
     working = true; $('import-start').disabled = true;
     try {
       let camera = null;
@@ -418,6 +423,9 @@ export function connectImport({profiles = null, onPhase = () => {}} = {}) {
         ...(profile ? {profile_selection: profile.profile_selection} : {})}, '?id=' + active);
       working = true; render(job); poll(job.id);
     } catch (error) { working = false; $('import-start').disabled = !$('import-confirm').checked; fail(error); }
+  });
+  for (const id of ['saved-preview', 'import-video']) $(id).addEventListener('play', () => {
+    if (['running', 'cancelling'].includes(lastJob?.status)) $(id).pause();
   });
   function visibility() {
     $('import-panel').hidden = location.hash === '#live';

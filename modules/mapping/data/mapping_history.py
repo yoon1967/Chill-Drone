@@ -26,7 +26,7 @@ def _array_bytes(array):
 
 
 class HistoryWriter:
-    def __init__(self, output, write_json, render_window_s=10.):
+    def __init__(self, output, write_json, render_window_s=10., synchronous=False):
         self.root = Path(output) / 'history'
         (self.root / 'frames').mkdir(parents=True)
         self.write_json = write_json
@@ -40,12 +40,21 @@ class HistoryWriter:
         self.pending = queue.Queue(maxsize=8)
         self.error = None
         self.closed = False
-        self.thread = threading.Thread(target=self._write, daemon=True)
-        self.thread.start()
+        self.synchronous = synchronous
+        self.index = None
+        self.thread = None
+        if synchronous:
+            self.index = (self.root / 'index.jsonl').open('a', encoding='utf-8')
+        else:
+            self.thread = threading.Thread(target=self._write, daemon=True)
+            self.thread.start()
 
     def append(self, snapshot, observation=None):
         if self.closed:
             raise RuntimeError('history_writer_closed')
+        if self.synchronous:
+            self._write_frame(self.index, snapshot, observation)
+            return
         while True:
             if self.error:
                 raise RuntimeError('history_recording_failed: ' + str(self.error)) from self.error
@@ -62,33 +71,42 @@ class HistoryWriter:
                     item = self.pending.get()
                     if item is None:
                         break
-                    snapshot, observation = item
-                    revision = snapshot['revision']
-                    path = self.root / 'frames' / f'{revision:08d}.npz'
-                    temporary = path.with_suffix('.npz.tmp')
-                    arrays = {'points': np.asarray(snapshot['points'], dtype=np.float32).reshape(-1, 6),
-                              'camera_path': np.asarray(snapshot['cameras'], dtype=np.float32).reshape(-1, 3)}
-                    if observation:
-                        arrays.update(observation)
-                    # Low compression level keeps disk I/O outside the rendering loop.
-                    with zipfile.ZipFile(temporary, 'w', compression=zipfile.ZIP_DEFLATED, compresslevel=1) as archive:
-                        for name, array in arrays.items():
-                            archive.writestr(name + '.npy', _array_bytes(array))
-                    from modules.mapping.localization.orbslam3 import replace_file
-                    replace_file(temporary, path)
-                    entry = {key: value for key, value in snapshot.items() if key not in {'points', 'cameras'}}
-                    entry.update(observation=bool(observation), visible_points=len(snapshot['points']))
-                    index.write(json.dumps(entry, ensure_ascii=False, allow_nan=False) + '\n')
-                    index.flush()  # An index entry is published only after its chunk is complete.
-                    self.manifest.update(frames=self.manifest['frames'] + 1, last_timestamp_s=entry['timestamp_s'])
-                    self.write_json(self.root / 'manifest.json', self.manifest)
+                    self._write_frame(index, *item)
         except Exception as error:
             self.error = error
+
+    def _write_frame(self, index, snapshot, observation):
+        revision = snapshot['revision']
+        path = self.root / 'frames' / f'{revision:08d}.npz'
+        temporary = path.with_suffix('.npz.tmp')
+        arrays = {'points': np.asarray(snapshot['points'], dtype=np.float32).reshape(-1, 6),
+                  'camera_path': np.asarray(snapshot['cameras'], dtype=np.float32).reshape(-1, 3)}
+        if observation:
+            arrays.update(observation)
+        # Sequential reconstruction trades larger chunks for no compression stall.
+        compression = zipfile.ZIP_STORED if self.synchronous else zipfile.ZIP_DEFLATED
+        with zipfile.ZipFile(temporary, 'w', compression=compression,
+                             compresslevel=None if self.synchronous else 1) as archive:
+            for name, array in arrays.items():
+                archive.writestr(name + '.npy', _array_bytes(array))
+        from modules.mapping.localization.orbslam3 import replace_file
+        replace_file(temporary, path)
+        entry = {key: value for key, value in snapshot.items() if key not in {'points', 'cameras'}}
+        entry.update(observation=bool(observation), visible_points=len(snapshot['points']))
+        index.write(json.dumps(entry, ensure_ascii=False, allow_nan=False, separators=(',', ':')) + '\n')
+        index.flush()
+        self.manifest.update(frames=self.manifest['frames'] + 1, last_timestamp_s=entry['timestamp_s'])
+        self.write_json(self.root / 'manifest.json', self.manifest)
 
     def close(self, status='complete'):
         if self.closed:
             return
         self.closed = True
+        if self.synchronous:
+            self.index.close()
+            self.manifest['status'] = status
+            self.write_json(self.root / 'manifest.json', self.manifest)
+            return
         while self.thread.is_alive():
             try:
                 self.pending.put(None, timeout=.1)

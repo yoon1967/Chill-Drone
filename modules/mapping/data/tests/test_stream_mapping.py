@@ -6,7 +6,7 @@ from pathlib import Path
 from unittest.mock import MagicMock, patch
 
 import numpy as np
-from modules.mapping.data.stream_mapping import DepthEstimator, LatestFrames, add_points, camera_intrinsic, write_json
+from modules.mapping.data.stream_mapping import DepthEstimator, PoseFrames, add_points, camera_intrinsic, write_json
 
 
 class StreamMappingTests(unittest.TestCase):
@@ -66,23 +66,26 @@ class StreamMappingTests(unittest.TestCase):
         self.assertEqual(len(cells), 4)
         self.assertTrue(all(p[-3:] == [200, 200, 200] for p in cells.values()))
 
-    def test_pending_frames_are_replaced_and_final_frame_is_consumed(self):
+    def test_slow_consumer_keeps_every_selected_frame_in_order(self):
         rgb = np.zeros((32, 32, 3), dtype=np.uint8)
         with patch('modules.mapping.data.stream_mapping.frames', return_value=iter(
                 [(1, 0., rgb, (32, 32)), (2, .01, rgb, (32, 32)), (3, .02, rgb, (32, 32))])):
-            producer = LatestFrames('unused', 30, 100)
-            producer.thread.start()
-            producer.thread.join(1)
-            self.assertTrue(producer.done)
-            self.assertEqual(producer.take()[0], 3)
-            self.assertEqual(producer.dropped, 2)
-            self.assertIsNone(producer.take())
+            tracker = MagicMock()
+            producer = PoseFrames('unused', 30, 100, Path('unused'), tracker_factory=lambda *args: tracker)
+            try:
+                self.assertEqual(producer.take()[0], 1)
+                time.sleep(.25)
+                self.assertEqual(producer.take()[0], 2)
+                self.assertEqual(producer.take()[0], 3)
+                self.assertEqual(producer.dropped, 0)
+                self.assertIsNone(producer.take())
+                self.assertEqual(tracker.track.call_count, 3)
+            finally:
+                producer.close()
 
     def test_decode_error_is_propagated(self):
         with patch('modules.mapping.data.stream_mapping.frames', side_effect=ValueError('bad_video')):
-            producer = LatestFrames('unused', 30, 5)
-            producer.thread.start()
-            producer.thread.join(1)
+            producer = PoseFrames('unused', 30, 5, Path('unused'))
             with self.assertRaisesRegex(ValueError, 'bad_video'):
                 producer.take()
 

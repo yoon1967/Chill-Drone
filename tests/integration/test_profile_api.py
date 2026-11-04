@@ -24,7 +24,7 @@ class ProfileAPITests(unittest.TestCase):
         self.live = LiveManager(self.root / 'live')
         self.imports = Mock()
         self.imports.job.return_value = {'summary': {'width': 1920, 'height': 1080}}
-        self.imports.start.side_effect = lambda key, body: {'options': validate_options(body, {'width': 1920, 'height': 1080})}
+        self.imports.start.side_effect = lambda key, body, **kwargs: {'options': validate_options(body, {'width': 1920, 'height': 1080})}
         self.tello = Mock(camera=self.profiles.get(BUILTIN_ID), gateway=None, busy=False)
         self.tello.start.return_value = {'session_id': 'test_tello'}
         self.drones = Mock()
@@ -113,6 +113,7 @@ class ProfileAPITests(unittest.TestCase):
         status, data, _ = self.request('/api/import/start?id=test', {'confirmed': True, 'profile_selection': selection})
         self.assertEqual(status, 202)
         self.assertEqual(data['options']['camera']['profile']['id'], selection['id'])
+        self.assertTrue(self.imports.start.call_args.kwargs['presentation_sync'])
         status, _, _ = self.request('/api/live/tello/start', {'profile_selection': selection})
         self.assertEqual(status, 400)
         self.tello.start.assert_not_called()
