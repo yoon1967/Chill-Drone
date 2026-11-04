@@ -2,10 +2,11 @@
 from functools import partial
 from http.client import HTTPConnection
 import json
+from queue import Queue, Empty
 import threading
 import time
 import unittest
-from unittest.mock import Mock
+from unittest.mock import Mock, patch
 
 try:
     import cv2
@@ -206,6 +207,60 @@ class CalibrationHTTPTests(unittest.TestCase):
 
 
 class DroneCleanupTests(unittest.TestCase):
+    def test_preview_advances_during_slow_analysis_and_only_latest_sample_is_collected(self):
+        incoming = Queue()
+        analysing, unblock, next_sample = (threading.Event() for _ in range(3))
+        received = Queue()
+        analysed = []
+        class Source:
+            def open(self, cancelled):
+                pass
+            def frames(self, cancelled):
+                while not cancelled():
+                    try:
+                        frame = incoming.get(timeout=.05)
+                    except Empty:
+                        continue
+                    yield frame
+                    received.put(frame)
+            def close(self):
+                pass
+        def slow_feed(session, jpeg):
+            analysed.append(jpeg)
+            if jpeg == b'first':
+                analysing.set()
+                unblock.wait(3)
+            else:
+                next_sample.set()
+        tutorial = CalibrationTutorial(Source)
+        with patch.object(CalibrationSession, 'feed', slow_feed):
+            try:
+                key = tutorial.start({**BOARD, 'source': 'tello', 'confirmed': True})['id']
+                session = tutorial.require(key)
+                incoming.put((b'first', 0.))
+                self.assertTrue(analysing.wait(2))
+                self.assertEqual(received.get(timeout=2), (b'first', 0.))
+                incoming.put((b'intermediate', .8))
+                self.assertEqual(received.get(timeout=2), (b'intermediate', .8))
+                incoming.put((b'latest', 1.6))
+                self.assertEqual(received.get(timeout=2), (b'latest', 1.6))
+                self.assertEqual(session.preview, b'latest')
+                self.assertEqual(analysed, [b'first'])
+                unblock.set()
+                self.assertTrue(next_sample.wait(2))
+                self.assertEqual(analysed, [b'first', b'latest'])
+                next_sample.clear()
+                incoming.put((b'too-soon', 1.7))
+                self.assertEqual(received.get(timeout=2), (b'too-soon', 1.7))
+                incoming.put((b'next', 2.4))
+                self.assertTrue(next_sample.wait(2))
+                session.stop()
+            finally:
+                unblock.set()
+                tutorial.shutdown()
+        self.assertFalse(tutorial.busy)
+        self.assertEqual(analysed, [b'first', b'latest', b'next'])
+
     def test_drone_receiver_closes_on_stop_and_never_creates_a_map(self):
         closed = threading.Event()
         class Source:

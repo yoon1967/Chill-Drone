@@ -32,6 +32,31 @@ function cameraDetails(camera) {
     ` · 왜곡 ${Array.isArray(camera.distortion) ? camera.distortion.map(v => number(v)).join(', ') : '서버 검사 시 확인'}`;
 }
 
+function renderLiveDetails(container, row) {
+  container.replaceChildren();
+  if (!row) return;
+  const camera = row.camera, summary = camera.calibration_summary || {};
+  const number = value => Number.isFinite(value) ? value.toFixed(3) : '미지정';
+  const created = row.created_at ? new Date(row.created_at) : null;
+  const facts = [
+    ['프로필', `${row.name} · 버전 ${row.version}`],
+    ['카메라', row.camera_identity],
+    ['촬영 설정', `${row.width}×${row.height} · ${row.image_geometry || '미지정'}`],
+    ['등록 정보', [created && Number.isFinite(created.getTime()) ? created.toLocaleDateString('ko-KR') : '',
+      row.readonly ? '기존 실측 기본값' : '가져온 파일 · 값 검사 완료'].filter(Boolean).join(' · ')],
+    ['검증 기록', [Number.isFinite(summary.views) ? `${summary.views}장` : '',
+      Number.isFinite(summary.validation_rms_px) ? `RMS ${summary.validation_rms_px.toFixed(3)}px` : '기록 없음'].filter(Boolean).join(' · ')],
+    ['내부 파라미터', `fx ${number(camera.fx)} · fy ${number(camera.fy)} · cx ${number(camera.cx)} · cy ${number(camera.cy)}`],
+    ['왜곡 계수', Array.isArray(camera.distortion) ? camera.distortion.map(number).join(', ') : '서버 검사 시 확인'],
+  ];
+  if (!row.readonly) facts.push(['정확도', '파일에 기록된 값입니다. 측정 정확도는 별도로 확인해야 합니다.']);
+  for (const [label, text] of facts) {
+    const item = document.createElement('div'), term = document.createElement('dt'), value = document.createElement('dd');
+    term.textContent = label; value.textContent = text;
+    item.append(term, value); container.append(item);
+  }
+}
+
 export function connectProfiles() {
   const $ = id => document.getElementById(id);
   let data = {profiles: [], defaults: {}}, liveMode = 'camera', currentContext = 'live';
@@ -41,6 +66,20 @@ export function connectProfiles() {
   const modeFor = context => context === 'file' ? 'file' : liveMode;
   const chosen = context => row($('profile-select-' + context).value);
   function notify(text) { $('profile-status').textContent = text; $('profile-status').hidden = !text; }
+  function liveEnabled() { return $('profile-enabled-live').checked; }
+  function managerVisibility() {
+    const live = currentContext === 'live';
+    $('profile-manager').hidden = live && $('profile-tools').hidden && $('profile-import').hidden;
+    if (live) $('profile-manager').open = true;
+    $('profile-remember-label-live').hidden = !live;
+  }
+  function liveOptions() {
+    $('profile-live-options').hidden = !liveEnabled();
+    $('profile-enabled-live').setAttribute('aria-expanded', String(liveEnabled()));
+    if (!liveEnabled() && currentContext === 'live') {
+      showTools(false); showImport(false);
+    }
+  }
   async function request(path = '', body) {
     const response = await fetch('/api/camera-profiles' + path, {signal: AbortSignal.timeout(5000), ...(body === undefined ? {cache: 'no-store'} :
       {method: 'POST', headers: {'X-Mapping-Client': '1', 'Content-Type': 'application/json'}, body: JSON.stringify(body)})});
@@ -59,19 +98,22 @@ export function connectProfiles() {
     const value = chosen(context);
     $('profile-info-' + context).textContent = value ? `${value.width}×${value.height} · ${value.camera_identity}` :
       context === 'file' ? '보정 파일을 직접 지정하거나 카메라 값을 자체 추정합니다.' :
-      $('camera-calibration').files?.length ? '직접 고른 보정 JSON을 이번 실행에 사용합니다.' : '기존 입력 설정을 사용합니다. 보정 JSON 직접 적용은 아래 직접 설정에서 선택할 수 있습니다.';
+      $('camera-calibration').files?.length ? `${$('camera-calibration').files[0].name} · 이번 지도에 적용합니다.` : '프로필을 선택하거나 JSON을 업로드하세요. 비워두면 기본값으로 시작합니다.';
     $('profile-detail-' + context).hidden = !value;
     $('profile-detail-' + context).open = false;
-    $('profile-values-' + context).textContent = value ? profileDescription(value) + ' · ' + cameraDetails(value.camera) : '';
-    $('profile-confirm-label-' + context).hidden = !value;
-    $('profile-confirm-' + context).checked = false;
+    if (context === 'live') renderLiveDetails($('profile-values-live'), value);
+    else $('profile-values-file').textContent = value ? profileDescription(value) + ' · ' + cameraDetails(value.camera) : '';
+    if (context === 'file') {
+      $('profile-confirm-label-file').hidden = !value;
+      $('profile-confirm-file').checked = false;
+    }
     if (context === 'file') $('import-calibration-note').textContent = value ?
       `${value.name} 프로필을 사용합니다. 원본 해상도가 같아야 하며 대상 카메라·방향·크롭을 확인하세요.` : originalImportNote;
     defaultState();
   }
   function populate(context, preserve = true) {
     const select = $('profile-select-' + context), mode = modeFor(context), selected = preserve ? select.value : null;
-    select.replaceChildren(new Option(context === 'live' ? '기존 입력 설정 사용' : '보정 프로필 없이 복원', ''),
+    select.replaceChildren(new Option(context === 'live' ? '프로필 선택' : '보정 프로필 없이 복원', ''),
       ...data.profiles.filter(p => p.input_modes.includes(mode)).map(p => new Option(`${p.name} · ${p.width}×${p.height}`, p.id)));
     const desired = selected !== null ? selected : data.defaults[mode] || '';
     select.value = row(desired)?.input_modes.includes(mode) ? desired : '';
@@ -85,7 +127,7 @@ export function connectProfiles() {
     $('profile-use').disabled = !value || !value.input_modes.includes(mode) || (currentContext === 'live' && locked);
     $('profile-use-note').textContent = currentContext === 'live' && locked ? '수신을 종료한 후 실행 프로필을 바꿀 수 있습니다.' :
       value && !value.input_modes.includes(mode) ? '이 프로필은 현재 입력 경로에 사용할 수 없습니다. 정보 확인·내보내기만 가능합니다.' :
-      '관리 목록의 선택만으로 적용되지 않습니다. 현재 입력에 선택하면 대상 확인 후 다음 시작에 사용합니다.';
+      '현재 입력에 선택하면 다음 지도 시작에 적용합니다.';
   }
   function showTools(open) {
     $('profile-tools').hidden = !open;
@@ -96,11 +138,13 @@ export function connectProfiles() {
       if (value) $('profile-library').value = value.id;
       libraryInfo();
     }
+    managerVisibility();
   }
   function showImport(open) {
     $('profile-import').hidden = !open;
     $('profile-import-open').setAttribute('aria-expanded', String(open));
     if (open) { $('profile-manager').open = true; showTools(false); }
+    managerVisibility();
   }
   async function refresh(initial = false) {
     const before = preferenceVersion, fresh = await request();
@@ -167,6 +211,7 @@ export function connectProfiles() {
     const value = row($('profile-library').value), context = currentContext;
     if (!value || !value.input_modes.includes(modeFor(context)) || (context === 'live' && locked)) return;
     $('profile-select-' + context).value = value.id;
+    if (context === 'live') { $('profile-enabled-live').checked = true; liveOptions(); }
     $(context === 'live' ? 'camera-calibration' : 'import-camera').value = '';
     describe(context); showTools(false); $('profile-select-' + context).focus();
   });
@@ -206,19 +251,30 @@ export function connectProfiles() {
         showImport(false); pendingCamera = null; $('profile-file').value = ''; $('profile-register').hidden = true;
         $('profile-select-' + currentContext).focus();
       }
-      notify('프로필을 저장했습니다. 위에서 사용할 보정 프로필을 선택한 뒤 대상 카메라를 확인하세요.');
+      notify('프로필을 저장했습니다. 사용할 프로필 목록에서 선택할 수 있습니다.');
     } catch (error) {
       if (/상세 설정|invalid_profile_input_modes/.test(error.message)) $('profile-advanced').open = true;
       fail(error);
     }
     finally { $('profile-save').disabled = false; }
   });
-  $('camera-device').addEventListener('change', () => { $('profile-confirm-live').checked = false; });
+  $('profile-enabled-live').addEventListener('change', liveOptions);
+  function resetLiveCalibration() { $('profile-enabled-live').checked = false; liveOptions(); }
+  $('camera-device').addEventListener('change', resetLiveCalibration);
+  $('profile-enabled-live').checked = false;
+  liveOptions();
+  managerVisibility();
   const readiness = refresh(true).catch(fail);
   return {
     ready: readiness,
     setContext(source) {
+      const previous = currentContext;
       currentContext = source === 'saved' ? 'file' : 'live';
+      if (previous !== currentContext) {
+        $('profile-tools').hidden = $('profile-import').hidden = true;
+        $('profile-manager').open = false;
+      }
+      managerVisibility();
       defaultState(); libraryInfo();
       for (const context of ['live', 'file']) $('profile-manage-' + context).setAttribute('aria-expanded', String(!$('profile-tools').hidden && context === currentContext));
     },
@@ -233,18 +289,21 @@ export function connectProfiles() {
     syncLiveKind(kind) {
       const next = kind === 'tello-map' ? 'tello' : 'camera';
       $('profile-live-choice').hidden = !['camera', 'tello-map'].includes(kind);
-      if (next !== liveMode) { liveMode = next; populate('live', false); }
+      if (next !== liveMode) { liveMode = next; resetLiveCalibration(); populate('live', false); }
       defaultState(); libraryInfo();
     },
     lockLive(value) {
-      locked = value; $('profile-select-live').disabled = locked; $('profile-confirm-live').disabled = locked;
+      locked = value; $('profile-select-live').disabled = locked; $('profile-enabled-live').disabled = locked;
       defaultState(); libraryInfo();
     },
     async selected(context, width, height) {
+      if (context === 'live' && !liveEnabled()) return null;
       await readiness;
-      const value = chosen(context), selection = selectionFor(value, $('profile-confirm-' + context).checked, width, height);
+      const value = chosen(context), selection = selectionFor(value, context === 'live' || $('profile-confirm-file').checked, width, height);
       return selection ? {camera: value.camera, profile_selection: selection} : null;
     },
     resetFileConfirmation() { $('profile-confirm-file').checked = false; },
+    liveCalibrationEnabled: liveEnabled,
+    resetLiveCalibration,
   };
 }

@@ -81,6 +81,18 @@ test('calibration owns camera input until the tutorial releases the gate', async
   await f.get('camera-stop').handlers.click();
 });
 
+test('turning optional calibration off ignores a previously uploaded JSON', async t => {
+  const f = fixture(t);
+  f.get('camera-calibration').files = [{size: 10, text: async () => '{invalid'}];
+  await f.connect({profiles: {syncLiveKind() {}, lockLive() {},
+    liveCalibrationEnabled: () => false, selected: async () => null}});
+  await f.get('camera-start').handlers.click();
+  const start = f.requests.find(r => r.url === '/api/live/start');
+  assert.ok(start);
+  assert.equal(JSON.parse(start.options.body).profile_selection, undefined);
+  await f.get('camera-stop').handlers.click();
+});
+
 test('page/device enumeration is lazy; denial never starts SLAM and can be retried', async (t) => {
   const f = fixture(t, {denied: true}); await f.connect();
   assert.equal(f.permissions(), 0);

@@ -102,10 +102,25 @@ export function connectCalibration({profiles, onBusy = () => {}} = {}) {
       'calibration-device', 'calibration-size', 'calibration-confirm', 'calibration-devices', 'calibration-files']) $(id).disabled = value;
   }
   function release(run) {
-    clearTimeout(run.frameTimer); clearTimeout(run.pollTimer);
+    clearTimeout(run.frameTimer); clearTimeout(run.pollTimer); clearTimeout(run.previewTimer);
     run.media?.getTracks().forEach(track => track.stop()); run.media = null;
     video.pause(); video.srcObject = null; video.hidden = true;
   }
+  function refreshPreview(run) {
+    if (!owns(run) || !run.id || run.source !== 'tello') return;
+    preview.src = '/api/calibration/preview?id=' + run.id + '&t=' + Date.now();
+  }
+  function queuePreview(delay) {
+    const run = active;
+    if (!run || !owns(run) || !run.id || run.source !== 'tello') return;
+    clearTimeout(run.previewTimer);
+    run.previewTimer = setTimeout(() => refreshPreview(run), delay);
+  }
+  preview.addEventListener('load', () => {
+    if (active && owns(active) && active.source === 'tello') preview.hidden = false;
+    queuePreview(100);
+  });
+  preview.addEventListener('error', () => queuePreview(250));
   async function stop(run = active, text = '보정을 중단하고 카메라를 해제했습니다. 다시 시작하면 새로 수집합니다.') {
     if (!run || !owns(run)) return;
     run.cancelled = true;
@@ -168,9 +183,6 @@ export function connectCalibration({profiles, onBusy = () => {}} = {}) {
       const state = await request('state?id=' + run.id);
       if (!owns(run)) return;
       render(run, state);
-      if (run.source === 'tello' && state.size && owns(run)) {
-        preview.src = '/api/calibration/preview?id=' + run.id + '&t=' + Date.now(); preview.hidden = false;
-      }
       run.failures = 0;
     } catch (error) {
       if (!owns(run)) return;
@@ -192,7 +204,6 @@ export function connectCalibration({profiles, onBusy = () => {}} = {}) {
         const state = await request('frame?id=' + run.id, jpeg);
         if (!owns(run)) return;
         render(run, state);
-        preview.src = '/api/calibration/preview?id=' + run.id + '&t=' + Date.now(); preview.hidden = false;
       }
     } catch (error) {
       if (owns(run) && !run.solving) { await stop(run, `수집을 중단했습니다. ${error.message}`); return; }
@@ -319,6 +330,7 @@ export function connectCalibration({profiles, onBusy = () => {}} = {}) {
       const state = await request('start', {...options(), source: run.source, camera_identity: run.identity, confirmed: true});
       if (!owns(run)) { await request('stop', {id: state.id}); return; }
       run.id = state.id; render(run, state);
+      if (run.source === 'tello') refreshPreview(run);
       void poll(run); if (run.source === 'camera') void frame(run);
       if (run.source === 'file') void files(run, selection);
     } catch (error) {

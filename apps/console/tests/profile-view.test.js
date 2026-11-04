@@ -30,11 +30,14 @@ function fixture(t, {defaultRequest} = {}) {
     if (!elements.has(id)) elements.set(id, {value: '', textContent: '', checked: false, disabled: false, hidden: false, open: false,
       handlers: {}, files: [], attrs: {}, classList: {add() {}, remove() {}},
       addEventListener(name, fn) { this.handlers[name] = fn; }, setAttribute(name, value) { this.attrs[name] = value; },
-      replaceChildren(...children) { this.options = children; }, focus() { this.focused = true; }});
+      replaceChildren(...children) { this.options = children; this.children = [...children]; },
+      append(...children) { (this.children ||= []).push(...children); }, focus() { this.focused = true; }});
     return elements.get(id);
   };
   for (const id of ['profile-tools', 'profile-import', 'profile-register']) get(id).hidden = true;
-  Object.defineProperty(globalThis, 'document', {configurable: true, value: {getElementById: get}});
+  let created = 0;
+  Object.defineProperty(globalThis, 'document', {configurable: true, value: {getElementById: get,
+    createElement: () => get('created-' + created++)}});
   Object.defineProperty(globalThis, 'Option', {configurable: true, value: class { constructor(label, value) { this.label = label; this.value = value; } }});
   Object.defineProperty(globalThis, 'fetch', {configurable: true, value: async (url, options = {}) => {
     const body = options.body ? JSON.parse(options.body) : null; requests.push({url, body});
@@ -59,14 +62,36 @@ test('basic view separates execution choice from hidden management and calibrati
   assert.equal(f.get('profile-select-live').value, 'cam');
   assert.equal(f.get('profile-tools').hidden, true); assert.equal(f.get('profile-import').hidden, true);
   assert.doesNotMatch(f.get('profile-info-live').textContent, /RMS|버전|fx/);
-  assert.match(f.get('profile-values-live').textContent, /검증 RMS 0.500px|검증 RMS 0.5px/);
+  const facts = Object.fromEntries(f.get('profile-values-live').children.map(item =>
+    item.children.map(child => child.textContent)));
+  assert.equal(facts['검증 기록'], '20장 · RMS 0.500px');
+  assert.match(facts['내부 파라미터'], /fx 600.000.*cy 240.000/);
+  assert.equal(facts['카메라'], 'device A');
   f.get('profile-manage-live').handlers.click();
   await f.change('profile-library', 'cam2');
   assert.equal(f.get('profile-select-live').value, 'cam');
-  f.get('profile-confirm-live').checked = true;
   f.get('profile-use').handlers.click();
-  assert.equal(f.get('profile-select-live').value, 'cam2'); assert.equal(f.get('profile-confirm-live').checked, false);
+  assert.equal(f.get('profile-select-live').value, 'cam2');
+  assert.equal(f.get('profile-enabled-live').checked, true);
   assert.equal(f.get('profile-tools').hidden, true);
+});
+
+test('live calibration defaults off even with a remembered profile; enabling needs no second confirmation', async t => {
+  const f = fixture(t); await f.handle.ready;
+  assert.equal(f.get('profile-enabled-live').checked, false);
+  assert.equal(f.get('profile-live-options').hidden, true);
+  assert.equal(await f.handle.selected('live'), null);
+  f.get('profile-enabled-live').checked = true; f.get('profile-enabled-live').handlers.change();
+  assert.equal(f.get('profile-live-options').hidden, false);
+  assert.equal((await f.handle.selected('live', 640, 480)).profile_selection.id, 'cam');
+  await assert.rejects(f.handle.selected('live', 960, 720), /해상도/);
+  f.get('profile-enabled-live').checked = false; f.get('profile-enabled-live').handlers.change();
+  assert.equal(await f.handle.selected('live', 960, 720), null);
+  f.get('profile-enabled-live').checked = true;
+  f.get('camera-device').handlers.change();
+  assert.equal(await f.handle.selected('live'), null);
+  await f.change('profile-select-file', 'cam');
+  await assert.rejects(f.handle.selected('file'), /확인란/);
 });
 
 test('remember checkbox scopes save and removal to the actual live or file input', async t => {

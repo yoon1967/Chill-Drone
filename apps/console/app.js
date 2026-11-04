@@ -926,13 +926,15 @@ function showState(state) {
     const notices = state.source === 'live' ? liveTrackingNotices(state) : {tracking: null};
     $('slam-preview-note').textContent = replay.following && notices.tracking ?
       `${notices.tracking.detail} 영상이 계속 들어와도 이 지도는 갱신되지 않을 수 있습니다.` : replay.following ?
-      '노란 점: 직전 처리 프레임과 같은 지도 점 · 초록 점: 이번에 연결된 지도 점 · 숫자: 지도 점 ID' :
+      '' :
       '선택한 지도 버전의 촬영 키프레임입니다. 점군·경로는 그 시점에 실제로 저장된 지도 전체로 교체합니다.';
     if (state.recorded) {
       $('slam-tracking-state').textContent = '저장 기록';
       $('slam-timing').textContent = '현재 선택한 지도 버전의 촬영 키프레임';
       $('slam-preview-note').textContent = '저장된 키프레임 이미지입니다. 실시간 추적 화면은 실시간 지도 탭에서 확인합니다.';
     }
+    $('slam-preview-note').hidden = !$('slam-preview-note').textContent;
+    $('slam-feature-legend').hidden = !replay.following || Boolean(state.recorded);
     const pendingMap = state.map_available && state.map_id !== state.segment_id ? ' · 새 좌표계 준비, 마지막 지도 유지' : '';
     const segments = state.segments?.length || new Set(replay.entries.map(entry => entry.map_id)).size;
     $('stream-state').textContent = `${state.status === 'complete' ? '영상 종료' : state.status === 'failed' ? '실행 실패' : '영상 추적'} · 처리 ${state.frames_received || 0}장 · 정상 추적 ${state.tracked_frames || 0}장 · 초기화 ${state.initializing_frames || 0}장 · 추적 상실 ${state.lost_tracking_frames || 0}장 · 지도 ${state.revision || 0}회 갱신${pendingMap}${state.input === 'browser_camera' ? ` · 입력 누락/대기 교체 ${state.frame_drops || 0}장 · 대기 ${state.queue_depth || 0}/1` : ''}`;

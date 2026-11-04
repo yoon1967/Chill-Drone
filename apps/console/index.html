@@ -22,19 +22,20 @@
       <button id="tab-live" role="tab" data-source="live" aria-selected="false" aria-controls="mapping-panel" tabindex="-1">실시간 지도 <span id="live-tab-indicator" aria-hidden="true"></span></button>
     </nav></div>
     <section id="connection-monitor" class="connection-monitor" hidden role="status" aria-live="polite" aria-label="연결 상태">
-      <strong>연결 상태 <small id="connection-checked">확인 중</small></strong>
+      <strong>연결 상태</strong>
       <dl><div><dt>서버</dt><dd id="connection-server" data-state="idle">확인 중</dd></div>
         <div><dt>드론</dt><dd id="connection-drone" data-state="idle">연결 전</dd></div>
         <div><dt>영상</dt><dd id="connection-video" data-state="idle">대기</dd></div>
         <div><dt>3D 지도</dt><dd id="connection-map" data-state="idle">대기</dd></div></dl>
-      <p id="connection-note">연결 상태를 확인합니다.</p>
-      <div id="connection-camera" class="connection-camera" hidden><strong>카메라 파라미터</strong><p id="connection-camera-values"></p></div>
+      <details class="connection-details"><summary>상세</summary><div class="connection-detail-body"><small id="connection-checked">확인 중</small><p id="connection-note">연결 상태를 확인합니다.</p>
+      <div id="connection-camera" class="connection-camera" hidden><strong>카메라 파라미터</strong><p id="connection-camera-values"></p></div></div></details>
     </section></div>
     <div id="mapping-panel" role="tabpanel" aria-labelledby="tab-saved">
     <div id="camera-actions" class="camera-actions" hidden>
-      <button id="calibration-open" type="button">새 카메라 연결</button>
+      <h2 class="camera-actions-title">카메라 시작하기</h2>
+      <button id="calibration-open" class="camera-choice" type="button"><span class="camera-choice-icon" aria-hidden="true">＋</span><span class="camera-choice-copy"><strong>새 카메라 연결</strong><span>체크보드로 보정값 만들기</span></span><span class="camera-choice-arrow" aria-hidden="true">→</span></button>
       <details id="drone-workspace" class="drone-disclosure" aria-label="기존 카메라 연결">
-        <summary id="drone-open">기존 카메라 연결 <span>드론 카메라</span></summary>
+        <summary id="drone-open" class="camera-choice"><span class="camera-choice-icon" aria-hidden="true">◎</span><span class="camera-choice-copy"><strong>기존 카메라 연결</strong><span>드론 연결하고 지도 시작</span></span><span class="camera-choice-arrow" aria-hidden="true">⌄</span></summary>
         <section class="profile-panel drone-panel" aria-label="Wi-Fi 드론 연결">
       <section id="drone-wifi-results" class="wifi-panel" aria-labelledby="wifi-panel-title">
         <div class="wifi-panel-heading"><div><h2 id="wifi-panel-title">Wi-Fi 목록</h2><p>노트북이 감지한 Wi-Fi에서 드론의 이름을 직접 찾아 선택하세요.</p></div>
@@ -42,7 +43,7 @@
         <p id="drone-wifi-scan-status" role="status">드론 검색을 누르면 주변 Wi-Fi 목록이 표시됩니다.</p>
         <div id="drone-list" role="listbox" aria-label="연결할 Wi-Fi"></div>
         <p id="drone-wifi-empty">아직 검색하지 않았습니다. 위의 드론 검색 버튼을 눌러 주세요.</p>
-        <div class="profile-actions"><button id="drone-connect" type="button" disabled>선택한 Wi-Fi 연결</button><span>항목을 더블클릭하거나 선택 후 Enter로도 연결할 수 있습니다.</span></div>
+        <div class="profile-actions"><button id="drone-connect" type="button" disabled>선택한 Wi-Fi 연결</button></div>
         <p id="drone-wifi-status" role="status" hidden></p>
         <p id="drone-wifi-signal" role="status" hidden></p>
       </section>
@@ -52,14 +53,13 @@
           <p id="drone-link-state" role="status">연결 전 · SDK 응답을 확인하세요</p>
           <p id="drone-status" role="status" hidden></p>
           <section id="drone-resource-panel" hidden aria-label="드론 지원 자원">
-            <div class="profile-actions"><h2>드론 지원 자원</h2><button id="drone-resource-refresh" type="button">자원 다시 탐색</button></div>
+            <div class="drone-resource-heading"><h2>드론 지원 자원</h2><button id="drone-resource-refresh" type="button">자원 재탐색</button></div>
             <p>영상 입력 중에는 수신된 센서만 표시합니다. 미응답은 미지원 확정이 아닙니다.</p>
             <dl id="drone-resources"></dl><p id="drone-video-resource"></p>
           </section>
           <section id="drone-camera-panel" hidden aria-label="연결된 드론 카메라">
-            <h2>드론 카메라</h2><p>연결 → 카메라 확인·지도 생성 → 드론 연결 해제 → 전체 지도 이력 저장</p>
-            <div id="live-camera-settings" class="live-camera-settings"><h3>카메라 보정·설정</h3><p>처음 사용하는 카메라는 보정하고, 기존 보정값이 있으면 아래 프로필에서 선택하세요.</p></div>
-            <div id="profile-slot-live"></div>
+            <h2>드론 카메라</h2>
+            <div id="live-camera-settings" class="live-camera-settings"><div id="profile-slot-live"></div></div>
             <div class="profile-actions"><button id="drone-video-start" type="button">카메라 확인·재시도</button><button id="drone-map-start" type="button">3D 지도 생성 시작</button></div>
             <p id="drone-image-status" role="status">카메라 영상을 준비하고 있습니다.</p>
             <img id="drone-resource-image" hidden alt="연결된 드론의 현재 카메라 이미지">
@@ -113,13 +113,16 @@
             <p id="saved-sampling-note">모델 준비가 끝나면 선택한 프레임을 순서대로 복원합니다. 현재 프레임의 저장과 화면 표시를 마친 뒤 다음 프레임으로 진행합니다. AI 추정 깊이는 실측 치수가 아닙니다.</p>
     <div id="profile-slot-saved">
     <section id="camera-profile-panel" class="profile-panel" aria-label="카메라 보정 프로필">
-      <details id="profile-manager"><summary>카메라 보정 프로필 <span>보정값 선택 · 가져오기</span></summary>
-        <div id="profile-live-context"><div id="profile-live-choice" class="profile-choice">
-          <div class="profile-selection"><label>사용할 보정 프로필<select id="profile-select-live"><option value="">기존 입력 설정 사용</option></select></label><button id="profile-manage-live" type="button" aria-controls="profile-tools" aria-expanded="false">관리</button></div>
-          <label class="profile-check"><input id="profile-remember-live" type="checkbox" disabled> 이 입력의 기본 프로필로 기억</label>
-          <p id="profile-info-live"></p><details id="profile-detail-live" class="profile-detail" hidden><summary>보정값 상세 보기</summary><p id="profile-values-live"></p></details>
-          <label id="profile-confirm-label-live" class="profile-check" hidden><input id="profile-confirm-live" type="checkbox"> 현재 카메라·영상 방향·크롭이 선택한 프로필과 같습니다.</label>
+      <section id="profile-live-context" class="live-calibration" aria-label="카메라 보정 선택">
+        <div class="live-calibration-heading"><label class="live-calibration-toggle"><input id="profile-enabled-live" type="checkbox" role="switch" aria-controls="profile-live-options" aria-expanded="false"><strong>보정 프로필 사용</strong></label><span class="live-calibration-optional">선택 사항</span></div>
+        <p class="live-calibration-note">보정값 없이도 바로 지도를 만들 수 있습니다. 카메라에 맞는 보정값이 있으면 적용하세요.</p>
+        <div id="profile-live-options" hidden><div id="profile-live-choice" class="profile-choice">
+          <div class="profile-selection"><label>저장된 프로필<select id="profile-select-live"><option value="">프로필 선택</option></select></label><button id="profile-manage-live" type="button" aria-controls="profile-tools" aria-expanded="false">프로필 관리</button></div>
+          <label class="live-calibration-upload">또는 JSON 파일 업로드<input id="camera-calibration" type="file" accept=".json,application/json"></label>
+          <p id="profile-info-live" role="status"></p><details id="profile-detail-live" class="profile-detail" hidden><summary>보정값 보기</summary><dl id="profile-values-live" class="profile-facts"></dl></details>
         </div></div>
+      </section>
+      <details id="profile-manager"><summary>카메라 보정 프로필 <span>보정값 선택 · 가져오기</span></summary>
         <div id="profile-file-context" hidden><div id="profile-file-choice" class="profile-choice">
           <div class="profile-selection"><label>복원에 사용할 보정 프로필<select id="profile-select-file"><option value="">보정 프로필 없이 복원</option></select></label><button id="profile-manage-file" type="button" aria-controls="profile-tools" aria-expanded="false">관리</button></div>
           <label class="profile-check"><input id="profile-remember-file" type="checkbox" disabled> 파일 복원의 기본 프로필로 기억</label>
@@ -128,7 +131,7 @@
         </div></div>
         <div class="profile-entry-actions"><button id="profile-import-open" type="button" aria-controls="profile-import" aria-expanded="false">보정 JSON 가져오기</button></div>
         <section id="profile-tools" class="profile-subpanel" hidden aria-label="보정 프로필 관리">
-          <div class="profile-subheading"><strong>저장된 프로필 관리</strong><button id="profile-tools-close" type="button">닫기</button></div>
+          <label id="profile-remember-label-live" class="profile-check" hidden><input id="profile-remember-live" type="checkbox" disabled> 다음에도 이 프로필 사용</label><div class="profile-subheading"><strong>저장된 프로필 관리</strong><button id="profile-tools-close" type="button">닫기</button></div>
           <div class="profile-actions"><label>관리할 프로필<select id="profile-library" aria-label="관리할 보정 프로필"></select></label><button id="profile-refresh" type="button">목록 새로고침</button><a id="profile-export" hidden download>보정 JSON 내보내기 ↓</a><button id="profile-use" type="button">현재 입력에 선택</button></div>
           <p id="profile-use-note"></p><details class="profile-detail"><summary>프로필 상세 정보</summary><p id="profile-library-info"></p></details>
         </section>
@@ -149,7 +152,7 @@
           </div>
         </section>
         <p id="profile-status" role="status" aria-live="polite">보정 프로필을 읽는 중입니다.</p>
-        <details id="profile-manual-live" class="profile-manual"><summary>이번 실행만 직접 설정 <span>JSON 직접 적용 · 화각 추정</span></summary><label>보정 JSON <input id="camera-calibration" type="file" accept=".json,application/json"></label><label>수평 화각 <input id="camera-fov" type="number" min="25" max="120" value="60"> °</label><p>여기서 고른 JSON은 프로필로 저장하지 않고 이번 실행에만 적용합니다. 직접 고르면 위 프로필 선택은 해제됩니다. 지원되는 드론 카메라는 별도 선택이 없으면 기본 실측값을 적용하고, 다른 카메라는 보정 파일이 없을 때 화각으로 추정합니다.</p></details>
+        <details id="profile-manual-live" class="profile-manual"><summary>화각 설정 <span>보정값이 없는 일반 카메라</span></summary><label>수평 화각 <input id="camera-fov" type="number" min="25" max="120" value="60"> °</label><p>보정값이 없는 일반 카메라는 이 화각으로 카메라 값을 추정합니다. 지원되는 드론은 내장 기본값으로 시작합니다.</p></details>
       </details>
     </section>
     </div>
@@ -288,7 +291,8 @@
         <section id="slam-panel" hidden aria-label="프레임 특징점 추적">
           <div class="section-title"><h2>연속 프레임 추적</h2><strong id="slam-tracking-state">초기화 중</strong></div>
           <img id="slam-preview" alt="현재 영상에서 같은 지도 점을 이어서 추적한 결과">
-          <p class="muted" id="slam-preview-note">노란 점은 직전 처리 프레임과 같은 지도 점, 초록 점은 이번 프레임에서 새로 연결된 지도 점입니다. 숫자는 지도 점 ID입니다.</p>
+          <div id="slam-feature-legend" class="tracking-legend"><span><i class="tracking-dot yellow" aria-hidden="true"></i>노란 점: 직전 프레임과 같은 지도 점</span><span class="tracking-legend-id">숫자: 지도 점 ID</span><span><i class="tracking-dot green" aria-hidden="true"></i>초록 점: 이번에 연결된 지도 점</span></div>
+          <p class="muted" id="slam-preview-note" hidden></p>
           <p id="slam-timing" role="status"></p>
           <p id="frame-latency" role="status">입력 → 지도 표시 지연 · 측정 대기</p>
           <p class="muted">브라우저 촬영 프레임이 지도에 표시되기까지의 추정 시간입니다. 측정값은 JSON으로 저장합니다.</p>
