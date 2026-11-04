@@ -10,6 +10,7 @@
 - 사람 탐지: `detections`(detection_inbox.py)가 탐지 결과를 받아 회차 폴더에 저장하고 화면에 `detection` 메시지로 보낸다.
   드론을 자동으로 멈추지 않는다(운용자가 정함).
 - AI 합성 영상: `overlay`(overlay_store.py)가 탐지 프로그램이 그려 보낸 최신 장을 들고 있다. 화면이 원본 대신 볼 수 있다.
+- 3D 지도: `map`(map_inbox.py)이 지도 연결기(gateway_map_bridge.py)가 보낸 최신 점군을 들고 있다가 화면에 `map` 알림을 보낸다.
 실행(이륙·착륙·비상 정지, rc 전송, 안전 착륙, 높이 상한, 데드맨)은 실기체로 검증한 FlightController가 그대로 맡는다.
 웹 서버는 gateway_server.py에 있다. 자율 비행 연결(`/ws/autonomy`)은 다음 작업이다.
 """
@@ -22,6 +23,7 @@ import time
 from flight_control import STATE_STALE_S, FlightController
 from detection_inbox import DetectionInbox
 from frame_store import FrameStore
+from map_inbox import MapInbox
 from overlay_store import OverlayStore
 from mode_arbiter import SCHEMA_VERSION, ModeArbiter
 from tello_link import TelloLink, now_iso
@@ -69,6 +71,7 @@ class Gateway:
         self.detections = DetectionInbox(self.frames, run_dir=link.log.dir if link.log else None,
                                          emit=self._emit, clock=clock)
         self.overlay = OverlayStore(clock=clock)
+        self.map = MapInbox(run_dir=link.log.dir if link.log else None, emit=self._emit, clock=clock)  # 3D 지도(지도 연결기)
 
     # ---------- 수명 ----------
     def start(self) -> "Gateway":
@@ -374,5 +377,6 @@ class Gateway:
             "autonomy_used": snap["autonomy_used"],
             "detection": self.detections.status(),
             "overlay": self.overlay.status(),
+            "map": self.map.status(),
             "preflight": [c.__dict__ for c in self.flight.preflight()] if snap["mode"] == "grounded" else None,
         }

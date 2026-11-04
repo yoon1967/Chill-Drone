@@ -124,6 +124,15 @@ body[data-view=control] main{padding-bottom:24px}body[data-view=review] main{pad
 /* 게이트웨이 연결(실시간) */
 .feed{position:absolute;inset:0;width:100%;height:100%;object-fit:contain;background:var(--video)}
 .map-empty{flex:1;min-height:120px;display:flex;align-items:center;justify-content:center;text-align:center;padding:16px;color:var(--muted);font-size:13px;background:var(--map);border-radius:9px}
+.keys-hint{font-size:11px}
+.map3d-slot{flex:1;min-height:220px;display:flex;background:var(--map);border-radius:9px;overflow:hidden}
+.map3d-slot>.map-empty{flex:1}
+.map3d-host{flex:1;display:flex;min-height:0}
+.map3d-host canvas{flex:1;width:100%;height:100%;min-height:220px;display:block;touch-action:none;cursor:grab}
+.map3d-host canvas:active{cursor:grabbing}
+.map3d-info{display:flex;gap:8px;align-items:center;flex-wrap:wrap;margin-top:6px;font-size:12px}
+.map3d-panel .map3d-slot{min-height:320px}
+.seg.map-mode button{min-width:0;padding:3px 10px;font-size:12px}
 .checks{display:flex;gap:4px;flex-wrap:wrap}.checks .chip{font-size:11px;padding:2px 7px}
 .keys-hint{font-size:11px}
 .badge.real{background:var(--danger-soft);color:var(--danger)}

@@ -13,6 +13,8 @@
 - GET  /api/detections    발견 목록·탐지 상태, GET·PUT /api/detections/<event_id>.jpg 사진
 - PUT /api/perception/overlay.jpg  AI 합성 영상 1장(헤더 X-Input-Id·X-Frame-Id = 원본 프레임). 같은 PC에서만
 - GET /overlay.mjpg        AI 합성 영상(최신 장만). 2초 넘게 안 오면 보내지 않는다
+- POST /api/map           3D 지도(gateway-map/0.1, 지도 연결기 gateway_map_bridge.py). 탐지와 같이 기본은 같은 PC에서만 받는다
+- GET  /api/map           최신 3D 지도(점군·카메라 경로). 없으면 404
 이륙·rc가 허용된 상태로 뜨므로, 실제 기체에서는 주변을 비우고 실행한다. 이륙은 화면에서 주변 확인 뒤에만 된다.
 check_server.py(연결 점검·첫 조작 화면)와 같은 포트를 쓰므로 동시에 켜지 않는다. Tello는 처음 command를 보낸 쪽에만 답한다.
 """
@@ -43,6 +45,7 @@ DEFAULT_LOG_ROOT = os.path.join(REPO_ROOT, "data", "outputs", "tello")
 CONTROLLER_DIR = os.path.join(REPO_ROOT, "apps", "controller")
 STATE_PERIOD_S = 0.1
 MAX_EVENT_BYTES = 1_000_000
+MAX_MAP_BYTES = 16_000_000   # 점 6만 개 × 한 줄 약 60바이트 + 여유
 LOCAL_HOSTS = ("127.0.0.1", "::1", "localhost")
 
 
@@ -163,6 +166,27 @@ def build_app(args) -> FastAPI:
         status, out = await asyncio.to_thread(gw.detections.receive, event)
         return JSONResponse(out, status)
 
+    @app.post("/api/map")
+    async def post_map(request: Request):
+        if not detection_sender_ok(request):
+            return JSONResponse({"ok": False, "reason": "not_local"}, 403)
+        body = await request.body()
+        if len(body) > MAX_MAP_BYTES:
+            return JSONResponse({"ok": False, "reason": "too_large"}, 413)
+        try:
+            msg = json.loads(body)
+        except ValueError:
+            return JSONResponse({"ok": False, "reason": "invalid_json"}, 400)
+        status, out = await asyncio.to_thread(gw.map.receive, msg)
+        return JSONResponse(out, status)
+
+    @app.get("/api/map")
+    def get_map():
+        snap = gw.map.latest()
+        if snap is None:
+            return JSONResponse({"available": False, "status": gw.map.status()}, 404)
+        return snap
+
     @app.get("/api/detections")
     def list_detections():
         return gw.detections.snapshot()
@@ -225,7 +249,7 @@ def main():
     ap.add_argument("--host", default="127.0.0.1", help="폰에서 열려면 0.0.0.0 (같은 망 안에서만)")
     ap.add_argument("--port", type=int, default=8010)
     ap.add_argument("--allow-remote-detections", action="store_true",
-                    help="다른 PC의 탐지 결과도 받기 (인증이 없으므로 같은 망 시험에서만)")
+                    help="다른 PC의 탐지 결과·3D 지도도 받기 (인증이 없으므로 같은 망 시험에서만)")
     args = ap.parse_args()
 
     import uvicorn

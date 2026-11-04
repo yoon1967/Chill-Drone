@@ -10,11 +10,11 @@ const ui = {
   scenario: "person", reviews: {},      // reviews: event_id → confirmed / false_positive
   live: false, ws: null, wsOpen: false, everOpen: false, state: null, timeline: [], seq: 0, cache: {}, view: null,
   findings: new Map(), lastDet: null, newFindingAt: 0,   // 실시간 사람 탐지: finding_id → 발견, 영상 위 윤곽선용 최근 탐지
-  feed: savedFeed(),                    // 영상 칸: raw(원본) / ai(사람 탐지 합성 영상). 합성이 끊기면 원본을 보여 준다
+  feed: loadPref("controller.feed", "raw") === "ai" ? "ai" : "raw",   // 영상 칸: raw(원본) / ai(사람 탐지 합성 영상). 합성이 끊기면 원본을 보여 준다
+  map3d: { mode: loadPref("map-mode", "2d"), host: null, view: null, revision: undefined, loading: false, has: false },  // 3D 점군(지도 연결기)
 };
-function savedFeed() {
-  try { return localStorage.getItem("controller.feed") === "ai" ? "ai" : "raw"; } catch (e) { return "raw"; }
-}
+function loadPref(key, fallback) { try { return localStorage.getItem(key) || fallback; } catch (e) { return fallback; } }
+function savePref(key, value) { try { localStorage.setItem(key, value); } catch (e) { /* 저장 안 돼도 화면은 동작 */ } }
 const DET_OVERLAY_MS = 1000;   // 탐지 결과는 실시간 영상보다 조금 늦게 온다. 윤곽선은 1초만 보이고 지연을 함께 적는다
 const PERSON_ALERT_MS = 10000; // 새 발견 알림을 띄워 두는 시간
 
@@ -254,8 +254,12 @@ function detectionList(events, big = false) {
 }
 
 function mapPanel(st, events, track, tall = false) {
-  const head = `<header><h2>지도</h2>${src("map")}${chip("경로: 자율 비행", "neutral", "src-inline")}
-      <span class="spacer"></span><a class="link" href="http://127.0.0.1:8790/" target="_blank" rel="noopener">3D 지도 열기 (apps/console)</a></header>`;
+  const three = ui.live && !tall && ui.map3d.mode === "3d";   // 탐색 결과(tall)는 3D 칸이 따로 있다
+  const seg = ui.live && !tall ? `<div class="seg map-mode" role="group" aria-label="지도 보기">
+      ${["2d", "3d"].map((m) => `<button data-map-mode="${m}" class="${ui.map3d.mode === m ? "on" : ""}" aria-pressed="${ui.map3d.mode === m}">${m === "2d" ? "2D 경로" : "3D 점군"}</button>`).join("")}</div>` : "";
+  const head = `<header><h2>지도</h2>${src("map")}${three ? "" : chip("경로: 자율 비행", "neutral", "src-inline")}
+      <span class="spacer"></span>${seg || `<a class="link" href="http://127.0.0.1:8790/" target="_blank" rel="noopener">3D 지도 열기 (apps/console)</a>`}</header>`;
+  if (three) return map3dPanel(st, head);
   if (ui.live) {
     return `<section class="panel map ${tall ? "tall" : ""}" data-part="map" aria-label="2D 지도">${head}
       <div class="map-empty">자율 비행의 위치 추정(pose)이 연결되면 지나온 경로와 현재 위치가 그려집니다.</div></section>`;
@@ -284,6 +288,56 @@ function mapPanel(st, events, track, tall = false) {
     </svg>
     <p class="legend"><i class="lg flown"></i>지나온 경로 <i class="lg planned"></i>계획 경로 <i class="lg mark"></i>발견 지점 = 그때 드론 위치(사람 위치 아님)</p>
   </section>`;
+}
+
+// 3D 점군: 캔버스(ui.map3d.host)는 한 번만 만들고 다시 그릴 때마다 이 자리(.map3d-slot)로 옮긴다(attachMap3d).
+// 화면 전체를 0.1초마다 다시 그리므로, 캔버스를 HTML로 다시 만들면 점군을 매번 처음부터 올리게 된다.
+function map3dPanel(st, head, cls = "map") {   // cls: 실시간 감독은 지도 칸(map), 탐색 결과는 3D 칸
+  const m = st.map, has = ui.map3d.has;
+  const unit = m?.unit === "m" ? "m" : "임의 단위(m 아님)";
+  const info = !m || !m.alive ? ["지도 연결기 꺼짐", "warning", "지도 서버를 켜고 gateway_map_bridge.py를 실행하면 점군이 들어옵니다."]
+    : m.upstream === "unreachable" ? ["지도 서버 꺼짐", "danger", `${m.source_url || "지도 서버"}에 연결할 수 없습니다.`]
+    : m.upstream === "no_map" && !has ? ["지도 아직 없음", "neutral", `지도 서버 상태: ${m.mapping_state || "알 수 없음"}`]
+    : m.upstream === "error" ? ["지도 읽기 오류", "danger", ""]
+    : ["지도 수신 중", "success", ""];
+  const detail = has && m ? `버전 ${m.revision ?? "?"} · 점 ${m.points}${m.points_total > m.points ? `/${m.points_total}` : ""} · ${unit}` : info[2];
+  return `<section class="panel ${cls}" data-part="map3d" aria-label="3D 지도">${head}
+    <div class="map3d-slot">${has ? "" : `<div class="map-empty">${esc(info[2] || "점군을 기다리는 중입니다.")}</div>`}</div>
+    <div class="map3d-info">${chip(info[0], info[1])}<span class="muted">${esc(detail)}</span>
+      ${has ? `<span class="muted keys-hint">끌어서 돌리기 · 휠/두 손가락 확대 · 두 번 눌러 처음 시점</span>` : ""}</div></section>`;
+}
+
+function attachMap3d() {
+  const slot = $("#app .map3d-slot");
+  if (!slot || !ui.live) return;
+  const m = ui.map3d;
+  if (!m.host) {
+    m.host = document.createElement("div");
+    m.host.className = "map3d-host";
+    m.host.innerHTML = `<canvas aria-label="3D 점군과 카메라 경로"></canvas>`;
+    m.view = window.PointView ? new window.PointView(m.host.firstChild) : null;   // map3d.js를 못 읽었으면(옛 캐시 등) 안내만
+    if (!m.view?.ok) m.host.innerHTML = `<div class="map-empty">이 브라우저는 WebGL을 쓸 수 없어 3D 점군을 그리지 못합니다.</div>`;
+  }
+  if (m.has && m.host.parentNode !== slot) { slot.replaceChildren(m.host); m.view?.draw(); }
+  const rev = ui.state?.map?.revision;
+  if (rev != null && rev !== m.revision && !m.loading) loadMap();
+}
+
+async function loadMap() {
+  const m = ui.map3d;
+  m.loading = true;
+  try {
+    const r = await fetch("/api/map", { cache: "no-store" });
+    if (r.ok) {
+      const map = await r.json();
+      m.revision = map.source?.revision;
+      if (m.view?.ok) m.view.setData(map);
+      const first = !m.has;
+      m.has = true;
+      if (first) { ui.cache = {}; render(); }   // 안내 문구 → 캔버스
+    }
+  } catch (e) { /* 다음 상태 갱신 때 다시 */ }
+  m.loading = false;
 }
 
 const CMD_LABEL = {
@@ -377,10 +431,10 @@ function renderReview() {
     <p class="note">임무 후 보고용 화면입니다. 발견마다 확인·오탐을 정하면 요약에 바로 반영됩니다.</p>
     <div class="review-grid">${detectionList(all, true)}${mapPanel(st, all, track, true)}</div>
     <div class="review-grid two">
-      <section class="panel" aria-label="3D 지도"><header><h2>3D 지도</h2>${src("map")}</header>
+      ${ui.live ? map3dPanel(st, `<header><h2>3D 지도</h2>${src("map")}</header>`, "map3d-panel") : `<section class="panel" aria-label="3D 지도"><header><h2>3D 지도</h2>${src("map")}</header>
         <div class="map3d"><p>팀 지도 화면(<code>apps/console</code>)의 점군·카메라 경로를 여기에 띄울 자리입니다.</p>
-        <p class="muted">지도 화면이 실행 중이면 새 창으로 엽니다. 단위·좌표계는 지도 쪽 표시를 따릅니다.</p>
-        <a class="link" href="http://127.0.0.1:8790/" target="_blank" rel="noopener">3D 지도 열기</a></div></section>
+        <p class="muted">게이트웨이에 연결하고 지도 연결기를 켜면 여기에 점군이 그려집니다. 단위·좌표계는 지도 쪽 표시를 따릅니다.</p>
+        <a class="link" href="http://127.0.0.1:8790/" target="_blank" rel="noopener">3D 지도 열기</a></div></section>`}
       <section class="panel" data-part="timeline" aria-label="비행 기록"><header><h2>비행 기록</h2>${src("drone")}</header>
         <ol class="timeline">${tl || '<li class="empty">기록 없음</li>'}</ol></section>
     </div>`;
@@ -437,7 +491,7 @@ function render() {
     ui.cache = { __keys: keys };
     parts.forEach((p) => { ui.cache[p.dataset.part] = p.outerHTML; });
     bindSticks();
-    return;
+    return attachMap3d();
   }
   for (const p of parts) {
     const k = p.dataset.part, s = p.outerHTML;
@@ -446,6 +500,7 @@ function render() {
     const el = app.querySelector(`[data-part="${k}"]`);
     if (el) el.replaceWith(document.importNode(p, true));
   }
+  attachMap3d();
 }
 
 // ---------- 게이트웨이 연결 ----------
@@ -528,6 +583,12 @@ async function detectGateway() {
 
 // ---------- 입력 ----------
 document.addEventListener("click", (ev) => {
+  const mm = ev.target.closest("[data-map-mode]");
+  if (mm) {
+    ui.map3d.mode = mm.dataset.mapMode;
+    savePref("map-mode", ui.map3d.mode);
+    return render();
+  }
   const rv = ev.target.closest("[data-review]");
   if (rv) {
     const id = rv.closest("[data-event]").dataset.event;
@@ -543,7 +604,7 @@ document.addEventListener("click", (ev) => {
   if (fb) {
     if (fb.classList.contains("off")) return toast("AI 합성: 사람 탐지 프로그램이 합성 영상을 보내고 있지 않습니다");
     ui.feed = fb.dataset.feed;
-    try { localStorage.setItem("controller.feed", ui.feed); } catch (e) { /* 저장 안 돼도 이번 화면에서는 바뀐다 */ }
+    savePref("controller.feed", ui.feed);
     return render();
   }
   const b = ev.target.closest("[data-cmd]");
