@@ -69,6 +69,20 @@ test('new session is announced before status callbacks feed the selected state b
   assert.equal(f.requests.some(r => r.url === '/api/live/stop'), false);
 });
 
+test('reconstruction stop can finalize an active session after the page reconnects', async (t) => {
+  const f = fixture(t);
+  const handle = await f.connect();
+  handle.update({session_id: 'reconnected-live', session_status: 'receiving'});
+  await handle.stop();
+  const stops = f.requests.filter(request => request.url === '/api/live/stop');
+  assert.equal(stops.length, 1);
+  assert.deepEqual(JSON.parse(stops[0].options.body), {session_id: 'reconnected-live', reason: 'user_stop'});
+  assert.equal(f.permissions(), 0);
+  handle.update({session_id: 'reconnected-live', session_status: 'complete'});
+  await handle.stop();
+  assert.equal(f.requests.filter(request => request.url === '/api/live/stop').length, 1);
+});
+
 test('calibration owns camera input until the tutorial releases the gate', async (t) => {
   const f = fixture(t), inputGate = {calibrating: true};
   const handle = await f.connect({inputGate});

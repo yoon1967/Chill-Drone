@@ -436,6 +436,12 @@ export async function connectCapture({onStart = () => {}, onStatus = () => {}, o
   sourceChanged();
   void refreshDevices();
   return {update,
+    async stop() {
+      if (current) return stop();
+      if (serverState.session_id && !terminal(serverState)) {
+        await post('/api/live/stop', JSON.stringify({session_id: serverState.session_id, reason: 'user_stop'}));
+      }
+    },
     prepareDrone() {
       if (current) return;
       profiles?.resetLiveCalibration?.();

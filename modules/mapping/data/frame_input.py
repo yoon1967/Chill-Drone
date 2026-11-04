@@ -99,8 +99,8 @@ def validate_options(options, summary):
     if mode not in {'sfm', 'depth_rgbd'}:
         raise ValueError('invalid_reconstruction_mode')
     result['mode'] = mode
-    window = options.get('render_window_s', 10.)
-    if type(window) not in (int, float) or not math.isfinite(window) or not 1 <= window <= 120:
+    window = options.get('render_window_s')
+    if window is not None and (type(window) not in (int, float) or not math.isfinite(window) or not 1 <= window <= 120):
         raise ValueError('invalid_render_window_s')
     result['render_window_s'] = window
     return result

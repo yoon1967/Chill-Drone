@@ -76,6 +76,19 @@ body[data-map-source=saved].progressive-processing #saved-inspection,body[data-m
 @media(max-width:600px){.progressive-panels{grid-template-columns:1fr}.progressive-media{height:200px}:is(#progressive-viewport,#live-progressive-viewport){height:300px}.progressive-heading{align-items:flex-start;flex-direction:column;gap:8px}body[data-map-source=saved].progressive-processing .saved-processing-steps{grid-template-columns:1fr}}
 body[data-map-source=saved].progressive-processing header{height:52px}body[data-map-source=saved].progressive-processing main{padding-top:16px}body[data-map-source=saved].progressive-processing .saved-intro h1{font-size:22px}body[data-map-source=saved].progressive-processing .saved-intro .eyebrow{display:none}body[data-map-source=saved].progressive-processing #import-panel>details>summary{display:none}body[data-map-source=saved].progressive-processing .source-bar{margin-bottom:12px}body[data-map-source=saved].progressive-processing .progressive-heading{margin:12px 0}
 .progressive-replay{padding:8px 0;min-width:0}.progressive-replay>.import-actions{margin:4px 0;flex-wrap:wrap}.progressive-replay>input[type=range]{display:block;width:100%;margin:5px 0}.progressive-replay input[type=number]{width:90px}.progressive-replay output{font-variant-numeric:tabular-nums}.progressive-replay [role=status]{font-size:12px}
+/* Shared by the saved workspace and its live clone outside #import-panel. */
+:is(#progressive-workspace,#live-progressive-workspace){font-size:13px;color:#36553e}
+:is(#progressive-workspace,#live-progressive-workspace) :is(button,select,input:not([type=range]),a){box-sizing:border-box;border:1px solid #c6d3c0;border-radius:8px;background:#fcfdf8;color:#35583c;font-family:inherit;font-size:12px;line-height:1.5;padding:10px 14px;min-height:40px}
+:is(#progressive-workspace,#live-progressive-workspace) :is(button,a){cursor:pointer;text-decoration:none;display:inline-flex;align-items:center;justify-content:center}
+:is(#progressive-workspace,#live-progressive-workspace) :is(button,a):hover{background:#edf3e7;border-color:#698a63}
+:is(#progressive-workspace,#live-progressive-workspace) button[aria-pressed=true]{background:#244d3b;border-color:#244d3b;color:#fff}
+:is(#progressive-workspace,#live-progressive-workspace) :is(button,select,input):disabled{opacity:.5;cursor:default}
+:is(#progressive-workspace,#live-progressive-workspace) :is(button,select,input,a):focus-visible{outline:2px solid #527f43;outline-offset:3px}
+.progressive-replay label{display:inline-flex;align-items:center;gap:8px;font-size:12px;line-height:1.7;color:#5b715e}
+.progressive-replay input[type=range]{accent-color:#527f43;min-height:24px}
+.live-depth-actions{display:flex;gap:12px;align-items:center;flex-wrap:wrap;margin:12px 0}
+#live-depth-stop{background:#244d3b;color:#fff;border-color:#244d3b}
+#live-depth-stop:hover{background:#355f48}
 @media(min-width:901px){body[data-map-source=saved].progressive-processing .progressive-media,body[data-map-source=saved].progressive-processing :is(#progressive-viewport,#live-progressive-viewport){height:clamp(240px,calc(100dvh - 550px),460px)}}
 @media(max-width:760px){.saved-intro{align-items:flex-start;gap:12px}#import-panel>details{padding:18px}.saved-inspection{grid-template-columns:1fr}.saved-library{grid-template-columns:1fr}.import-drop strong{font-size:17px}.saved-library-heading{align-items:flex-start}.saved-library-heading>div{flex-wrap:wrap;justify-content:flex-end}.saved-intro button{flex-shrink:0}.saved-intro .eyebrow{font-size:9px}.saved-intro h1{font-size:24px}}
 @media(prefers-reduced-motion:reduce){.saved-processing-steps [data-state=active]:before{animation:none}.import-drop{transition:none}}

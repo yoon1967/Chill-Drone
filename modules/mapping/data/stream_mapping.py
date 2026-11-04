@@ -249,6 +249,8 @@ def add_points(cells, rgb, depth, pose, params, max_points=40000, voxel_size=.06
 
 
 def expire_render_points(cells, seen, stamp, window_s):
+    if window_s is None:
+        return 0
     removed = 0
     while cells:
         key = next(iter(cells))
@@ -274,7 +276,7 @@ def run(source, output, options, estimator_factory=DepthEstimator, tracker_facto
     cameras, cells = [], OrderedDict()
     seen = {}
     last_nonempty_points = []
-    render_window_s = options.get('render_window_s', 10.)
+    render_window_s = options.get('render_window_s')
     def check_cancelled():
         if stop_event is not None and stop_event.is_set():
             raise InterruptedError('cancelled')
@@ -352,7 +354,9 @@ def run(source, output, options, estimator_factory=DepthEstimator, tracker_facto
                     active_map = map_id
                     voxel_size = voxel_size or max(.0001, .06 * depth_scale)
                     publish(stage='mapping')
-                    evicted = add_points(cells, rgb, depth, pose, params, voxel_size=voxel_size, seen=seen, stamp=stamp)
+                    evicted = add_points(cells, rgb, depth, pose, params,
+                        max_points=float('inf') if render_window_s is None else 40000,
+                        voxel_size=voxel_size, seen=seen, stamp=stamp)
                     # Full processed observations survive temporal/capacity render eviction.
                     observation = {'depth': depth, 'rgb': rgb, 'world_from_camera': pose,
                         'intrinsics': np.asarray(params), 'map_id': np.asarray(map_id),
@@ -364,18 +368,26 @@ def run(source, output, options, estimator_factory=DepthEstimator, tracker_facto
                     status['registered'] += 1
                     mapped, state = True, 'tracking'
             status['revision'] += 1
-            evicted += expire_render_points(cells, seen, stamp, render_window_s)
+            # Tracking loss must freeze the last valid map, including when an
+            # older caller explicitly requests a temporal preview window.
+            if mapped:
+                evicted += expire_render_points(cells, seen, stamp, render_window_s)
             # One immutable snapshot binds this image and its map to the same revision.
             points = list(cells.values())
             if points:
                 last_nonempty_points = points
             preview_points = points[::max(1, math.ceil(len(points) / 12000))]
+            map_stamp = cameras[-1]['timestamp_s'] if cameras else stamp
+            visible_cameras = [c['position'] for c in cameras
+                if render_window_s is None or c['timestamp_s'] >= map_stamp - render_window_s]
+            # Sample the entire route instead of dropping its beginning.
+            visible_cameras = visible_cameras[::max(1, math.ceil(len(visible_cameras) / 300))]
             snapshot = {'revision': status['revision'], 'frame_id': name,
                 'frame_number': number, 'timestamp_s': stamp, 'tracking': state, 'pose_confirmed': pose is not None, 'map_id': active_map, 'pose_map_id': native_pose.get('map_id'),
                 'pose_position': pose[:3, 3].tolist() if pose is not None else None,
                 'pose_rotation': pose[:3, :3].tolist() if pose is not None else None,
                 'depth_scale': depth_scale, 'submaps': len(submaps) + (active_map is not None),
-                'points': preview_points, 'map_points': len(points), 'cameras': [c['position'] for c in cameras if c['timestamp_s'] >= stamp - render_window_s][-300:],
+                'points': preview_points, 'map_points': len(points), 'cameras': visible_cameras,
                 'render_window_s': render_window_s, 'render_evicted_points': evicted,
                 'processed': status['processed'], 'registered': status['registered'],
                 'dropped': producer.dropped, 'processing_ms': round((time.monotonic() - tick) * 1000),

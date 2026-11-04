@@ -42,7 +42,7 @@ export function connectProgressiveMap({prefix = 'progressive'} = {}) {
     $('progressive-timeline').value = replay.time;
     if (document.activeElement !== $('progressive-seek')) $('progressive-seek').value = replay.time.toFixed(2);
     $('progressive-seek').max = replay.last;
-    $('progressive-replay-time').textContent = `${replay.time.toFixed(2)} / ${replay.last.toFixed(2)}s`;
+    $('progressive-replay-time').textContent = `${replay.time.toFixed(2)} / ${replay.last.toFixed(2)}초`;
     $('progressive-play').textContent = replay.playing ? '\uC77C\uC2DC\uC815\uC9C0' : '\uC7AC\uC0DD';
     $('progressive-follow').setAttribute('aria-pressed', String(replay.following));
     $('progressive-replay-state').textContent = replay.following ?
@@ -109,7 +109,7 @@ export function connectProgressiveMap({prefix = 'progressive'} = {}) {
       $('progressive-frame-time').textContent = `${value.timestamp_s.toFixed(2)}초 · 원본 ${value.frame_number}번째 프레임`;
       $('progressive-frame-detail').textContent = {lost: '위치·방향 추적 실패 · 깊이 추정과 지도 반영을 건너뛰고 마지막 지도를 유지합니다.',
         initializing: '영상으로 카메라 위치·방향을 초기화 중입니다. 아직 깊이 추정을 실행하지 않습니다.',
-        scale_wait: '위치·방향은 확인했습니다. 같은 좌표 크기로 깊이를 연결할 근거를 기다립니다.',
+        scale_wait: '위치·방향은 확인했습니다. 깊이 배율의 일관성이 부족해 이번 프레임은 합치지 않고 누적 지도를 유지합니다.',
         tracking: '먼저 확정한 이 프레임의 카메라 자세를 유지한 채 깊이와 지도를 복원했습니다.'}[value.tracking] || '프레임 처리 중';
       const confirmed = Boolean(value.pose_confirmed && value.pose_position && value.pose_rotation);
       cameraMarker.visible = confirmed && value.map_id === value.pose_map_id;
@@ -126,9 +126,15 @@ export function connectProgressiveMap({prefix = 'progressive'} = {}) {
       geometry.setAttribute('color', new THREE.BufferAttribute(color, 3)); geometry.computeBoundingSphere();
       route.geometry.dispose(); route.geometry = new THREE.BufferGeometry().setFromPoints(value.cameras.map(p => new THREE.Vector3(...p)));
       $('progressive-map-empty').hidden = value.points.length > 0;
+      $('progressive-map-empty').textContent = value.registered > 0
+        ? '이 시점에 표시할 지도 점이 없습니다. 복원 기록이나 전체 경로 지도를 확인하세요.'
+        : value.tracking === 'lost' ? '카메라 위치·방향 추적을 잃었습니다. 같은 공간을 천천히 비춰 주세요.'
+        : value.tracking === 'scale_wait' ? '깊이 배율을 연결할 근거를 기다리고 있습니다.'
+        : '첫 깊이 추정을 기다리고 있습니다.';
       $('progressive-count').textContent = `처리 ${value.processed} · 지도 반영 ${value.registered}프레임 · ${(value.map_points ?? value.points.length).toLocaleString()}점`;
       $('progressive-latency').textContent = `현재 프레임 복원 ${value.processing_ms}ms · 추적 포함 ${value.latency_ms}ms`;
-      $('progressive-map-detail').textContent = `\uCD5C\uADFC ${value.render_window_s ?? 10}\uCD08 \uD45C\uC2DC \u00B7 \uD654\uBA74\uC5D0\uC11C \uC81C\uC678\uD55C \uBCF5\uC6D0 \uC790\uB8CC\uB3C4 \uAE30\uB85D \uBCF4\uC874`;
+      const scope = value.render_window_s == null ? '현재 지도 구간의 전체 누적 지도' : `최근 ${value.render_window_s}초 지도`;
+      $('progressive-map-detail').textContent = `${scope} · 화면에는 최대 12,000점 표본 표시 · 드래그 회전 · 휠 확대${value.submaps > 1 ? ' · 추적이 끊긴 다른 구간은 미정렬 상태로 별도 보존' : ''}`;
       if (first && value.points.length) { first = false; fit(); }
       if (replay.following && value.needs_presentation) {
         const painted = await new Promise(resolve => { pendingPaint = resolve; });

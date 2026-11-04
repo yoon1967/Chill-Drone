@@ -1,4 +1,5 @@
 from functools import partial
+import errno
 from http.client import HTTPConnection
 import io
 import json
@@ -70,7 +71,31 @@ class DiscoveryTests(unittest.TestCase):
         self.link.send.side_effect = None
         with self.assertRaisesRegex(RuntimeError, 'sdk_unavailable'):
             self.manager.connect('TELLO-test')
+        self.assertEqual(self.link.close.call_count, 3)
+        self.assertFalse(self.manager.state()['connected'])
+
+    def test_wifi_route_transition_retries_with_fresh_sockets(self):
+        first = Mock()
+        first.send.side_effect = OSError(errno.ENETUNREACH, 'Wi-Fi route not ready')
+        self.factory.side_effect = [first, self.link]
+        self.assertTrue(self.manager.connect('current-network')['connected'])
+        first.close.assert_called_once()
+        self.link.close.assert_not_called()
+        self.assertEqual(self.factory.call_count, 2)
+
+    def test_real_bind_conflict_is_not_retried_or_misreported_as_wifi(self):
+        self.link.start.side_effect = OSError(errno.EADDRINUSE, 'port in use')
+        with self.assertRaisesRegex(RuntimeError, 'drone_ports_busy_or_unavailable'):
+            self.manager.connect('current-network')
+        self.factory.assert_called_once()
         self.link.close.assert_called_once()
+        self.link.send.assert_not_called()
+
+    def test_persistent_route_failure_is_not_reported_as_port_conflict(self):
+        self.link.send.side_effect = OSError(errno.ENETUNREACH, 'no route')
+        with self.assertRaisesRegex(RuntimeError, 'drone_network_unavailable_check_wifi'):
+            self.manager.connect('current-network')
+        self.assertEqual(self.link.close.call_count, 3)
         self.assertFalse(self.manager.state()['connected'])
 
     def test_video_handoff_stops_owned_stream_and_borrowed_link_is_never_queried(self):

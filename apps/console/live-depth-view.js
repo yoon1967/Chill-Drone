@@ -1,7 +1,7 @@
 import {connectProgressiveMap} from '/progressive-map.js';
 
-export function connectLiveDepth() {
-  let panel = null, controller = null;
+export function connectLiveDepth({onStop = async () => {}} = {}) {
+  let panel = null, controller = null, stopPending = false, stopError = null, session = null;
   const recording = document.getElementById('session-recording');
   const recordingParent = recording.parentNode, recordingNext = recording.nextSibling;
   function prepare() {
@@ -17,6 +17,17 @@ export function connectLiveDepth() {
     panel.querySelector('#live-progressive-count').textContent = '처리 0프레임';
     panel.querySelector('#live-progressive-latency').textContent = '모델 준비 중 · 영상 복원 대기';
     panel.querySelector('#live-progressive-map-empty').hidden = false;
+    const actions = document.createElement('div'); actions.className = 'import-actions live-depth-actions';
+    const stop = document.createElement('button'); stop.id = 'live-depth-stop'; stop.type = 'button';
+    stop.textContent = '촬영 종료';
+    stop.addEventListener('click', async () => {
+      if (stopPending || stop.disabled) return;
+      stopPending = true; stopError = null; stop.disabled = true; stop.textContent = '촬영 종료 중…';
+      try { await onStop(); }
+      catch (error) { stopError = `촬영 종료 요청을 완료하지 못했습니다. ${error.message}`; }
+      finally { stopPending = false; }
+    });
+    actions.append(stop); panel.querySelector('.progressive-heading').after(actions);
     const open = document.createElement('a'); open.id = 'live-depth-open'; open.hidden = true;
     open.textContent = '전체 경로 지도 열기 ↗'; open.className = 'saved-primary';
     panel.append(open);
@@ -34,11 +45,21 @@ export function connectLiveDepth() {
       return;
     }
     prepare(); panel.hidden = false;
+    if (session !== state.session_id) { session = state.session_id; stopError = null; }
     if (recording.parentNode !== panel) panel.append(recording);
     if (state.depth_job) controller.update(state.depth_job);
+    const stop = document.getElementById('live-depth-stop');
+    const stopping = stopPending || state.session_status === 'stopping';
+    const ended = ['complete', 'failed'].includes(state.session_status);
+    stop.disabled = stopping || ended;
+    stop.textContent = ended ? '촬영 종료됨' : stopping ? '촬영 종료 중…' : '촬영 종료';
+    panel.querySelector('h2').textContent = ended ? '실시간 영상의 공간 복원 결과' : stopping ? '촬영을 종료하고 누적 지도를 저장하고 있습니다' : '실시간 영상에서 공간을 복원하고 있습니다';
     const error = document.getElementById('live-depth-error');
-    error.hidden = !state.last_error;
-    error.textContent = state.last_error ? `복원을 마치지 못했습니다. ${state.last_error}` : '';
+    const renderWindow = state.depth_job?.options?.render_window_s;
+    const legacyWarning = renderWindow != null && !ended
+      ? `현재 실행 서버는 최근 ${renderWindow}초 지도만 표시합니다. 촬영을 종료한 뒤 기존 서버 창을 닫고 실행 CMD를 다시 켜 새 주소를 여세요.` : '';
+    error.hidden = !state.last_error && !stopError && !legacyWarning;
+    error.textContent = stopError || (state.last_error ? `복원을 마치지 못했습니다. ${state.last_error}` : legacyWarning);
     const open = document.getElementById('live-depth-open');
     open.hidden = state.depth_job?.status !== 'complete';
     open.href = `/?asset=${encodeURIComponent(state.depth_job_id)}#saved`;

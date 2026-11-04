@@ -35,6 +35,12 @@ test('reconstruction has no axis widget and completed maps reopen after replay o
       assert.equal(await page.locator('#progressive-download').isVisible(), false, 'a full archive needs its completed result');
       assert.equal(await page.locator('#progressive-viewport .axis-gizmo').count(), 0, 'reconstruction progress has no axis widget');
       assert.match(await page.locator('#progressive-pose').textContent(), /위치·방향 확정/);
+      const controlStyles = await page.locator('#progressive-workspace').evaluate(panel =>
+        ['progressive-play', 'progressive-follow', 'progressive-speed', 'progressive-seek', 'progressive-seek-go'].map(id => {
+          const style = getComputedStyle(panel.querySelector('#' + id));
+          return {radius: style.borderRadius, font: style.fontFamily, size: style.fontSize};
+        }));
+      assert.ok(controlStyles.every(style => style.radius === '8px' && style.size === '12px' && style.font === controlStyles[0].font));
       const video = await page.locator('.progressive-video').boundingBox(), map = await page.locator('.progressive-map').boundingBox();
       assert.ok(map.x > video.x && Math.abs(map.y - video.y) < 5, 'desktop panels are side by side');
       assert.equal(await page.locator('#map-content').isVisible(), false, 'the old result viewer stays separate');
