@@ -67,15 +67,14 @@ class FlightControlTest(unittest.TestCase):
         self.assertIn("operator", r["failed"])
         self.assertNotIn("takeoff", self.fake.received)
 
-    def test_takeoff_refused_on_low_battery_and_heat(self):
+    def test_takeoff_refused_on_low_battery_not_heat(self):
         self.ctrl.confirm_operator(True)
-        self.fake.bat = 20
+        self.fake.bat = fc.BATTERY_MIN_TAKEOFF - 1
         self.fake.temp_override = 85
         time.sleep(0.3)
         r = self.ctrl.takeoff()
         self.assertFalse(r["ok"])
-        self.assertIn("battery", r["failed"])
-        self.assertIn("temp", r["failed"])
+        self.assertEqual(r["failed"], ["battery"])  # 온도는 경고만, 이륙 실패 사유가 아니다
 
     def test_takeoff_marks_operator_controlled_and_sends_rc(self):
         self.takeoff()
@@ -139,11 +138,31 @@ class FlightControlTest(unittest.TestCase):
         self.assertTrue(wait_until(lambda: not self.ctrl.flying, timeout=3))
         self.assertEqual(self.ctrl.last_auto_land["reason"], "state_lost")
 
-    def test_overheat_triggers_auto_land(self):
+    def test_hot_drone_can_take_off_with_warning(self):
+        # 지상에서 뜨거워진 Tello는 띄워야 식는다. 온도는 알리기만 하고 이륙을 막지 않는다.
+        self.fake.temp_override = 88
+        time.sleep(0.3)
+        temp = [c for c in self.ctrl.preflight() if c.key == "temp"][0]
+        self.assertFalse(temp.ok)
+        self.assertFalse(temp.blocking)
         self.takeoff()
-        self.fake.temp_override = 90
-        self.assertTrue(wait_until(lambda: "land" in self.fake.received, timeout=3))
-        self.assertEqual(self.ctrl.last_auto_land["reason"], "overheat")
+
+    def test_no_auto_land_for_heat(self):
+        self.takeoff()
+        self.fake.temp_override = 92
+        time.sleep(0.6)
+        self.assertNotIn("land", self.fake.received)
+        self.assertTrue(self.ctrl.flying)
+
+    def test_low_battery_blocks_takeoff(self):
+        self.fake.bat = fc.BATTERY_MIN_TAKEOFF - 1
+        time.sleep(0.3)
+        self.ctrl.confirm_operator(True)
+        r = self.ctrl.takeoff()
+        self.assertEqual((r["ok"], r["failed"]), (False, ["battery"]))
+        self.fake.bat = fc.BATTERY_MIN_TAKEOFF
+        time.sleep(0.3)
+        self.assertTrue(self.ctrl.takeoff()["ok"])
 
     def test_emergency_during_takeoff_is_not_blocked(self):
         import threading
