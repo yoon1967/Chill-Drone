@@ -41,6 +41,7 @@ main{max-width:1280px;margin:0 auto;padding:16px 20px 90px;display:grid;gap:12px
 .alert span{flex:1}.alert button{color:inherit;border-color:currentColor;background:transparent;font-weight:600}.alert.slim{padding:8px 12px}
 .panel{background:var(--panel);border:1px solid var(--line);border-radius:12px;padding:12px;min-width:0}
 .panel>header{display:flex;align-items:center;flex-wrap:wrap;gap:2px;margin-bottom:10px}
+.video-ctl{margin-left:auto;display:flex;align-items:center;gap:6px}.video-ctl button{padding:3px 10px;font-size:12px}
 .frame-wrap{container-type:inline-size}
 .frame{position:relative;aspect-ratio:4/3;width:100%;background:var(--video);border-radius:9px;overflow:hidden}
 .placeholder{position:absolute;inset:0;display:flex;align-items:center;justify-content:center;color:#8a9a90;font-size:13px}
@@ -117,3 +118,17 @@ body[data-view=control] main{padding-bottom:24px}body[data-view=review] main{pad
 @media (max-width:1099px),(max-height:699px){.live-main{display:grid;gap:12px}.side{display:grid;gap:12px}}
 @media (max-width:900px){.review-grid,.review-grid.two{grid-template-columns:1fr}.top{gap:8px;padding:8px 16px}main{padding:12px 16px 120px}}
 @media (max-width:520px){.views a{padding:5px 8px;font-size:13px}.scenario{order:5}.controls{padding:8px 16px}}
+/* 게이트웨이 연결(실시간) */
+.feed{position:absolute;inset:0;width:100%;height:100%;object-fit:contain;background:var(--video)}
+.map-empty{flex:1;min-height:120px;display:flex;align-items:center;justify-content:center;text-align:center;padding:16px;color:var(--muted);font-size:13px;background:var(--map);border-radius:9px}
+.checks{display:flex;gap:4px;flex-wrap:wrap}.checks .chip{font-size:11px;padding:2px 7px}
+.keys-hint{font-size:11px}
+.badge.real{background:var(--danger-soft);color:var(--danger)}
+[hidden]{display:none!important}
+.outline{position:absolute;inset:0;width:100%;height:100%;pointer-events:none}
+.outline polygon{fill:rgba(255,107,107,.18);stroke:#ff6b6b;stroke-width:3;vector-effect:non-scaling-stroke}
+.outline text{fill:#fff;stroke:#ff6b6b;stroke-width:6px;paint-order:stroke;font-size:26px;font-weight:700}
+.thumb.photo{position:relative;padding:0;overflow:hidden}
+.thumb.photo img{width:100%;height:100%;object-fit:cover;display:block}
+.thumb.photo span{position:absolute;top:4px;left:4px}
+.overlay.tl{top:8px;bottom:auto;left:8px;background:#c0392bdd;color:#fff}
