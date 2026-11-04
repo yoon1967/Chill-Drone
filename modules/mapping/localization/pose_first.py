@@ -6,6 +6,7 @@ the exact input timestamp. No cached trajectory or RGB-D pose optimization.
 from __future__ import annotations
 
 import json
+import math
 from pathlib import Path
 import queue
 import subprocess
@@ -51,7 +52,14 @@ def depth_in_pose_units(depth, anchors, tracking_size):
     valid = np.isfinite(estimated) & (estimated > 0)
     if valid.sum() < 8:
         return None
-    scale = float(np.median(z[valid] / estimated[valid]))
+    ratios = z[valid] / estimated[valid]
+    scale = float(np.median(ratios))
+    # Dynamic features and incorrect sparse depths must not set the whole
+    # frame's scale. Skip inconsistent frames rather than scattering the map.
+    inliers = np.abs(ratios / scale - 1) <= .35
+    if inliers.sum() < max(8, math.ceil(len(ratios) * .6)):
+        return None
+    scale = float(np.median(ratios[inliers]))
     return (depth * scale).astype(np.float32), scale
 
 

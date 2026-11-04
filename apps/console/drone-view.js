@@ -17,6 +17,7 @@ const errors = {
   scan_and_select_a_drone_first: '목록을 검색하고 드론을 선택하세요.',
   connect_a_drone_first: '먼저 드론에 연결하세요.',
   drone_ports_busy_or_unavailable: '드론 통신 포트를 열지 못했습니다. 다른 드론 수신 프로그램을 종료하고 다시 시도하세요.',
+  drone_network_unavailable_check_wifi: '드론 Wi-Fi의 통신 경로를 준비하지 못했습니다. PC Wi-Fi 연결과 IP 할당을 확인한 뒤 다시 시도하세요.',
   tello_sdk_unavailable_check_wifi: '드론 SDK 응답이 없습니다. 전원과 PC Wi-Fi 연결을 확인하세요.',
   wifi_os_request_failed_check_permissions_and_saved_profile: 'Wi-Fi 연결을 요청하지 못했습니다. OS에서 해당 Wi-Fi에 한 번 연결해 프로필을 만든 뒤 다시 시도하세요.',
   wifi_location_permission_required: 'Wi-Fi 목록을 읽으려면 Windows 설정 → 개인정보 및 보안 → 위치에서 위치 서비스를 켠 뒤 다시 검색하세요.',

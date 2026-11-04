@@ -477,6 +477,15 @@ class SessionImportTests(unittest.TestCase):
         with self.assertRaisesRegex(ValueError, 'dimensions_must_match'):
             validate_options({'confirmed': True, 'camera': camera}, {'width': 960, 'height': 540})
 
+    def test_default_depth_import_preserves_cumulative_preview_option(self):
+        options = {'confirmed': True, 'mode': 'depth_rgbd'}
+        self.assertIsNone(validate_options(options, {})['render_window_s'])
+        self.assertIsNone(validate_options(options | {'render_window_s': None}, {})['render_window_s'])
+        self.assertEqual(validate_options(options | {'render_window_s': 10}, {})['render_window_s'], 10)
+        for value in (True, 0, -1, '10', float('nan'), float('inf')):
+            with self.subTest(value=value), self.assertRaisesRegex(ValueError, 'invalid_render_window_s'):
+                validate_options(options | {'render_window_s': value}, {})
+
     def test_legacy_cmd_revision_drop_keeps_images_and_selected_version(self):
         root = self.root / 'session'
         make_session(root)

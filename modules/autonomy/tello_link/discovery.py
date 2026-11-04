@@ -5,6 +5,7 @@ SDK mode. No flight or network configuration commands are sent here. Video
 streaming starts only on an explicit preview request and has a renewable lease.
 """
 import copy
+import errno
 import locale
 import re
 import subprocess
@@ -195,17 +196,34 @@ class DroneDiscovery:
                     self.runner(['nmcli', 'device', 'wifi', 'connect', ssid])
                 # OS association is asynchronous; SDK success is the only success criterion.
                 time.sleep(2)
-            link = self.link_factory(allow_flight=False, allow_config=False)
-            try:
-                link.start()
-                if not link.send('command', timeout=3, source='console-discovery').ok:
-                    raise RuntimeError('tello_sdk_unavailable_check_wifi')
-            except OSError as error:
-                link.close()
-                raise RuntimeError('drone_ports_busy_or_unavailable') from error
-            except Exception:
-                link.close()
-                raise
+            # Association/DHCP/routes can still be changing after netsh returns.
+            # A send failure is not evidence that another program owns the ports.
+            transient = {errno.ENETDOWN, errno.ENETUNREACH, errno.EHOSTUNREACH,
+                         errno.EADDRNOTAVAIL, 10049, 10050, 10051, 10065}
+            for attempt in range(3):
+                link = self.link_factory(allow_flight=False, allow_config=False)
+                phase = 'bind'
+                try:
+                    link.start()
+                    phase = 'sdk'
+                    result = link.send('command', timeout=3, source='console-discovery')
+                    if result.ok:
+                        break
+                except OSError as error:
+                    link.close()
+                    code = getattr(error, 'winerror', None) or error.errno
+                    if phase == 'bind' and code not in transient:
+                        raise RuntimeError('drone_ports_busy_or_unavailable') from error
+                    if code not in transient or attempt == 2:
+                        raise RuntimeError('drone_network_unavailable_check_wifi') from error
+                except Exception:
+                    link.close()
+                    raise
+                else:
+                    link.close()
+                    if attempt == 2:
+                        raise RuntimeError('tello_sdk_unavailable_check_wifi')
+                time.sleep(1)
             self.link, self.selected = link, dict(item)
             self.manual_disconnected = False
             self.disconnected_session = None

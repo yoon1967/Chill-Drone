@@ -28,7 +28,7 @@ let navigating = false, dragging = false, busy = null, revision = null;
 let pollDelay = 2000;
 let pollTimer, captureState = {state: 'idle'}, captureHandle, lastLiveState = {};
 const source = new MapSource(location.hash === '#live' ? 'live' : 'saved');
-const liveDepth = connectLiveDepth();
+const liveDepth = connectLiveDepth({onStop: () => captureHandle?.stop()});
 source.asset = new URLSearchParams(location.search).get('asset');
 function closeDroneWorkspace(focus = true) {
   $('drone-workspace').open = false;

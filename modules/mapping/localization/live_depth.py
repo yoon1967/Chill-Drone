@@ -40,7 +40,7 @@ class LiveDepthSession:
         self.job = imports.job(self.depth_job_id)
         self.job.update(status='running', stage='model', output=self.path / 'reconstruction',
             options={'mode': 'depth_rgbd', 'frame_fps': camera['fps'], 'sample_fps': 5,
-                     'camera': camera, 'run_id': self.id, 'render_window_s': 10.},
+                     'camera': camera, 'run_id': self.id, 'render_window_s': None},
             live_session=self, presentation_sync=True)
         self._write_state()
         self.worker = threading.Thread(target=self._run, daemon=True, name=self.id)

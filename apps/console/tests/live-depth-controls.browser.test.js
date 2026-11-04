@@ -1,0 +1,94 @@
+import test from 'node:test';
+import assert from 'node:assert/strict';
+import {createRequire} from 'node:module';
+
+const url = process.env.MAPPING_TEST_URL;
+test('live reconstruction keeps themed controls and stops camera tracks while replaying history',
+  {skip: !url, timeout: 30000}, async () => {
+    const {chromium} = process.env.MAPPING_PLAYWRIGHT_MODULE ?
+      createRequire(import.meta.url)(process.env.MAPPING_PLAYWRIGHT_MODULE) : await import('playwright');
+    const browser = await chromium.launch({headless: true, channel: 'msedge',
+      args: ['--use-fake-device-for-media-stream', '--use-fake-ui-for-media-stream']});
+    try {
+      const page = await browser.newPage({viewport: {width: 1440, height: 1000}});
+      const stops = [], errors = [];
+      let active = false, lifecycle = 'receiving';
+      const job = {id: 'import_1234567890123456', status: 'running', stage: 'mapping', history_available: true,
+        options: {render_window_s: null}};
+      const state = () => active ? {source: 'live', session_id: 'test-live', session_status: lifecycle,
+        status: lifecycle, backend: 'orb_slam3_depth', input: 'browser_camera', transport_ready: true,
+        can_accept_frame: false, map_available: false, depth_job_id: job.id, depth_job: job} :
+        {source: 'live', session_status: 'idle', status: 'idle', map_available: false};
+      const snapshot = {revision: 1, frame_id: 'frame_0000001.jpg', frame_number: 1, timestamp_s: 1,
+        tracking: 'tracking', pose_confirmed: true, pose_position: [0, 0, 0],
+        pose_rotation: [[1, 0, 0], [0, 1, 0], [0, 0, 1]], map_id: 0, pose_map_id: 0,
+        points: [[0, 0, 2, 255, 0, 0]], cameras: [[0, 0, 0]], processed: 1, registered: 1,
+        processing_ms: 40, latency_ms: 50, render_window_s: null};
+      page.on('pageerror', error => errors.push(error.message));
+      await page.addInitScript(() => {
+        const get = navigator.mediaDevices.getUserMedia.bind(navigator.mediaDevices);
+        navigator.mediaDevices.getUserMedia = async options => {
+          const stream = await get(options); window.testTracks = stream.getTracks(); return stream;
+        };
+      });
+      await page.route('**/api/live', route => route.fulfill({json: {enabled: true}}));
+      await page.route('**/api/live/start', route => {
+        active = true; return route.fulfill({json: state()});
+      });
+      await page.route('**/api/live/state*', route => route.fulfill({json: state()}));
+      await page.route('**/api/live/stop', route => {
+        stops.push(route.request().postDataJSON()); lifecycle = 'stopping';
+        return route.fulfill({json: state()});
+      });
+      await page.route('**/api/import/history?*', route => route.fulfill({json: {
+        entries: [{revision: snapshot.revision, timestamp_s: snapshot.timestamp_s}]}}));
+      await page.route('**/api/import/history-frame?*', route => route.fulfill({json: snapshot}));
+      await page.route('**/api/import/preview?*', route => route.fulfill({json:
+        Number(new URL(route.request().url()).searchParams.get('revision')) === snapshot.revision
+          ? {revision: snapshot.revision, unchanged: true} : snapshot}));
+      await page.route('**/api/import/preview-frame?*', route => route.fulfill({contentType: 'image/png',
+        body: Buffer.from('iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mP8/x8AAwMCAO+aWQ0AAAAASUVORK5CYII=', 'base64')}));
+      await page.goto(url + '/#live');
+      await page.waitForFunction(() => !document.querySelector('#camera-start').disabled);
+      // The legacy input panel is tucked inside the result workspace. Exercise
+      // its real capture handler, then use the visible live reconstruction UI.
+      await page.locator('#camera-start').evaluate(button => button.click());
+      await page.locator('#live-progressive-frame:not([hidden])').waitFor();
+      await page.waitForFunction(() => window.testTracks?.some(track => track.readyState === 'live'));
+      assert.equal(await page.locator('#live-depth-stop').isVisible(), true);
+      assert.match(await page.locator('#live-progressive-map-detail').textContent(), /전체 누적 지도/);
+      for (const width of [1440, 390]) {
+        await page.setViewportSize({width, height: 1000});
+        const styles = await page.locator('#live-progressive-workspace').evaluate(panel =>
+          ['live-progressive-play', 'live-progressive-follow', 'live-progressive-speed', 'live-progressive-seek', 'live-progressive-seek-go'].map(id => {
+            const style = getComputedStyle(panel.querySelector('#' + id));
+            return {radius: style.borderRadius, font: style.fontFamily, size: style.fontSize};
+          }));
+        assert.ok(styles.every(style => style.radius === '8px' && style.size === '12px' && style.font === styles[0].font));
+        assert.ok(await page.evaluate(() => document.documentElement.scrollWidth <= innerWidth));
+      }
+      // A browser can load new JS from a server that still runs old Python.
+      job.options.render_window_s = 10;
+      Object.assign(snapshot, {revision: 2, timestamp_s: 24.688, tracking: 'lost', pose_confirmed: false,
+        points: [], map_points: 0, render_window_s: 10});
+      await page.waitForFunction(() => document.querySelector('#live-depth-error').textContent.includes('최근 10초'));
+      await page.locator('#live-progressive-map-empty').waitFor({state: 'visible'});
+      assert.doesNotMatch(await page.locator('#live-progressive-map-empty').textContent(), /첫 깊이/);
+      assert.match(await page.locator('#live-depth-error').textContent(), /실행 CMD를 다시/);
+      job.options.render_window_s = null;
+      Object.assign(snapshot, {revision: 3, points: [[0, 0, 2, 255, 0, 0]], map_points: 1, render_window_s: null});
+      await page.locator('#live-depth-error').waitFor({state: 'hidden'});
+      await page.locator('#live-progressive-map-empty').waitFor({state: 'hidden'});
+      await page.locator('#live-progressive-seek-go').click();
+      assert.equal(await page.locator('#live-progressive-follow').getAttribute('aria-pressed'), 'false');
+      await page.locator('#live-depth-stop').click();
+      await page.waitForFunction(() => window.testTracks.every(track => track.readyState === 'ended'));
+      assert.deepEqual(stops, [{session_id: 'test-live', reason: 'user_stop'}]);
+      assert.equal(await page.locator('#input-preview').evaluate(video => video.srcObject), null);
+      assert.equal(await page.locator('#live-depth-stop').isDisabled(), true);
+      lifecycle = 'complete'; job.status = 'complete';
+      await page.waitForFunction(() => document.querySelector('#live-depth-stop').textContent === '촬영 종료됨');
+      assert.equal(await page.locator('#live-progressive-workspace').isVisible(), true);
+      assert.deepEqual(errors, []);
+    } finally { await browser.close(); }
+  });
