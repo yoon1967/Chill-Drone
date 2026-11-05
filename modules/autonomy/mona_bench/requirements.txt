@@ -1,0 +1,16 @@
+# Python 3.8 / ROS Noetic. CUDA wheels are usable with GPU-enabled containers.
+numpy==1.23.5
+scipy==1.10.1
+torch==2.4.1
+torchvision==0.19.1
+pytorch-lightning==1.9.5
+torchmetrics==0.11.4
+matplotlib==3.7.5
+imageio==2.35.1
+Pillow==10.4.0
+path==16.7.1
+configargparse==1.7
+test-tube==0.7.5
+robomaster==0.1.1.63
+rospkg==1.6.0
+PyYAML==6.0.2

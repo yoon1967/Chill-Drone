@@ -1,0 +1,23 @@
+<launch>
+  <node pkg="orb_slam2_ros" type="orb_slam2_ros_rgbd" name="orb_slam2_rgbd" output="screen" required="true">
+    <remap from="camera/rgb/image_raw" to="/sync/image"/>
+    <remap from="camera/depth_registered/image_raw" to="/sync/depth_metric"/>
+    <remap from="camera/rgb/camera_info" to="/mona/camera_info"/>
+    <param name="load_calibration_from_cam" value="true"/>
+    <param name="voc_file" value="$(find orb_slam2_ros)/orb_slam2/Vocabulary/ORBvoc.txt"/>
+    <param name="publish_pose" value="true"/>
+    <param name="publish_pointcloud" value="true"/>
+    <param name="pointcloud_frame_id" value="world"/>
+    <param name="camera_frame_id" value="cam_link"/>
+    <param name="min_num_kf_in_map" value="5"/>
+    <param name="camera_fps" value="10"/>
+    <param name="camera_rgb_encoding" value="false"/>
+    <param name="depth_map_factor" value="1.0"/>
+    <param name="ThDepth" value="40.0"/>
+    <param name="ORBextractor/nFeatures" value="1000"/>
+    <param name="ORBextractor/scaleFactor" value="1.2"/>
+    <param name="ORBextractor/nLevels" value="8"/>
+    <param name="ORBextractor/iniThFAST" value="20"/>
+    <param name="ORBextractor/minThFAST" value="7"/>
+  </node>
+</launch>
