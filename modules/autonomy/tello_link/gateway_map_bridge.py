@@ -7,6 +7,9 @@
 - 좌표는 바꾸지 않는다(지도 표시 좌표, 단위는 지도 쪽 scale.unit). 화면이 보기 좋게 세우도록 카메라 화면 위쪽 평균(`up`)을 같이 보낸다.
   중력 방향이 아니다(카메라가 대체로 수평이라는 가정).
 - 지도 서버가 꺼졌거나 지도가 없어도 2초마다 상태(`status`)를 보내 화면이 이유를 보이게 한다.
+- 깊이 지도(`backend=orb_slam3_depth`, -365): 복원이 끝나야 `map_available`이 켜진다. 그 전에는 상태의 `depth_job_id`로
+  지도 화면이 쓰는 진행 중 미리보기 `GET /api/import/preview?id=..&revision=..`을 읽는다(점 행 [x,y,z,r,g,b], 최대 약 1.2만 점).
+  읽기만 한다. 화면 표시 확인(`presented`)은 지도 화면 몫이라 보내지 않는다(그래서 지도 화면이 열려 있어야 복원이 다음 프레임으로 간다).
 
     python modules/autonomy/tello_link/gateway_map_bridge.py                                   # 지도 http://127.0.0.1:8790, 실시간
     python modules/autonomy/tello_link/gateway_map_bridge.py --source saved                    # 저장된 지도 결과
@@ -22,6 +25,7 @@ import json
 import math
 import time
 import urllib.error
+import urllib.parse
 import urllib.request
 
 SCHEMA = "gateway-map/0.1"
@@ -73,9 +77,12 @@ def compact_scene(run: dict, state: dict, map_url: str, source: str, max_points:
 
 def camera_up(cams: list[dict]) -> list[float] | None:
     """카메라 화면 위쪽(카메라 -y축)의 평균. 카메라 로컬 축은 x 오른쪽·y 아래·z 앞(계약)."""
+    return _up_from([c.get("world_from_camera_rotation") for c in cams])
+
+
+def _up_from(rotations) -> list[float] | None:
     s = [0.0, 0.0, 0.0]
-    for c in cams:
-        rot = c.get("world_from_camera_rotation")
+    for rot in rotations:
         if isinstance(rot, list) and len(rot) == 3 and all(isinstance(r, list) and len(r) == 3 for r in rot):
             for i in range(3):   # 열 1 = 카메라 y축(표시 좌표)
                 v = rot[i][1]
@@ -83,6 +90,29 @@ def camera_up(cams: list[dict]) -> list[float] | None:
                     s[i] -= v
     n = math.sqrt(sum(v * v for v in s))
     return [round(v / n, 4) for v in s] if n > 1e-6 else None
+
+
+def compact_preview(preview: dict, state: dict, map_url: str, max_points: int) -> dict:
+    """깊이 지도 진행 중 미리보기 → gateway-map/0.1. 점 행은 [x,y,z,r,g,b](이미 지도 쪽에서 약 1.2만 점으로 솎음).
+    좌표는 ORB-SLAM3 세계 좌표(카메라 y 아래)이고 배율은 단안이라 정해지지 않았다."""
+    rows = [p for p in preview.get("points") or [] if isinstance(p, list) and len(p) >= 6 and all(_finite(v) for v in p[:3])]
+    if len(rows) > max_points:   # 오차 정보가 없으니 고르게 솎는다
+        rows = rows[::math.ceil(len(rows) / max_points)]
+    points = [[round(p[0], 4), round(p[1], 4), round(p[2], 4), *(_byte(c) for c in p[3:6])] for p in rows]
+    cameras = [[round(v, 4) for v in c] for c in preview.get("cameras") or []
+               if isinstance(c, list) and len(c) == 3 and all(_finite(v) for v in c)]
+    total = preview.get("map_points")
+    return {
+        "schema_version": SCHEMA, "kind": "snapshot", "upstream": "ok", "source_url": map_url,
+        "mapping_state": state.get("mapping_state") or state.get("status"),
+        "source": {"kind": "live", "schema_version": "live-depth-preview", "input_run_id": state.get("session_id"),
+                   "session_id": state.get("session_id"), "segment_id": preview.get("map_id"),
+                   "revision": preview.get("revision"), "pose_source": "orb_slam3",
+                   "depth_job_id": state.get("depth_job_id"), "tracking": preview.get("tracking")},
+        "scale": {"status": "arbitrary", "unit": "arbitrary"},
+        "points": points, "points_total": total if _finite(total) else len(rows), "cameras": cameras,
+        "up": _up_from([preview.get("pose_rotation")]) or [0.0, -1.0, 0.0],
+    }
 
 
 def _finite(v) -> bool:
@@ -102,6 +132,7 @@ class MapBridge:
         self.base, self.api = map_url.rstrip("/"), f"{map_url.rstrip('/')}/api/{source}"
         self.deliver, self.source, self.max_points, self.log, self.clock = deliver, source, max_points, log, clock
         self.last_key = None
+        self._preview = (None, 0)   # (깊이 작업 번호, 마지막으로 보낸 미리보기 버전)
         self._last_status, self._last_said = -1e9, None
 
     def _tell(self, upstream: str, detail=None, mapping_state=None) -> None:
@@ -118,6 +149,8 @@ class MapBridge:
             return self._tell("unreachable", str(e))
         state = state or {}
         mstate = state.get("mapping_state") or state.get("status")
+        if code == 200 and not state.get("map_available") and self.source == "live" and state.get("depth_job_id"):
+            return self._poll_preview(state, mstate)
         if code != 200 or not state.get("map_available"):
             return self._tell("no_map", f"HTTP {code}" if code != 200 else None, mstate)
         key = (state.get("session_id"), state.get("segment_id"), state.get("revision"))   # 저장 결과는 늘 버전 0 → 한 번만 읽음
@@ -136,6 +169,29 @@ class MapBridge:
             self._last_status, self._last_said = self.clock(), "ok"
             self.log(f"버전 {msg['source']['revision']} · 점 {len(msg['points'])}/{msg['points_total']} · "
                      f"카메라 {len(msg['cameras'])} · {msg['scale']['unit']} → {code}")
+        else:
+            self.log(f"게이트웨이 거절 {code}: {out}")
+
+    def _poll_preview(self, state: dict, mstate) -> None:
+        """깊이 지도 복원 중: 지도 화면과 같은 미리보기를 읽어 새 버전이면 보낸다."""
+        job = str(state["depth_job_id"])
+        since = self._preview[1] if self._preview[0] == job else 0
+        url = f"{self.base}/api/import/preview?" + urllib.parse.urlencode({"id": job, "revision": since})
+        try:
+            code, prev = get_json(url, timeout=10)
+        except OSError as e:
+            return self._tell("unreachable", str(e), mstate)
+        if code != 200 or not prev:
+            return self._tell("no_map", f"preview HTTP {code}", mstate)
+        if prev.get("unchanged") or prev.get("waiting") or not prev.get("points"):
+            return self._tell("ok" if self._preview[0] == job else "no_map", None, mstate)
+        msg = compact_preview(prev, state, self.base, self.max_points)
+        code, out = self.deliver(msg)
+        if code in (200, 201):
+            self._preview = (job, int(prev.get("revision") or 0))
+            self._last_status, self._last_said = self.clock(), "ok"
+            self.log(f"복원 중 버전 {msg['source']['revision']} · 점 {len(msg['points'])}/{msg['points_total']} · "
+                     f"카메라 {len(msg['cameras'])} · 추적 {prev.get('tracking')} → {code}")
         else:
             self.log(f"게이트웨이 거절 {code}: {out}")
 
