@@ -30,6 +30,15 @@
       <details class="connection-details"><summary>상세</summary><div class="connection-detail-body"><small id="connection-checked">확인 중</small><p id="connection-note">연결 상태를 확인합니다.</p>
       <div id="connection-camera" class="connection-camera" hidden><strong>카메라 파라미터</strong><p id="connection-camera-values"></p></div></div></details>
     </section></div>
+    <details id="rescue-settings" class="rescue-settings"><summary>인명 구조 지도 · 사람 표시와 복원 품질</summary>
+      <div class="rescue-settings-fields"><label><input id="rescue-enabled" type="checkbox" checked> 사람·공간을 구분해 점군 통합</label>
+      <label>복원 세밀도 <select id="rescue-resolution"><option value="256">빠르게</option><option value="384" selected>균형</option><option value="518">세밀하게</option></select></label>
+      <label>지도 점 밀도 <select id="rescue-point-budget"><option value="4000">가볍게 · 최대 4,000점</option><option value="8000" selected>균형 · 최대 8,000점</option><option value="10000">자세히 · 최대 10,000점</option></select></label>
+      <label>사람 색상 <input id="rescue-person-color" type="color" value="#ff3030"></label>
+      <label><input id="rescue-person-outline" type="checkbox" checked> 사람 3D 외곽선</label>
+      <label><input id="rescue-semantic-colors" type="checkbox"> 구조물 구분 색상</label></div>
+      <p>같은 공간의 점을 합치고, 넓어지면 전체 지도의 점 간격을 조절합니다. 이전 구간을 시간으로 지우지 않습니다. 사람 색상·외곽선은 보는 중에도 바꿀 수 있으며 지도 밀도는 다음 지도부터 적용됩니다.</p>
+    </details>
     <div id="mapping-panel" role="tabpanel" aria-labelledby="tab-saved">
     <div id="camera-actions" class="camera-actions" hidden>
       <h2 class="camera-actions-title">카메라 시작하기</h2>

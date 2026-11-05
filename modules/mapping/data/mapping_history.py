@@ -83,6 +83,9 @@ class HistoryWriter:
                   'camera_path': np.asarray(snapshot['cameras'], dtype=np.float32).reshape(-1, 3)}
         if observation:
             arrays.update(observation)
+        if snapshot.get('rescue') is not None:
+            arrays['rescue_json'] = np.frombuffer(json.dumps(snapshot['rescue'], allow_nan=False,
+                separators=(',', ':')).encode('utf-8'), dtype=np.uint8)
         # Sequential reconstruction trades larger chunks for no compression stall.
         compression = zipfile.ZIP_STORED if self.synchronous else zipfile.ZIP_DEFLATED
         with zipfile.ZipFile(temporary, 'w', compression=compression,
@@ -91,7 +94,9 @@ class HistoryWriter:
                 archive.writestr(name + '.npy', _array_bytes(array))
         from modules.mapping.localization.orbslam3 import replace_file
         replace_file(temporary, path)
-        entry = {key: value for key, value in snapshot.items() if key not in {'points', 'cameras'}}
+        entry = {key: value for key, value in snapshot.items() if key not in {'points', 'cameras', 'rescue'}}
+        if snapshot.get('rescue') is not None:
+            entry['semantic_mapping'] = True
         entry.update(observation=bool(observation), visible_points=len(snapshot['points']))
         index.write(json.dumps(entry, ensure_ascii=False, allow_nan=False, separators=(',', ':')) + '\n')
         index.flush()
@@ -173,6 +178,19 @@ class HistoryReader:
                         raise ValueError('history_preview_too_large')
                 points = np.load(io.BytesIO(archive.read('points.npy')), allow_pickle=False)
                 cameras = np.load(io.BytesIO(archive.read('camera_path.npy')), allow_pickle=False)
+                rescue = None
+                if 'rescue_json.npy' in archive.namelist():
+                    if archive.getinfo('rescue_json.npy').file_size > 12 * 1024 * 1024:
+                        raise ValueError('history_semantic_preview_too_large')
+                    data = np.load(io.BytesIO(archive.read('rescue_json.npy')), allow_pickle=False)
+                    if data.dtype != np.uint8 or data.ndim != 1:
+                        raise ValueError('invalid_history_semantic_preview')
+                    rescue = json.loads(data.tobytes())
+                    from modules.mapping.data.rescue_mapping import validate_payload
+                    validate_payload(rescue)
             if points.ndim != 2 or points.shape[1] != 6 or cameras.ndim != 2 or cameras.shape[1] != 3 or not np.isfinite(points).all() or not np.isfinite(cameras).all():
                 raise ValueError('invalid_history_preview')
-            return {**entries[revision - 1], 'points': points.tolist(), 'cameras': cameras.tolist(), 'recorded': True}
+            result = {**entries[revision - 1], 'points': points.tolist(), 'cameras': cameras.tolist(), 'recorded': True}
+            if rescue is not None:
+                result['rescue'] = rescue
+            return result

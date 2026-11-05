@@ -26,6 +26,21 @@ test('video, tracking and completed records cannot imply a current connection', 
   assert.equal(connectionStatus({state: active, capture: {kind: 'tello'}}).map.text, '해당 없음');
 });
 
+test('model loading is distinguished from tracking and map generation until preparation ends', () => {
+  for (const [stage, title] of [['model', '깊이 모델 준비 중'], ['semantic_model', '사람·공간 인식 모델 준비 중']]) {
+    const state = {...active, session_status: 'starting', transport_ready: false, map_available: false,
+      depth_job: {status: 'running', stage: 'model', progress: {stage}}};
+    const status = connectionStatus({state});
+    assert.equal(status.map.text, '모델 준비 중');
+    assert.match(status.note, new RegExp(title));
+    assert.match(status.note, /준비가 끝나면/);
+    assert.notEqual(connectionStatus({state: {...state, session_status: 'complete'}}).map.text, '모델 준비 중');
+    assert.notEqual(connectionStatus({state: {...state, depth_job: {status: 'failed', stage}}}).map.text, '모델 준비 중');
+  }
+  assert.equal(connectionStatus({state: {...active,
+    depth_job: {status: 'running', stage: 'mapping', progress: {stage: 'mapping'}}}}).map.text, '생성 중');
+});
+
 test('drone connection shows only parameters applied to the current live session', () => {
   const camera = {width: 960, height: 720, fx: 850, fy: 855, cx: 480, cy: 360,
     calibration_status: 'checkerboard_calibrated', profile: {name: 'Test camera'}};

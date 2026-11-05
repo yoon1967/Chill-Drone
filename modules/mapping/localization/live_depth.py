@@ -15,7 +15,9 @@ from .orbslam3 import atomic_json
 
 
 class LiveDepthSession:
-    def __init__(self, root, camera, image_id, imports, *, input_kind='browser_camera', timestamp_basis='browser_media_time'):
+    def __init__(self, root, camera, image_id, imports, *, input_kind='browser_camera', timestamp_basis='browser_media_time', mapping=None):
+        from modules.mapping.data.rescue_mapping import mapping_options
+        mapping = mapping_options(mapping or {})
         self.id = 'live_' + uuid.uuid4().hex[:16]
         self.path = Path(root) / self.id
         self.path.mkdir(parents=True)
@@ -33,15 +35,15 @@ class LiveDepthSession:
         atomic_json(self.path / 'camera.json', camera)
         atomic_json(self.path / 'settings.json', {'backend': 'orb_slam3_depth', 'input': input_kind,
             'input_timestamp_basis': timestamp_basis, 'image_id': image_id, 'camera': camera,
-            'frame_policy': 'sequential_pose_depth_record_present; fresh_live_admission', 'dense_surface': True})
+            'frame_policy': mapping['live_policy'], 'dense_surface': True, **mapping})
         self.recording = SessionRecording(self.path, camera, input_kind)
         self.jpeg_recording = self.recording.open_part('received_jpeg', timestamp_basis) if input_kind == 'browser_camera' else None
         self.depth_job_id = imports.create('실시간 깊이 지도')['id']
         self.job = imports.job(self.depth_job_id)
         self.job.update(status='running', stage='model', output=self.path / 'reconstruction',
             options={'mode': 'depth_rgbd', 'frame_fps': camera['fps'], 'sample_fps': 5,
-                     'camera': camera, 'run_id': self.id, 'render_window_s': None},
-            live_session=self, presentation_sync=True)
+                     'camera': camera, 'run_id': self.id, 'render_window_s': None, **mapping},
+            live_session=self, presentation_sync=mapping['live_policy'] == 'sequential')
         self._write_state()
         self.worker = threading.Thread(target=self._run, daemon=True, name=self.id)
         self.job['thread'] = self.worker
@@ -161,8 +163,9 @@ class LiveDepthSession:
         with self.imports.preview_changed:
             self.job['preview'] = snapshot
             self.imports.preview_changed.notify_all()
-            self.imports.preview_changed.wait_for(lambda: self.closing or self.job['cancel'].is_set() or
-                self.job.get('presented_revision', 0) >= snapshot['revision'])
+            if self.job['presentation_sync']:
+                self.imports.preview_changed.wait_for(lambda: self.closing or self.job['cancel'].is_set() or
+                    self.job.get('presented_revision', 0) >= snapshot['revision'])
 
     def stop(self, reason='user_stop'):
         with self.condition:

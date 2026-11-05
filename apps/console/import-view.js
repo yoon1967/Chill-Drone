@@ -1,3 +1,5 @@
+import {mappingOptions} from './mapping-settings.js';
+
 const stages = {upload: '자료 복사 중', inspect: '자료 검사 중', confirm: '입력 확인 대기', input: '프레임 준비 중',
   features: '특징점 추출·매칭 중', reconstruction: '3D 지도 복원 중', preview: '미리보기 생성 중', finalization: '결과 검증 중', finished: '복원 완료'};
 const errors = {
@@ -418,7 +420,7 @@ export function connectImport({profiles = null, onPhase = () => {}} = {}) {
       }
       const profile = await profiles?.selected('file');
       const job = await request('start', {confirmed: $('import-confirm').checked,
-        mode: $('import-mode').value || 'depth_rgbd',
+        ...mappingOptions(), mode: $('import-mode').value || 'depth_rgbd',
         sample_fps: Number($('import-sample-fps').value), frame_fps: Number($('import-frame-fps').value), camera,
         ...(profile ? {profile_selection: profile.profile_selection} : {})}, '?id=' + active);
       working = true; render(job); poll(job.id);

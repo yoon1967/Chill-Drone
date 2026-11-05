@@ -28,6 +28,24 @@ const positions = buffer => Object.fromEntries(buffer.ids.map((id, i) => [id,
   [...buffer.geometry.getAttribute('position').array.slice(i * 3, i * 3 + 3)]]));
 const clearRanges = buffer => ['position', 'color'].forEach(name => buffer.geometry.getAttribute(name).clearUpdateRanges());
 
+test('point-map class changes recolor reused buffers and people stay red in height mode', () => {
+  const display = new PointDisplay();
+  const value = scene([row(0)]);
+  value.rescue = {render_mode:'points', point_revision:1, point_labels:[0], person_color:'#ff3030'};
+  display.update(value);
+  const attribute = display.raw.geometry.getAttribute('color');
+  const original = [...attribute.array.slice(0,3)];
+  const person = {...value, rescue:{...value.rescue,point_revision:2,point_labels:[1]}};
+  display.update(person);
+  assert.equal(display.raw.geometry.getAttribute('color'),attribute);
+  assert.notDeepEqual([...attribute.array.slice(0,3)], original);
+  assert.equal(attribute.array[0], 1);
+  display.update(person, {colorMode:'height'});
+  assert.equal(attribute.array[0], 1);
+  assert.ok(attribute.array[1] < .1);
+  display.dispose();
+});
+
 test('point buffers reuse allocations and update only changed slots, including deletion compaction', () => {
   const buffer = new PointBuffer();
   assert.equal(buffer.geometry.drawRange.count, 0);

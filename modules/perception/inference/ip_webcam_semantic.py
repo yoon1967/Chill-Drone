@@ -36,7 +36,7 @@ def resize_for_display(frame, display_width: int):
 
 
 def smooth_filtered_label_map(probabilities, class_ids_tensor, background_ids_tensor, label_lookup,
-                              threshold: float, output_size: tuple[int, int], functional):
+                              threshold: float, output_size: tuple[int, int], functional, *, return_confidence=False):
     """Upsample selected-class and background scores before choosing smooth output labels."""
     selected_scores = probabilities.index_select(0, class_ids_tensor)
     if background_ids_tensor.numel():
@@ -54,7 +54,8 @@ def smooth_filtered_label_map(probabilities, class_ids_tensor, background_ids_te
     confidence, choices = scores.max(dim=0)
     labels = label_lookup[choices]
     labels = labels.masked_fill((choices == 0) | (confidence < threshold), -1)
-    return labels.int().cpu().numpy()
+    labels = labels.int().cpu().numpy()
+    return (labels, confidence.float().cpu().numpy()) if return_confidence else labels
 
 
 def run(args) -> int:

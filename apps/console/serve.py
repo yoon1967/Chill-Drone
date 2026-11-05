@@ -690,8 +690,12 @@ class ViewerHandler(BaseHTTPRequestHandler):
                 elif action == 'status':
                     self.json_response(self.imports.status(key))
                 elif action == 'preview':
-                    self.json_response(self.imports.preview(key, int(query.get('revision', ['0'])[0]),
-                        2 if query.get('wait') == ['1'] else 0))
+                    value = self.imports.preview(key, int(query.get('revision', ['0'])[0]),
+                        2 if query.get('wait') == ['1'] else 0)
+                    rescue = value.get('rescue')
+                    if rescue and str(rescue.get('mesh_revision')) == query.get('mesh_revision', [''])[0]:
+                        value = {**value, 'rescue': {k: v for k, v in rescue.items() if k != 'mesh'}}
+                    self.json_response(value)
                 elif action == 'history':
                     self.json_response(self.imports.history_timeline(key))
                 elif action == 'history-frame':
@@ -1117,6 +1121,8 @@ class ViewerHandler(BaseHTTPRequestHandler):
                   '/drone-view.js': APP / 'drone-view.js',
                   '/workflow-guide.js': APP / 'workflow-guide.js',
                   '/progressive-map.js': APP / 'progressive-map.js',
+                  '/mapping-settings.js': APP / 'mapping-settings.js',
+                  '/rescue-view.js': APP / 'rescue-view.js',
                   '/progressive-replay.js': APP / 'progressive-replay.js',
                   '/axis-gizmo.js': APP / 'axis-gizmo.js',
                   '/map-save.js': APP / 'map-save.js',

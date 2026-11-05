@@ -147,6 +147,9 @@ def scene_at(path):
         raise ValueError('unsupported_scene_schema')
     if not isinstance(scene.get('points'), list) or not isinstance(scene.get('cameras'), list):
         raise ValueError('invalid_scene')
+    if scene.get('rescue') is not None:
+        from modules.mapping.data.rescue_mapping import validate_payload
+        validate_payload(scene['rescue'])
     if any(not isinstance(p, list) or len(p) != 9 or
            any(type(n) not in (float, int) or not math.isfinite(n) for n in p[1:4]) for p in scene['points']):
         raise ValueError('invalid_point_coordinates')

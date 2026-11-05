@@ -4,3 +4,5 @@ av>=13
 opencv-python-headless==4.13.0.92
 Pillow>=10
 numpy>=1.26,<3
+ultralytics==8.4.189
+# Keep torchvision matched to the separately installed CUDA torch build.

@@ -1,4 +1,5 @@
 import {connectProgressiveMap} from '/progressive-map.js';
+import {mappingPreparation} from '/map-source.js';
 
 export function connectLiveDepth({onStop = async () => {}} = {}) {
   let panel = null, controller = null, stopPending = false, stopError = null, session = null;
@@ -51,9 +52,10 @@ export function connectLiveDepth({onStop = async () => {}} = {}) {
     const stop = document.getElementById('live-depth-stop');
     const stopping = stopPending || state.session_status === 'stopping';
     const ended = ['complete', 'failed'].includes(state.session_status);
+    const preparation = !stopping && !ended && mappingPreparation(state.depth_job);
     stop.disabled = stopping || ended;
     stop.textContent = ended ? '촬영 종료됨' : stopping ? '촬영 종료 중…' : '촬영 종료';
-    panel.querySelector('h2').textContent = ended ? '실시간 영상의 공간 복원 결과' : stopping ? '촬영을 종료하고 누적 지도를 저장하고 있습니다' : '실시간 영상에서 공간을 복원하고 있습니다';
+    panel.querySelector('h2').textContent = ended ? '실시간 영상의 공간 복원 결과' : stopping ? '촬영을 종료하고 누적 지도를 저장하고 있습니다' : preparation ? preparation.title : '실시간 영상에서 공간을 복원하고 있습니다';
     const error = document.getElementById('live-depth-error');
     const renderWindow = state.depth_job?.options?.render_window_s;
     const legacyWarning = renderWindow != null && !ended

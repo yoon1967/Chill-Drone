@@ -181,7 +181,7 @@ class PoseFrames:
 
 class LivePoseFrames(PoseFrames):
     """Request fresh live input only after the preceding output was presented."""
-    def __init__(self, receive, fps, rate, output, camera, tracker_factory=None):
+    def __init__(self, receive, fps, rate, output, camera, tracker_factory=None, *, continuous=False):
         super().__init__('live', fps, rate, output, camera, tracker_factory)
         self.receive = receive
         width, height = camera['width'], camera['height']
@@ -190,24 +190,82 @@ class LivePoseFrames(PoseFrames):
         self.original_size = (width, height)
         # Known live geometry lets Docker finish loading before admitting the first frame.
         self.native = self.tracker_factory(output, self.size, self.original_size, camera, 15)
+        self.continuous = continuous
+        self.condition = threading.Condition()
+        self.pending = None
+        self.ended = False
+        self.failure = None
+        self.tracked = self.sampled_out = 0
+        self.tracking_thread = None
+        if continuous:
+            try:
+                receive.tracking_stop = self.stop
+            except (AttributeError, TypeError):
+                # Bound methods and callable objects can disallow attributes.
+                pass
+            self.tracking_thread = threading.Thread(target=self._track_live, daemon=True)
+            self.tracking_thread.start()
+
+    def _track_live(self):
+        try:
+            while not self.cancelled():
+                packet = self._tracked_packet()
+                if packet is None:
+                    break
+                if packet[1] + 1e-6 < self.next_output:
+                    continue
+                self.next_output = packet[1] + 1 / self.rate
+                with self.condition:
+                    if self.pending is not None:
+                        self.sampled_out += 1
+                    # Only a not-yet-selected candidate can be superseded. Once
+                    # take() returns, RGB/pose/depth/history identity is immutable.
+                    self.pending = packet
+                    self.condition.notify_all()
+        except BaseException as error:
+            self.failure = error
+        finally:
+            with self.condition:
+                self.ended = True
+                self.condition.notify_all()
+
+    def _tracked_packet(self):
+        packet = self.receive()
+        if packet is None:
+            return None
+        jpeg, stamp, sequence = packet
+        image = cv2.imdecode(np.frombuffer(jpeg, dtype=np.uint8), cv2.IMREAD_COLOR)
+        if image is None or (image.shape[1], image.shape[0]) != self.original_size:
+            raise ValueError('frame_dimensions_do_not_match_calibration')
+        rgb = cv2.cvtColor(cv2.resize(image, self.size), cv2.COLOR_BGR2RGB)
+        received = time.monotonic()
+        result = self.native.track(rgb, stamp)
+        self.tracked += 1
+        return sequence + 1, stamp, rgb, received, self.original_size, result
 
     def take(self):
+        if self.continuous:
+            with self.condition:
+                self.condition.wait_for(lambda: self.pending is not None or self.ended or self.cancelled(), timeout=30)
+                if self.failure:
+                    raise self.failure
+                result, self.pending = self.pending, None
+                return result
         while not self.cancelled():
-            packet = self.receive()
-            if packet is None:
+            result = self._tracked_packet()
+            if result is None:
                 return None
-            jpeg, stamp, sequence = packet
-            image = cv2.imdecode(np.frombuffer(jpeg, dtype=np.uint8), cv2.IMREAD_COLOR)
-            if image is None or (image.shape[1], image.shape[0]) != self.original_size:
-                raise ValueError('frame_dimensions_do_not_match_calibration')
-            rgb = cv2.cvtColor(cv2.resize(image, self.size), cv2.COLOR_BGR2RGB)
-            received = time.monotonic()
-            result = self.native.track(rgb, stamp)
-            if stamp + 1e-6 < self.next_output:
+            if result[1] + 1e-6 < self.next_output:
                 continue
-            self.next_output = stamp + 1 / self.rate
-            return sequence + 1, stamp, rgb, received, self.original_size, result
+            self.next_output = result[1] + 1 / self.rate
+            return result
         return None
+
+    def close(self):
+        self.stop.set()
+        if self.tracking_thread:
+            self.tracking_thread.join(timeout=2)
+        super().close()
 
 
 def camera_intrinsic(shape, original_size, camera):
@@ -263,7 +321,9 @@ def expire_render_points(cells, seen, stamp, window_s):
 
 
 def run(source, output, options, estimator_factory=DepthEstimator, tracker_factory=None,
-        stop_event=None, on_preview=None, live_receive=None):
+        stop_event=None, on_preview=None, live_receive=None, semantic_factory=None):
+    from modules.mapping.data.rescue_mapping import mapping_options
+    options = {**options, **mapping_options(options)}
     output = Path(output)
     output.mkdir(parents=True, exist_ok=False)
     (output / 'frames').mkdir()
@@ -271,12 +331,13 @@ def run(source, output, options, estimator_factory=DepthEstimator, tracker_facto
     run_id = options.get('run_id', output.parent.name + '_' + output.name)
     status = {'status': 'running', 'stage': 'model', 'backend': 'depth_rgbd', 'processed': 0,
               'registered': 0, 'dropped': 0, 'revision': 0, 'points': 0, 'timestamp_s': 0.,
-              'tracking': 'initializing', 'processing_policy': 'sequential'}
+              'tracking': 'initializing', 'processing_policy':
+                  'continuous' if live_receive is not None and options['live_policy'] == 'continuous' else 'sequential'}
     producer = history = None
-    cameras, cells = [], OrderedDict()
-    seen = {}
+    rescue = semantics_estimator = None
+    cameras = []
     last_nonempty_points = []
-    render_window_s = options.get('render_window_s')
+    render_window_s = None  # Spatial compaction retains all ages within the point budget.
     def check_cancelled():
         if stop_event is not None and stop_event.is_set():
             raise InterruptedError('cancelled')
@@ -296,17 +357,23 @@ def run(source, output, options, estimator_factory=DepthEstimator, tracker_facto
             estimator.prepare()
         else:
             estimator.estimate(np.zeros((144, 256, 3), dtype=np.uint8))
+        from modules.mapping.data.rescue_mapping import SemanticEstimator, RescueMap
+        rescue = RescueMap(options)
+        if options['semantic_mapping']:
+            publish(stage='semantic_model')
+            semantics_estimator = (semantic_factory or SemanticEstimator)()
+            status['semantic_mapping'] = True
+            status['depth_resolution'] = options['depth_resolution']
         check_cancelled()
         publish(stage='tracking', device=getattr(estimator, 'device', 'test'),
                 model_preparation_ms=round((time.perf_counter() - model_started) * 1000, 2))
         producer = (LivePoseFrames(live_receive, options['frame_fps'], min(options['sample_fps'], 10.),
-                    output, options['camera'], tracker_factory) if live_receive is not None else
+                    output, options['camera'], tracker_factory, continuous=options['live_policy'] == 'continuous') if live_receive is not None else
                     PoseFrames(source, options['frame_fps'], min(options['sample_fps'], 10.), output, options.get('camera'), tracker_factory))
         producer.cancel_event = stop_event
         from modules.mapping.localization.pose_first import fixed_camera_pose, depth_in_pose_units
         active_map = None
         submaps = []
-        voxel_size = None
         while True:
             check_cancelled()
             item = producer.take()
@@ -317,9 +384,12 @@ def run(source, output, options, estimator_factory=DepthEstimator, tracker_facto
             tick = time.monotonic()
             # Admit pose before invoking depth. The returned matrix is immutable here.
             publish(stage='tracking', frame_number=number, timestamp_s=stamp, dropped=producer.dropped)
+            status.update(tracked_frames=getattr(producer, 'tracked', number),
+                          mapping_sampled_out=getattr(producer, 'sampled_out', 0))
             pose = fixed_camera_pose(native_pose, stamp)
             h, w = display_rgb.shape[:2]
-            rgb = cv2.resize(display_rgb, (round(w * 256 / max(w, h)), round(h * 256 / max(w, h))))
+            resolution = options['depth_resolution']
+            rgb = cv2.resize(display_rgb, (round(w * resolution / max(w, h)), round(h * resolution / max(w, h))))
             params = camera_intrinsic(rgb.shape, original_size, options.get('camera'))
             status['processed'] += 1
             name = f'frame_{number:07d}.jpg'
@@ -329,6 +399,7 @@ def run(source, output, options, estimator_factory=DepthEstimator, tracker_facto
             evicted = 0
             state = 'initializing' if native_pose.get('tracking_state', 0) <= 1 else 'lost'
             depth_scale = None
+            rescue_snapshot = None
             if pose is not None:
                 state = 'scale_wait'
                 publish(stage='depth', pose_confirmed=True)
@@ -339,7 +410,14 @@ def run(source, output, options, estimator_factory=DepthEstimator, tracker_facto
                 # Estimated meters are converted into the already fixed SLAM coordinate scale.
                 depth = estimator.estimate(rgb)
                 depth[~np.isfinite(depth) | (depth < .2) | (depth > 8.)] = 0
-                aligned = depth_in_pose_units(depth, native_pose.get('depth_anchors', []), (w, h))
+                semantics = None
+                if semantics_estimator:
+                    publish(stage='semantics')
+                    semantics = semantics_estimator.estimate(rgb, name, stamp)
+                    from modules.mapping.data.rescue_mapping import validate_semantics, PERSON
+                    labels, confidence = validate_semantics(semantics, depth.shape, name, stamp)
+                aligned = depth_in_pose_units(depth, native_pose.get('depth_anchors', []), (w, h),
+                    excluded=(labels == PERSON) if semantics is not None else None)
                 if aligned is not None and np.count_nonzero(depth) > depth.size * .05:
                     depth, depth_scale = aligned
                     map_id = native_pose['map_id']
@@ -347,20 +425,25 @@ def run(source, output, options, estimator_factory=DepthEstimator, tracker_facto
                         (output / 'submaps').mkdir(exist_ok=True)
                         archive = f'submaps/{len(submaps):04d}-{active_map}.json'
                         write_json(output / archive, {'map_id': active_map,
-                            'points': list(cells.values()), 'cameras': cameras})
+                            'points': rescue.surface.points() if rescue.surface else [], 'cameras': cameras})
                         submaps.append({'map_id': active_map, 'file': archive})
-                        cells, cameras, seen = OrderedDict(), [], {}
-                        voxel_size = None
+                        cameras = []
                     active_map = map_id
-                    voxel_size = voxel_size or max(.0001, .06 * depth_scale)
                     publish(stage='mapping')
-                    evicted = add_points(cells, rgb, depth, pose, params,
-                        max_points=float('inf') if render_window_s is None else 40000,
-                        voxel_size=voxel_size, seen=seen, stamp=stamp)
-                    # Full processed observations survive temporal/capacity render eviction.
+                    mapping_semantics = semantics or dict(frame_id=name, timestamp_s=stamp,
+                        labels=np.zeros(depth.shape, np.uint8), confidence=np.ones(depth.shape, np.float32),
+                        people=[], inference_ms=0.)
+                    rescue_snapshot = rescue.update(rgb, depth, pose, params, mapping_semantics,
+                        depth_scale, map_id, name, stamp)
+                    # Keep source observations for replay; spatial fusion bounds display size.
                     observation = {'depth': depth, 'rgb': rgb, 'world_from_camera': pose,
                         'intrinsics': np.asarray(params), 'map_id': np.asarray(map_id),
                         'depth_scale': np.asarray(depth_scale), 'timestamp_s': np.asarray(stamp)}
+                    if semantics is not None:
+                        observation.update(semantic_labels=labels, semantic_confidence=confidence,
+                            person_instances=np.stack([p['mask'] for p in semantics['people']]).astype(np.uint8)
+                                if semantics['people'] else np.empty((0, *depth.shape), np.uint8),
+                            person_confidences=np.asarray([p['confidence'] for p in semantics['people']], np.float32))
                     cameras.append({'image_id': number, 'frame_id': name, 'source_pts_s': stamp,
                         'timestamp_s': stamp, 'position': pose[:3, 3].tolist(),
                         'world_from_camera_rotation': pose[:3, :3].tolist(), 'model': 'PINHOLE',
@@ -368,20 +451,22 @@ def run(source, output, options, estimator_factory=DepthEstimator, tracker_facto
                     status['registered'] += 1
                     mapped, state = True, 'tracking'
             status['revision'] += 1
-            # Tracking loss must freeze the last valid map, including when an
-            # older caller explicitly requests a temporal preview window.
-            if mapped:
-                evicted += expire_render_points(cells, seen, stamp, render_window_s)
             # One immutable snapshot binds this image and its map to the same revision.
-            points = list(cells.values())
+            points = []
+            if rescue_snapshot:
+                points = rescue_snapshot.pop('static_points')
+            elif rescue and rescue.surface:
+                points = rescue.surface.points()
+                rescue_snapshot = dict(schema_version='rescue-semantic-map/1.0', map_id=rescue.map_id,
+                    render_mode='points', point_revision=rescue.surface.revision,
+                    point_fusion=rescue.surface.metadata(), point_labels=rescue.surface.labels(), chunk=0,
+                    people=rescue.sightings.snapshot(stamp), person_color=options['person_color'],
+                    person_outline=options['person_outline'], tracking_lost=True)
             if points:
                 last_nonempty_points = points
-            preview_points = points[::max(1, math.ceil(len(points) / 12000))]
-            map_stamp = cameras[-1]['timestamp_s'] if cameras else stamp
-            visible_cameras = [c['position'] for c in cameras
-                if render_window_s is None or c['timestamp_s'] >= map_stamp - render_window_s]
+            preview_points = points
+            visible_cameras = [c['position'] for c in cameras[::max(1, math.ceil(len(cameras) / 300))]]
             # Sample the entire route instead of dropping its beginning.
-            visible_cameras = visible_cameras[::max(1, math.ceil(len(visible_cameras) / 300))]
             snapshot = {'revision': status['revision'], 'frame_id': name,
                 'frame_number': number, 'timestamp_s': stamp, 'tracking': state, 'pose_confirmed': pose is not None, 'map_id': active_map, 'pose_map_id': native_pose.get('map_id'),
                 'pose_position': pose[:3, 3].tolist() if pose is not None else None,
@@ -392,6 +477,14 @@ def run(source, output, options, estimator_factory=DepthEstimator, tracker_facto
                 'processed': status['processed'], 'registered': status['registered'],
                 'dropped': producer.dropped, 'processing_ms': round((time.monotonic() - tick) * 1000),
                 'latency_ms': round((time.monotonic() - received) * 1000)}
+            if rescue_snapshot:
+                snapshot['rescue'] = rescue_snapshot
+                from modules.mapping.data.rescue_mapping import person_points
+                people_points = person_points(rescue_snapshot)
+                snapshot['points'] = snapshot['points'] + people_points
+                rescue_snapshot['point_labels'] = rescue_snapshot['point_labels'] + [1]*len(people_points)
+                if snapshot['points']:
+                    last_nonempty_points = snapshot['points']
             history.append(snapshot, observation)
             check_cancelled()
             if on_preview is None:
@@ -420,6 +513,8 @@ def run(source, output, options, estimator_factory=DepthEstimator, tracker_facto
         finally:
             if history:
                 history.close(status['status'])
+            if rescue:
+                rescue.close()
 
 
 def finalize_history(output, status, run_id, started, publish=lambda **fields: None):
@@ -431,7 +526,17 @@ def finalize_history(output, status, run_id, started, publish=lambda **fields: N
     submaps = []
     display_rotation = np.diag([1., -1., -1.])
     for group in groups.values():
+        if group.get('rescue'):
+            from modules.mapping.data.rescue_mapping import display_coordinates
+            group['rescue'] = display_coordinates(group['rescue'])
         group['rows'] = [[i, p[0], -p[1], -p[2], *p[3:], 0., 1] for i, p in enumerate(group['cells'].values())]
+        if group.get('rescue'):
+            from modules.mapping.data.rescue_mapping import person_points
+            offset = len(group['rows'])
+            group['rows'].extend([[offset+i, *p, 0., 1] for i, p in enumerate(person_points(group['rescue']))])
+            group['rescue']['points_include_people'] = True
+            if group['rescue'].get('render_mode') == 'points':
+                group['rescue']['point_labels'] += [1]*(len(group['rows'])-offset)
         del group['cells']
         for camera in group['cameras']:
             camera['position'] = (display_rotation @ camera['position']).tolist()
@@ -439,10 +544,11 @@ def finalize_history(output, status, run_id, started, publish=lambda **fields: N
         if len(groups) > 1:
             name = f"submaps/full-{group['map_id']}.json"
             (output / 'submaps').mkdir(exist_ok=True)
-            write_json(output / name, {'map_id': group['map_id'], 'points': group['rows'], 'cameras': group['cameras'], 'scope': 'all_recorded_observations'})
+            write_json(output / name, {'map_id': group['map_id'], 'points': group['rows'], 'cameras': group['cameras'],
+                'scope': 'all_recorded_observations', **({'rescue': group['rescue']} if group.get('rescue') else {})})
             submaps.append({'map_id': group['map_id'], 'file': name, 'points': len(group['rows']), 'frames': len(group['cameras'])})
     rows, cameras = primary['rows'], primary['cameras']
-    xyz = np.array([p[1:4] for p in rows])
+    xyz = np.array([p[1:4] for p in rows] or [c['position'] for c in cameras])
     partial = len(groups) > 1 or len(cameras) < 2
     quality = {'input_frames': len(entries), 'submitted_frames': len(entries),
         'registered_frames': len(cameras), 'registration_ratio': len(cameras) / len(entries),
@@ -465,7 +571,11 @@ def finalize_history(output, status, run_id, started, publish=lambda **fields: N
             'history': 'history/manifest.json', 'integration_scope': 'all_recorded_observations',
             'integrated_frames': all_registered, 'integrated_maps': len(groups),
             'primary_map_selection': 'most_observed_frames', 'preview_window_applied': False,
-            'preview_point_limit_applied': False}}
+            'preview_point_limit_applied': False,
+            'spatial_point_budget': primary.get('rescue', {}).get('point_fusion', {}).get('point_budget'),
+            'spatial_density_adaptive': primary.get('rescue', {}).get('render_mode') == 'points'}}
+    if primary.get('rescue'):
+        scene['rescue'] = primary['rescue']
     publish(stage='saving', points=len(rows))
     write_json(output / 'scene.json', scene)
     write_json(output / 'poses.json', {k: v for k, v in scene.items() if k not in ('points', 'point_fields')})

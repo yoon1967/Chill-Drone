@@ -75,6 +75,8 @@ class DualSegmentationProcessor:
             raise RuntimeError("yolo_model_must_segment_person_class_zero")
         self.processor = SegformerImageProcessor.from_pretrained(args.semantic_model)
         self.semantic = SegformerForSemanticSegmentation.from_pretrained(args.semantic_model).to(self.device).eval()
+        if getattr(args, 'fp16', False) and self.device == 'cuda':
+            self.semantic.half()
         self.id2label = {int(key): value for key, value in self.semantic.config.id2label.items()}
         class_ids = sorted(resolve_class_ids(self.id2label, args.classes.split(",")))
         self.class_ids_tensor = torch.tensor(class_ids, device=self.device)
@@ -88,7 +90,7 @@ class DualSegmentationProcessor:
         self.yolo_ms = self.semantic_ms = 0.0
         self._lock = threading.Lock()
 
-    def process(self, frame: np.ndarray) -> np.ndarray:
+    def process(self, frame: np.ndarray, *, structured=False):
         """Return an annotated copy. Calls are serialized because model state is shared."""
         with self._lock:
             self.frame_number += 1
@@ -97,20 +99,26 @@ class DualSegmentationProcessor:
                                             imgsz=self.args.yolo_size, verbose=False)[0]
             self.yolo_ms = (time.perf_counter() - started) * 1000
 
-            if self.semantic_mask is None or self.frame_number - self.semantic_frame >= self.args.semantic_every:
+            # Mapping must never project a mask from another camera frame into 3D.
+            if structured or self.semantic_mask is None or self.frame_number - self.semantic_frame >= self.args.semantic_every:
                 started = time.perf_counter()
                 rgb = cv2.cvtColor(frame, cv2.COLOR_BGR2RGB)
                 inputs = self.processor(images=rgb, return_tensors="pt",
                                         size={"height": self.args.input_size, "width": self.args.input_size})
-                inputs = {key: value.to(self.device) for key, value in inputs.items()}
+                inputs = {key: value.to(device=self.device, dtype=self.semantic.dtype) for key, value in inputs.items()}
                 with self.torch.inference_mode():
                     probabilities = self.torch.softmax(self.semantic(**inputs).logits[0], dim=0)
-                    self.semantic_mask = smooth_filtered_label_map(
+                    self.semantic_mask, self.semantic_confidence = smooth_filtered_label_map(
                         probabilities, self.class_ids_tensor, self.background_ids_tensor, self.label_lookup,
-                        self.args.semantic_confidence, frame.shape[:2], self.functional
+                        self.args.semantic_confidence, frame.shape[:2], self.functional, return_confidence=True
                     )
                 self.semantic_frame = self.frame_number
                 self.semantic_ms = (time.perf_counter() - started) * 1000
+
+            if structured:
+                return {'labels': self.semantic_mask.copy(), 'confidence': self.semantic_confidence.copy(),
+                        'people': yolo_result, 'id2label': self.id2label,
+                        'inference_ms': self.yolo_ms + self.semantic_ms}
 
             output, coverage = render_overlay(frame, self.semantic_mask, self.id2label, self.args.alpha)
             output, people = render_people(output, yolo_result)
