@@ -32,7 +32,8 @@ class DiscoveryTests(unittest.TestCase):
 
     def test_scan_parses_windows_and_linux_and_marks_drone_candidates(self):
         runner = Mock(return_value='SSID 1 : Home\nSSID 2 : TELLO-ABC\n    BSSID 1 : aa:bb\nSSID 3 : RMTT-TEST\n')
-        values = wifi_candidates(runner, 'win32')
+        with patch('modules.autonomy.tello_link.wifi.request_windows_scan'):
+            values = wifi_candidates(runner, 'win32')
         self.assertEqual([i['ssid'] for i in values], ['Home', 'RMTT-TEST', 'TELLO-ABC'])
         self.assertFalse(values[0]['drone_candidate'])
         self.assertTrue(all(not i['verified'] for i in values))

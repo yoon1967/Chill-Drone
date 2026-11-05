@@ -83,6 +83,23 @@ test('reconstruction stop can finalize an active session after the page reconnec
   assert.equal(f.requests.filter(request => request.url === '/api/live/stop').length, 1);
 });
 
+test('new capture waits for finalization then starts a separate session with the existing camera', async t => {
+  let sequence = 0;
+  const f = fixture(t, {fetcher: (url, options, value) => reply(url === '/api/live/start'
+    ? {session_id: `live_${++sequence}`, session_status: 'receiving', transport_ready: true}
+    : url.startsWith('/api/live/state') ? {session_id: `live_${sequence}`, status: 'receiving', transport_ready: true} : value)});
+  const handle = await f.connect();
+  handle.update({session_id: 'previous', session_status: 'stopping'});
+  await assert.rejects(handle.startNew('browser_camera'), /지도 저장/);
+  assert.equal(f.permissions(), 0);
+  handle.update({session_id: 'previous', session_status: 'complete'});
+  await handle.startNew('browser_camera');
+  assert.deepEqual(f.starts, ['live_1']);
+  await assert.rejects(handle.startNew('browser_camera'), /지도 저장/);
+  assert.equal(f.requests.filter(r => r.url === '/api/live/start').length, 1);
+  await handle.stop();
+});
+
 test('calibration owns camera input until the tutorial releases the gate', async (t) => {
   const f = fixture(t), inputGate = {calibrating: true};
   const handle = await f.connect({inputGate});
@@ -352,6 +369,26 @@ test('Tello mapping receives on the server, asks for no media, heartbeats and st
   await handle.stopDrone(); await pending;
   assert.deepEqual(JSON.parse(f.requests.find((r) => r.url === '/api/live/stop').options.body), {session_id: 'drone_map', reason: 'user_stop'});
   assert.equal(f.get('tello-map-preview').hidden, true);
+});
+
+test('new capture restores the previous Tello input without requesting browser camera access', async t => {
+  const ready = deferred();
+  const f = fixture(t, {fetcher: (url, options, value) => {
+    if (url === '/api/live') return reply({...value, tello_map_enabled: true});
+    if (url === '/api/live/tello/start') return reply({session_id: 'new_drone', session_status: 'starting'});
+    if (url.startsWith('/api/live/state') || url.startsWith('/api/live/tracking')) {
+      ready.resolve(); return reply({session_id: 'new_drone', session_status: 'receiving', transport_ready: true});
+    }
+    return reply(value);
+  }});
+  const handle = await f.connect();
+  handle.update({session_id: 'previous_drone', session_status: 'complete'});
+  const pending = handle.startNew('tello_camera'); await ready.promise;
+  assert.equal(f.get('input-source').value, 'tello-map');
+  assert.equal(f.permissions(), 0);
+  assert.deepEqual(f.starts, ['new_drone']);
+  await handle.stop(); await pending;
+  assert.equal(f.requests.some(r => r.url === '/api/live/start'), false);
 });
 
 test('canceling a pending Tello start stops the late ID and never touches browser media', async (t) => {

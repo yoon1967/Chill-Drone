@@ -2,6 +2,8 @@
 import re
 import sys
 
+from .windows_wifi import request_windows_scan
+
 
 def percent(text):
     match = re.fullmatch(r'\s*(\d{1,3})\s*%?\s*', text)
@@ -57,6 +59,8 @@ def linux_networks(text):
 def scan_wifi(runner, platform=None, rescan=True):
     platform = platform or sys.platform
     if platform == 'win32':
+        if rescan:
+            request_windows_scan()
         rows = windows_networks(runner(['netsh', 'wlan', 'show', 'networks', 'mode=bssid']))
     elif platform.startswith('linux'):
         rows = linux_networks(runner(['nmcli', '-t', '--escape', 'yes', '-f', 'IN-USE,SSID,SIGNAL',

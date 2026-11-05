@@ -47,7 +47,7 @@ export async function connectCapture({onStart = () => {}, onStatus = () => {}, o
   const video = $('input-preview'), telloPreview = $('tello-preview'), canvas = document.createElement('canvas');
   const mapPreview = $('tello-map-preview');
   const context = canvas.getContext('2d', {alpha: false});
-  let current = null, creating = false, serverState = {}, deviceRead = 0;
+  let current = null, creating = false, serverState = {}, deviceRead = 0, lastKind = null;
   const terminal = (state) => ['idle', 'complete', 'failed', 'stopped_or_disconnected'].includes(state.session_status || state.status);
   const message = (text, state, run = current) => {
     $('camera-status').textContent = text;
@@ -337,13 +337,13 @@ export async function connectCapture({onStart = () => {}, onStatus = () => {}, o
       creating = true; controls();
       try {
         const started = await post(drone ? '/api/live/tello/start' : '/api/live/start', JSON.stringify({...config,
-          ...mappingOptions(), live_policy: 'continuous'}), {'Content-Type': 'application/json'});
+          ...mappingOptions(), live_policy: 'continuous'}), {'Content-Type': 'application/json'}, 45000);
         run.session = started.session_id;
         // UI callbacks can replace serverState with a partial presentation state.
         // Keep the backend on this session before invoking those callbacks.
         run.backend = started.backend;
         if (!owns(run)) { await stopSession(run); return; }
-        serverState = started; onStart(run.session, started);
+        serverState = started; lastKind = kind; onStart(run.session, started);
         const preparation = mappingPreparation(started.depth_job);
         message(preparation ? `${preparation.title} · ${preparation.detail}` : '영상 연결과 위치 추적을 준비하고 있습니다.', 'connecting', run);
       } finally { creating = false; controls(); }
@@ -447,6 +447,14 @@ export async function connectCapture({onStart = () => {}, onStatus = () => {}, o
   sourceChanged();
   void refreshDevices();
   return {update,
+    async startNew(input) {
+      controls();
+      if ($('camera-start').disabled) throw new Error('촬영 종료와 지도 저장이 끝난 뒤 다시 시도하세요.');
+      if (input === 'tello_camera') $('input-source').value = 'tello-map';
+      else if (input === 'browser_camera') $('input-source').value = lastKind === 'demo' ? 'demo' : 'camera';
+      sourceChanged();
+      await start();
+    },
     async stop() {
       if (current) return stop();
       if (serverState.session_id && !terminal(serverState)) {

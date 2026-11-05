@@ -8,6 +8,7 @@ const errors = {
   depth_mapping_dependencies_missing: '빠른 복원 준비가 필요합니다. 실행 중인 CMD 창을 닫고 3D 매핑 실행기를 다시 실행하면 필요한 패키지와 모델을 자동으로 준비합니다.',
   slam_image_missing: '카메라 위치 추적용 Docker 이미지가 없습니다. 실행 안내에 따라 ssafy-orbslam3:local 이미지를 준비하세요.',
   slam_docker_unavailable: '카메라 위치 추적을 위해 Docker Desktop을 먼저 실행하세요.',
+  slam_docker_timeout: 'Docker 응답이 늦어 준비 확인 시간이 초과되었습니다. Linux 엔진 상태를 확인하세요.',
   import_busy: '진행 중인 불러오기가 있습니다. 완료하거나 취소한 뒤 다시 선택하세요.',
   reconstruction_busy: '다른 복원이 실행 중입니다. 완료 뒤 다시 시작하세요.',
   stop_live_mapping_before_reconstruction: '실시간 매핑을 종료한 뒤 새 지도 복원을 시작하세요.',
@@ -85,7 +86,8 @@ export function savedPhase(job) {
 export function processingSteps(job) {
   if (job.options?.mode === 'depth_rgbd') {
     const entries = [['model', '추적·깊이 모델 준비'], ['tracking', '① 위치·방향 확정'], ['depth', '② 깊이 추정'], ['mapping', '③ 확정 자세로 복원'], ['integration', '④ 전체 경로 통합'], ['saving', '전체 지도 저장']];
-    const index = job.status === 'complete' ? entries.length : job.stage === 'pose_wait' ? 1 : job.stage === 'presentation' ? 3 : Math.max(0, entries.findIndex(([stage]) => stage === job.stage));
+    const stage = {semantic_model: 'model', pose_wait: 'tracking', presentation: 'mapping', semantics: 'mapping'}[job.stage] || job.stage;
+    const index = job.status === 'complete' ? entries.length : Math.max(0, entries.findIndex(([key]) => key === stage));
     return entries.map(([stage, label], i) => ({label, state: i < index ? 'done' : i === index && job.status === 'running' ? 'active' : 'waiting'}));
   }
   const index = job.status === 'complete' ? processingStages.length : processingStages.indexOf(job.stage);

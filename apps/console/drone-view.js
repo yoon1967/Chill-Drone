@@ -21,6 +21,8 @@ const errors = {
   tello_sdk_unavailable_check_wifi: '드론 SDK 응답이 없습니다. 전원과 PC Wi-Fi 연결을 확인하세요.',
   wifi_os_request_failed_check_permissions_and_saved_profile: 'Wi-Fi 연결을 요청하지 못했습니다. OS에서 해당 Wi-Fi에 한 번 연결해 프로필을 만든 뒤 다시 시도하세요.',
   wifi_location_permission_required: 'Wi-Fi 목록을 읽으려면 Windows 설정 → 개인정보 및 보안 → 위치에서 위치 서비스를 켠 뒤 다시 검색하세요.',
+  wifi_scan_request_failed: 'Wi-Fi 새 검색을 요청하지 못했습니다. 노트북 Wi-Fi와 무선 어댑터 상태를 확인한 뒤 다시 검색하세요.',
+  wifi_adapter_not_found: '사용 가능한 Wi-Fi 어댑터가 없습니다. 노트북 Wi-Fi를 켠 뒤 다시 검색하세요.',
   camera_session_mismatch: '지도 실행 회차가 바뀌었습니다. 상태를 확인한 뒤 다시 연결 해제하세요.',
   land_before_disconnect: '비행 중입니다. 착륙을 완료한 뒤 드론 연결을 해제하세요.',
 };
@@ -152,7 +154,7 @@ export function connectDrones({element = id => document.getElementById(id), fetc
       if (path === 'scan' || path === 'connect') element('drone-wifi-scan-status').textContent = value;
       message(value);
     };
-    report(path === 'scan' ? '노트북에서 연결 가능한 Wi-Fi 목록을 검색하고 있습니다…' : path === 'connect' ? 'Wi-Fi 연결과 드론 SDK 응답을 확인하고 있습니다…' : '드론 응답을 확인하고 있습니다…');
+    report(path === 'scan' ? '노트북 Wi-Fi에 새 검색을 요청하고 있습니다. 목록 갱신까지 잠시 기다려 주세요…' : path === 'connect' ? 'Wi-Fi 연결과 드론 SDK 응답을 확인하고 있습니다…' : '드론 응답을 확인하고 있습니다…');
     try {
       const response = await fetcher(`/api/drones/${path}`, {method: 'POST', headers: {'Content-Type': 'application/json', 'X-Mapping-Client': '1'}, body: JSON.stringify(body)});
       const state = await response.json();

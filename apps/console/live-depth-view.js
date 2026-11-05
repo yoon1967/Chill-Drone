@@ -1,8 +1,10 @@
 import {connectProgressiveMap} from '/progressive-map.js';
 import {mappingPreparation} from '/map-source.js';
+import {processingSteps} from '/import-view.js';
 
-export function connectLiveDepth({onStop = async () => {}} = {}) {
-  let panel = null, controller = null, stopPending = false, stopError = null, session = null;
+export function connectLiveDepth({onStop = async () => {}, onRestart = async () => {}} = {}) {
+  let panel = null, controller = null, stopPending = false, restartPending = false, stopError = null, session = null;
+  let latestState = null;
   const recording = document.getElementById('session-recording');
   const recordingParent = recording.parentNode, recordingNext = recording.nextSibling;
   function prepare() {
@@ -18,7 +20,8 @@ export function connectLiveDepth({onStop = async () => {}} = {}) {
     panel.querySelector('#live-progressive-count').textContent = '처리 0프레임';
     panel.querySelector('#live-progressive-latency').textContent = '모델 준비 중 · 영상 복원 대기';
     panel.querySelector('#live-progressive-map-empty').hidden = false;
-    const actions = document.createElement('div'); actions.className = 'import-actions live-depth-actions';
+    const actions = document.createElement('div'); actions.className = 'live-depth-actions';
+    actions.setAttribute('aria-label', '실시간 촬영 제어');
     const stop = document.createElement('button'); stop.id = 'live-depth-stop'; stop.type = 'button';
     stop.textContent = '촬영 종료';
     stop.addEventListener('click', async () => {
@@ -28,7 +31,19 @@ export function connectLiveDepth({onStop = async () => {}} = {}) {
       catch (error) { stopError = `촬영 종료 요청을 완료하지 못했습니다. ${error.message}`; }
       finally { stopPending = false; }
     });
-    actions.append(stop); panel.querySelector('.progressive-heading').after(actions);
+    const restart = document.createElement('button'); restart.id = 'live-depth-restart'; restart.type = 'button';
+    restart.textContent = '새로 촬영';
+    restart.addEventListener('click', async () => {
+      if (restartPending || restart.disabled) return;
+      restartPending = true; stopError = null; restart.disabled = true; restart.textContent = '새 촬영 시작 중…';
+      try { await onRestart(latestState); }
+      catch (error) { stopError = `새 촬영을 시작하지 못했습니다. ${error.message}`; }
+      finally { restartPending = false; }
+    });
+    actions.append(stop, restart); panel.querySelector('.progressive-map .section-title').append(actions);
+    const steps = document.createElement('ol'); steps.id = 'live-depth-steps';
+    steps.className = 'saved-processing-steps'; steps.setAttribute('aria-label', '실시간 3D 지도 복원 단계');
+    panel.querySelector('.progressive-heading').after(steps);
     const open = document.createElement('a'); open.id = 'live-depth-open'; open.hidden = true;
     open.textContent = '전체 경로 지도 열기 ↗'; open.className = 'saved-primary';
     panel.append(open);
@@ -46,13 +61,27 @@ export function connectLiveDepth({onStop = async () => {}} = {}) {
       return;
     }
     prepare(); panel.hidden = false;
-    if (session !== state.session_id) { session = state.session_id; stopError = null; }
+    latestState = state;
+    if (session !== state.session_id) { session = state.session_id; stopError = null; restartPending = false; }
     if (recording.parentNode !== panel) panel.append(recording);
     if (state.depth_job) controller.update(state.depth_job);
     const stop = document.getElementById('live-depth-stop');
     const stopping = stopPending || state.session_status === 'stopping';
     const ended = ['complete', 'failed'].includes(state.session_status);
     const preparation = !stopping && !ended && mappingPreparation(state.depth_job);
+    const restart = document.getElementById('live-depth-restart');
+    const finalized = ended && ['complete', 'failed', 'cancelled'].includes(state.depth_job?.status);
+    restart.disabled = restartPending || !finalized;
+    restart.textContent = restartPending ? '새 촬영 시작 중…' : '새로 촬영';
+    restart.title = finalized ? '현재 결과를 보존하고 같은 카메라로 새 지도를 만듭니다.' : '촬영 종료 후 지도 저장이 끝나면 새로 촬영할 수 있습니다.';
+    document.getElementById('live-depth-steps').replaceChildren(...processingSteps({
+      ...state.depth_job, options: {...state.depth_job?.options, mode: 'depth_rgbd'}
+    }).map(step => {
+      const li = document.createElement('li'); li.dataset.state = step.state;
+      li.textContent = `${step.state === 'done' ? '✓ ' : ''}${step.label}`;
+      if (step.state === 'active') li.setAttribute('aria-current', 'step');
+      return li;
+    }));
     stop.disabled = stopping || ended;
     stop.textContent = ended ? '촬영 종료됨' : stopping ? '촬영 종료 중…' : '촬영 종료';
     panel.querySelector('h2').textContent = ended ? '실시간 영상의 공간 복원 결과' : stopping ? '촬영을 종료하고 누적 지도를 저장하고 있습니다' : preparation ? preparation.title : '실시간 영상에서 공간을 복원하고 있습니다';

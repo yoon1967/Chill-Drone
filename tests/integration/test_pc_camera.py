@@ -12,6 +12,21 @@ from modules.mapping.localization.orbslam3_live import LiveManager, LiveSession,
 
 
 class SLAMImagePreflightTests(unittest.TestCase):
+    def setUp(self):
+        wait = patch('modules.mapping.localization.orbslam3_live.time.sleep')
+        wait.start(); self.addCleanup(wait.stop)
+
+    def test_first_engine_timeout_is_retried_within_the_same_start(self):
+        with patch('modules.mapping.localization.orbslam3_live.subprocess.check_output',
+                   side_effect=[subprocess.TimeoutExpired('docker', 4), 'sha256:ready\n']) as docker:
+            self.assertEqual(require_slam_image(), 'sha256:ready')
+            self.assertEqual(docker.call_count, 2)
+
+    def test_starting_engine_recovers_after_both_inspect_and_list_fail(self):
+        with patch('modules.mapping.localization.orbslam3_live.subprocess.check_output', side_effect=[
+                subprocess.CalledProcessError(1, 'inspect'), subprocess.CalledProcessError(1, 'ls'), 'sha256:ready']):
+            self.assertEqual(require_slam_image(), 'sha256:ready')
+
     def test_failed_inspect_is_retried_only_when_local_image_is_listed(self):
         with patch('modules.mapping.localization.orbslam3_live.subprocess.check_output',
                    side_effect=[subprocess.CalledProcessError(1, 'inspect'), 'sha256:local\n', 'sha256:local\n']) as docker:
@@ -30,15 +45,17 @@ class SLAMImagePreflightTests(unittest.TestCase):
         self.assertIs(manager.current, previous)
 
     def test_unavailable_engine_and_timeout_are_distinguished_from_missing_image(self):
-        for failure in [FileNotFoundError(), subprocess.TimeoutExpired('docker', 4)]:
+        for failure, error in [(FileNotFoundError(), 'slam_docker_unavailable'),
+                               (subprocess.TimeoutExpired('docker', 4), 'slam_docker_timeout')]:
             with self.subTest(failure=failure), patch(
                     'modules.mapping.localization.orbslam3_live.subprocess.check_output', side_effect=failure):
-                with self.assertRaisesRegex(RuntimeError, '^slam_docker_unavailable$'):
+                with self.assertRaisesRegex(RuntimeError, '^' + error + '$'):
                     require_slam_image()
         with patch('modules.mapping.localization.orbslam3_live.subprocess.check_output',
-                   side_effect=[subprocess.CalledProcessError(1, 'inspect'), subprocess.CalledProcessError(1, 'ls')]):
+                   side_effect=subprocess.CalledProcessError(1, 'docker')) as docker:
             with self.assertRaisesRegex(RuntimeError, '^slam_docker_unavailable$'):
                 require_slam_image()
+            self.assertEqual(docker.call_count, 6)
 
 
 class PCCameraConfigurationTests(unittest.TestCase):
