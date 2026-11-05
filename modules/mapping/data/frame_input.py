@@ -103,6 +103,8 @@ def validate_options(options, summary):
     if window is not None and (type(window) not in (int, float) or not math.isfinite(window) or not 1 <= window <= 120):
         raise ValueError('invalid_render_window_s')
     result['render_window_s'] = window
+    from modules.mapping.data.rescue_mapping import mapping_options
+    result.update(mapping_options(options))
     return result
 
 

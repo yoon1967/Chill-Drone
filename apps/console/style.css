@@ -373,3 +373,9 @@ body:has(main.calibration-open) .workflow-guide { display: none; }
 
 body[data-map-source=saved] #live-progressive-workspace{display:none}
 body[data-map-source=live].live-depth-processing #map-content{display:none}
+ .rescue-settings {margin:12px 0;padding:12px 16px;border:1px solid #395758;border-radius:10px;background:#142326;color:#d8e8e6;}
+ .rescue-settings summary {cursor:pointer;font-weight:600;}
+ .rescue-settings-fields {display:flex;align-items:center;gap:16px;flex-wrap:wrap;padding-top:14px;}
+ .rescue-settings-fields label {display:flex;align-items:center;gap:6px;}
+ .rescue-settings input[type=color] {width:48px;height:32px;padding:2px;}
+ .rescue-settings p {font-size:13px;line-height:1.6;color:#b1c9c6;}

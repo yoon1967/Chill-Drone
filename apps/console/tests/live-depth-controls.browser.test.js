@@ -3,8 +3,8 @@ import assert from 'node:assert/strict';
 import {createRequire} from 'node:module';
 
 const url = process.env.MAPPING_TEST_URL;
-test('live reconstruction keeps themed controls and stops camera tracks while replaying history',
-  {skip: !url, timeout: 30000}, async () => {
+test('live reconstruction shows actual model preparation, then themed controls and camera stop during replay',
+  {skip: !url, timeout: 45000}, async () => {
     const {chromium} = process.env.MAPPING_PLAYWRIGHT_MODULE ?
       createRequire(import.meta.url)(process.env.MAPPING_PLAYWRIGHT_MODULE) : await import('playwright');
     const browser = await chromium.launch({headless: true, channel: 'msedge',
@@ -13,10 +13,11 @@ test('live reconstruction keeps themed controls and stops camera tracks while re
       const page = await browser.newPage({viewport: {width: 1440, height: 1000}});
       const stops = [], errors = [];
       let active = false, lifecycle = 'receiving';
-      const job = {id: 'import_1234567890123456', status: 'running', stage: 'mapping', history_available: true,
+      const job = {id: 'import_1234567890123456', status: 'running', stage: 'model', history_available: true,
         options: {render_window_s: null}};
-      const state = () => active ? {source: 'live', session_id: 'test-live', session_status: lifecycle,
-        status: lifecycle, backend: 'orb_slam3_depth', input: 'browser_camera', transport_ready: true,
+      const preparing = () => ['model', 'semantic_model'].includes(job.stage);
+      const state = () => active ? {source: 'live', session_id: 'test-live', session_status: preparing() ? 'starting' : lifecycle,
+        status: preparing() ? 'starting' : lifecycle, backend: 'orb_slam3_depth', input: 'browser_camera', transport_ready: !preparing(),
         can_accept_frame: false, map_available: false, depth_job_id: job.id, depth_job: job} :
         {source: 'live', session_status: 'idle', status: 'idle', map_available: false};
       const snapshot = {revision: 1, frame_id: 'frame_0000001.jpg', frame_number: 1, timestamp_s: 1,
@@ -32,10 +33,13 @@ test('live reconstruction keeps themed controls and stops camera tracks while re
         };
       });
       await page.route('**/api/live', route => route.fulfill({json: {enabled: true}}));
+      await page.route('**/api/drones/state*', route => route.fulfill({json: {connected: false}}));
+      await page.route('**/api/tello', route => route.fulfill({json: {enabled: false}}));
       await page.route('**/api/live/start', route => {
         active = true; return route.fulfill({json: state()});
       });
       await page.route('**/api/live/state*', route => route.fulfill({json: state()}));
+      await page.route('**/api/live/tracking*', route => route.fulfill({json: state()}));
       await page.route('**/api/live/stop', route => {
         stops.push(route.request().postDataJSON()); lifecycle = 'stopping';
         return route.fulfill({json: state()});
@@ -44,7 +48,7 @@ test('live reconstruction keeps themed controls and stops camera tracks while re
         entries: [{revision: snapshot.revision, timestamp_s: snapshot.timestamp_s}]}}));
       await page.route('**/api/import/history-frame?*', route => route.fulfill({json: snapshot}));
       await page.route('**/api/import/preview?*', route => route.fulfill({json:
-        Number(new URL(route.request().url()).searchParams.get('revision')) === snapshot.revision
+        preparing() ? {waiting: true, revision: 0} : Number(new URL(route.request().url()).searchParams.get('revision')) === snapshot.revision
           ? {revision: snapshot.revision, unchanged: true} : snapshot}));
       await page.route('**/api/import/preview-frame?*', route => route.fulfill({contentType: 'image/png',
         body: Buffer.from('iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mP8/x8AAwMCAO+aWQ0AAAAASUVORK5CYII=', 'base64')}));
@@ -53,7 +57,21 @@ test('live reconstruction keeps themed controls and stops camera tracks while re
       // The legacy input panel is tucked inside the result workspace. Exercise
       // its real capture handler, then use the visible live reconstruction UI.
       await page.locator('#camera-start').evaluate(button => button.click());
+      for (const [stage, title] of [['model', '깊이 모델 준비 중'], ['semantic_model', '사람·공간 인식 모델 준비 중']]) {
+        job.stage = stage;
+        await page.waitForFunction(title => document.querySelector('#live-progressive-workspace h2')?.textContent === title, title);
+        assert.equal(await page.locator('#live-progressive-state').textContent(), title);
+        assert.equal(await page.locator('#input-state').textContent(), '모델 준비 중');
+        assert.equal(await page.locator('#map-state').textContent(), '모델 준비 중');
+        assert.equal(await page.locator('#tracking-state').textContent(), '모델 준비 대기');
+        assert.equal(await page.locator('#live-tab-indicator').textContent(), '모델 준비 중');
+        await page.waitForFunction(() => document.querySelector('#connection-map').textContent === '모델 준비 중');
+        assert.match(await page.locator('#connection-note').textContent(), /모델 준비 중/);
+      }
+      job.stage = 'tracking';
       await page.locator('#live-progressive-frame:not([hidden])').waitFor();
+      await page.waitForFunction(() => !document.querySelector('#live-progressive-workspace h2').textContent.includes('모델 준비'));
+      assert.doesNotMatch(await page.locator('#live-progressive-video-empty').textContent(), /인식 모델 준비 중/);
       await page.waitForFunction(() => window.testTracks?.some(track => track.readyState === 'live'));
       assert.equal(await page.locator('#live-depth-stop').isVisible(), true);
       assert.match(await page.locator('#live-progressive-map-detail').textContent(), /전체 누적 지도/);

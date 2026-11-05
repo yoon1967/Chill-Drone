@@ -173,6 +173,23 @@ class LiveDepthTests(unittest.TestCase):
         self.assertIsNone(self.session.error)
         self.assertFalse(self.session.stats()['map_available'])
 
+    def test_continuous_live_policy_keeps_processing_without_a_browser_ack(self):
+        self.session.stop('test_reconfigure')
+        self.runtime.release.set()
+        self.session.worker.join(5)
+        self.session.recording.wait(5)
+        self.runtime = self.manager.depth_worker = FakeWorker()
+        self.session = LiveDepthSession(self.root, self.session.camera, 'test-image', self.manager,
+            mapping={'live_policy': 'continuous'})
+        self.runtime.release.set()
+        wait_for(lambda: self.session.ready)
+        self.session.offer(self.jpeg, 0., 0)
+        self.session.offer(self.jpeg, .2, 1)
+        wait_for(lambda: len(self.runtime.tracked) == 2)
+        self.assertEqual(self.session.job.get('presented_revision', 0), 0)
+        self.assertEqual(self.session.stats()['depth_job']['progress']['processing_policy'], 'continuous')
+        self.assertFalse(self.manager.preview(self.session.depth_job_id)['needs_presentation'])
+
     def test_existing_live_job_rejects_a_saved_reconstruction(self):
         key = self.manager.create()['id']
         self.manager.job(key).update(status='awaiting_options', summary={'width': 320, 'height': 180}, source=self.root)

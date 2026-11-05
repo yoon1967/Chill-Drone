@@ -68,6 +68,13 @@ export function captureError(error) {
   return {state: 'failed', message: `영상 연결 실패: ${error.message}`};
 }
 
+export function mappingPreparation(job) {
+  if (job?.status !== 'running') return null;
+  const stage = job.progress?.stage || job.stage;
+  const title = {model: '깊이 모델 준비 중', semantic_model: '사람·공간 인식 모델 준비 중'}[stage];
+  return title ? {title, detail: '모델을 불러오고 있습니다. 준비가 끝나면 카메라 위치 추적과 3D 지도 생성을 시작합니다.'} : null;
+}
+
 // Read-only status: a browser/server failure never proves that the drone is offline.
 export function connectionStatus({reachable = true, responseOK = true, state = {}, capture = {}, fresh = true} = {}) {
   const row = (text, tone = 'idle') => ({text, tone});
@@ -88,6 +95,7 @@ export function connectionStatus({reachable = true, responseOK = true, state = {
   const error = ownCapture && capture.error || (!pending && state.last_error) || '';
   const status = pending ? 'starting' : state.session_status || state.status;
   const active = !pending && !['idle', 'complete', 'failed', 'stopped_or_disconnected', 'stopping'].includes(status) && Boolean(state.session_id);
+  const preparation = active ? mappingPreparation(state.depth_job) : null;
   if (active && state.input === 'tello_camera' && state.camera &&
       ['fx', 'fy', 'cx', 'cy'].every(key => Number.isFinite(state.camera[key]))) {
     const camera = state.camera;
@@ -111,6 +119,7 @@ export function connectionStatus({reachable = true, responseOK = true, state = {
       result.video = row('재연결 중', 'warn');
       result.map = row(state.map_available ? '지도 보존 · 복구 대기' : '영상 복구 대기', 'warn');
     }
+    if (preparation) result.map = row('모델 준비 중', 'warn');
   } else if (pending) { result.video = row('대기'); result.map = row('준비 중', 'warn'); }
   else if (state.session_id) { result.video = row('종료'); result.map = row(state.map_available ? '기록 보존' : '생성 전'); }
   if (error === 'tello_sdk_unavailable_check_wifi') {
@@ -125,7 +134,7 @@ export function connectionStatus({reachable = true, responseOK = true, state = {
     if (!capture.session && capture.error) { result.drone = row('확인 전'); result.video = row('대기'); }
   } else if (error) {
     result.map = row('오류 확인', 'warn'); result.note = captureError(new Error(error)).message;
-  } else result.note = active ? '드론 응답과 영상 수신·지도 처리를 구분해 표시합니다.' : '시작 전에는 드론 연결을 확인하지 않습니다. 종료 후에는 기록만 표시합니다.';
+  } else result.note = preparation ? `${preparation.title} · ${preparation.detail}` : active ? '드론 응답과 영상 수신·지도 처리를 구분해 표시합니다.' : '시작 전에는 드론 연결을 확인하지 않습니다. 종료 후에는 기록만 표시합니다.';
   return result;
 }
 

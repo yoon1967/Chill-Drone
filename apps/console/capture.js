@@ -1,5 +1,6 @@
 // Each start owns its media, callbacks and HTTP session, including canceled starts.
-import { captureError } from './map-source.js';
+import { captureError, mappingPreparation } from './map-source.js';
+import {mappingOptions} from './mapping-settings.js';
 
 export function captureConfiguration(width, height, fps, fov, camera = null) {
   if (![width, height, fps].every(Number.isFinite) || width < 1 || height < 1)
@@ -233,7 +234,7 @@ export async function connectCapture({onStart = () => {}, onStatus = () => {}, o
     if (run.sourceBase === null && data.presentedFrames != null) run.sourceBase = data.presentedFrames;
     const sequence = data.presentedFrames != null ? data.presentedFrames - run.sourceBase : run.sequence;
     run.skipped += Math.max(0, sequence - run.sequence); run.sequence = sequence + 1;
-    if (run.sending || (serverState.backend === 'orb_slam3_depth' && !serverState.can_accept_frame)) { run.skipped++; return; }
+    if (run.sending || (run.backend === 'orb_slam3_depth' && !serverState.can_accept_frame)) { run.skipped++; return; }
     run.sending = true;
     try {
       if (run.base === null) run.base = data.mediaTime;
@@ -246,7 +247,7 @@ export async function connectCapture({onStart = () => {}, onStatus = () => {}, o
       onFrameTiming({session: run.session, pts, encodedAtMs: performance.now()});
       const state = await post('/api/live/frame?session=' + encodeURIComponent(run.session), jpeg,
         {'Content-Type': 'image/jpeg', 'X-Frame-Timestamp': String(pts), 'X-Frame-Sequence': String(sequence)},
-        serverState.backend === 'orb_slam3_depth' ? 60000 : 10000);
+        run.backend === 'orb_slam3_depth' ? 60000 : 10000);
       if (!owns(run)) return;
       if (state.backend === 'orb_slam3_depth') serverState = state;
       onFrameTiming({session: run.session, pts, ackAtMs: performance.now()});
@@ -256,7 +257,7 @@ export async function connectCapture({onStart = () => {}, onStatus = () => {}, o
       Object.assign($('camera-status').dataset, {sent: run.sent, skipped: run.skipped, dropped: state.frame_drops, session: run.session});
     } catch (error) {
       if (owns(run)) {
-        if (serverState.backend === 'orb_slam3_depth' && ['TimeoutError', 'AbortError'].includes(error.name)) {
+        if (run.backend === 'orb_slam3_depth' && ['TimeoutError', 'AbortError'].includes(error.name)) {
           serverState.can_accept_frame = false;
           message('현재 프레임 표시를 기다리고 있습니다. 최신 복원 화면으로 돌아오면 이어갑니다.', 'receiving', run);
         }
@@ -335,13 +336,18 @@ export async function connectCapture({onStart = () => {}, onStatus = () => {}, o
       message('ORB-SLAM3 시작 중 · ' + (camera ? '카메라 보정값 사용' : '화각 추정 · 미보정') + ' · ' + canvas.width + '×' + canvas.height, 'connecting', run);
       creating = true; controls();
       try {
-        const started = await post(drone ? '/api/live/tello/start' : '/api/live/start', JSON.stringify(config), {'Content-Type': 'application/json'});
+        const started = await post(drone ? '/api/live/tello/start' : '/api/live/start', JSON.stringify({...config,
+          ...mappingOptions(), live_policy: 'continuous'}), {'Content-Type': 'application/json'});
         run.session = started.session_id;
+        // UI callbacks can replace serverState with a partial presentation state.
+        // Keep the backend on this session before invoking those callbacks.
+        run.backend = started.backend;
         if (!owns(run)) { await stopSession(run); return; }
-        serverState = started; onStart(run.session);
-        message('영상 연결과 SLAM을 준비하고 있습니다.', 'connecting', run);
+        serverState = started; onStart(run.session, started);
+        const preparation = mappingPreparation(started.depth_job);
+        message(preparation ? `${preparation.title} · ${preparation.detail}` : '영상 연결과 위치 추적을 준비하고 있습니다.', 'connecting', run);
       } finally { creating = false; controls(); }
-      const deadline = Date.now() + (serverState.backend === 'orb_slam3_depth' ? 1800000 : 65000);
+      const deadline = Date.now() + (run.backend === 'orb_slam3_depth' ? 1800000 : 65000);
       while (owns(run)) {
         if (Date.now() > deadline) throw new Error('SLAM 시작 시간 초과');
         if (!drone) await heartbeat(run);
@@ -355,6 +361,10 @@ export async function connectCapture({onStart = () => {}, onStatus = () => {}, o
         if (state.status === 'failed' || state.session_status === 'failed') throw new Error(state.last_error || 'SLAM 시작 실패');
         if (terminal(state) || state.session_status === 'stopping') throw new Error('영상 세션이 시작 전에 종료되었습니다.');
         if (state.transport_ready) { serverState = state; break; }
+        const stage = state.depth_job?.progress?.stage || state.depth_job?.stage;
+        const preparation = mappingPreparation(state.depth_job);
+        if (preparation) message(`${preparation.title} · ${preparation.detail}`, 'connecting', run);
+        else if (stage === 'tracking') message('모델 준비 완료 · 카메라 위치 추적을 준비하고 있습니다.', 'connecting', run);
         if (Date.now() > deadline) throw new Error('SLAM 시작 시간 초과');
         await new Promise((resolve) => setTimeout(resolve, 250));
       }

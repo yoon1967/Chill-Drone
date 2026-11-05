@@ -398,7 +398,7 @@ class LiveManager:
                         raise RuntimeError('reconstruction_busy')
                     from .live_depth import LiveDepthSession
                     self.current = LiveDepthSession(self.root, camera, image_id, self.imports,
-                        input_kind=input_kind, timestamp_basis=timestamp_basis)
+                        input_kind=input_kind, timestamp_basis=timestamp_basis, mapping=config)
             else:
                 self.current = LiveSession(self.root, camera, image_id, input_kind=input_kind, timestamp_basis=timestamp_basis)
             return self.current.stats()

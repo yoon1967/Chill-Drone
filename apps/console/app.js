@@ -10,7 +10,7 @@ import { connectCalibration } from '/calibration-view.js';
 import { OrbitControls } from '/vendor/OrbitControls.js';
 import { PlanarObjects } from '/objects.js';
 import { connectCapture } from '/capture.js';
-import { MapSource, monitorConnections } from '/map-source.js';
+import { MapSource, monitorConnections, mappingPreparation } from '/map-source.js';
 import { PointDisplay, PointBuffer } from '/point-display.js';
 import { applySceneDelta } from '/map-delta.js';
 import { renderRecording } from '/recording-view.js';
@@ -20,6 +20,11 @@ const $ = (id) => document.getElementById(id);
 const connections = monitorConnections();
 const number = (n) => Number(n).toLocaleString('ko-KR');
 const timeOf = (c) => c.source_pts_s ?? c.timestamp_s;
+import {connectMappingSettings, mappingSettings, onMappingSettings} from '/mapping-settings.js';
+import {createRescueLayer} from '/rescue-view.js';
+connectMappingSettings();
+onMappingSettings(()=>{if(run?.rescue?.render_mode==='points' && pointDisplay){pointDisplay.colorMode=null;showCloud();}});
+let rescueLayer;
 let run, root, cloud, route, frustums, grid, selected;
 let center, radius = 1, fullCenter, fullRadius = 1, direction;
 let currentIndex = 0, playing = false, previousTime = 0,
@@ -251,6 +256,15 @@ function liveStatus(state) {
   $('map-detail').textContent = available && replay.following && notices.tracking ? notices.tracking.detail : available && replay.following && notices.segment ? notices.segment.detail : available ? `최신 지도 ${state.revision}회 갱신 · ${run?.source === 'live' ? `${$('points').textContent}점 표시` : '점군 불러오는 중'}${!replay.following ? ` · 기록 버전 ${replay.applied ?? 0}` : ''} · ${state.scale?.unit === 'm' ? '미터 단위' : '임의 단위'}` :
     lifecycle === 'failed' ? '유효한 3D 지도가 생성되지 않았습니다. 입력과 카메라 보정값을 확인한 뒤 다시 시작하세요.' : lifecycle === 'complete' ? '영상 입력은 종료됐지만 유효한 지도를 초기화하지 못했습니다. 다음 시험에서는 같은 공간을 보며 카메라 위치를 옮겨 주세요.' : '카메라가 움직이며 충분한 시차와 관측점이 모이면 점이 표시됩니다.';
   $('session-detail').textContent = state.session_id ? `세션 ${state.session_id}${state.last_error ? ' · 처리 오류 발생' : ''}` : '현재 연결된 실시간 세션이 없습니다.';
+  const preparation = !['stopping', 'complete', 'failed'].includes(lifecycle) && mappingPreparation(state.depth_job);
+  $('live-tab-indicator').textContent = preparation ? '모델 준비 중' : local === 'receiving' ? '수신 중' : ['requesting', 'connecting', 'stopping'].includes(local) ? '연결 중' : '';
+  if (preparation) {
+    $('input-state').textContent = $('map-state').textContent = '모델 준비 중';
+    $('input-detail').textContent = preparation.title;
+    $('tracking-state').textContent = '모델 준비 대기';
+    $('tracking-detail').textContent = '모델 준비가 끝나면 카메라 위치 추적을 시작합니다.';
+    $('map-detail').textContent = preparation.detail;
+  }
 }
 
 function rotation(c) {
@@ -258,6 +272,7 @@ function rotation(c) {
   return new THREE.Matrix3().set(...a[0], ...a[1], ...a[2]);
 }
 function dispose() {
+  rescueLayer?.dispose(); rescueLayer = null;
   if (!root) return;
   root.traverse((object) => {
     object.geometry?.dispose();
@@ -269,7 +284,7 @@ function dispose() {
 function showCloud() {
   if (!run) return;
   const started = performance.now();
-  const stats = pointDisplay.update(run, {errorLimit: Number($('error-limit').value), colorMode: $('color-mode').value});
+  const stats = pointDisplay.update(run, {errorLimit: Number($('error-limit').value), colorMode: run.rescue?.render_mode === 'points' && mappingSettings().semantic_colors ? 'semantic' : $('color-mode').value});
   gridCells = null;
   applyPointInterval();
   Object.assign($('viewport').dataset, {pointUpdateMs: performance.now() - started,
@@ -545,9 +560,16 @@ function setMode(next, toggleControls = false) {
   cloud.material.color.set(next === 'hologram' ? 0x92f8fa : 0xffffff);
   cloud.material.needsUpdate = true;
   objectLayer.style(next);
+  cloud.visible = !run.rescue || run.rescue.render_mode === 'points';
+  $('point-size').closest('details').hidden = Boolean(run.rescue && run.rescue.render_mode !== 'points');
+  document.querySelector('[data-mode="points"]').textContent = run.rescue?.render_mode === 'points' ? '통합 점군 지도' : run.rescue ? '입체 지도' : '원본 점군';
   $('mode-detail').textContent = {objects: '특징점이 지지하는 평면 객체 · 실제 영상 표면',
     hologram: '검출된 평면의 발광 면·격자·경계와 원본 점군', points: '원본 SfM 점군 · 점 표시 필터 적용'}[next];
   $('kind').textContent = {objects: 'PLANAR OBJECTS', hologram: 'HOLOGRAM · PLANAR OBJECTS', points: '원본 3D 점군'}[next];
+  if (run.rescue) {
+    $('kind').textContent = '인명 구조 3D 지도';
+    $('mode-detail').textContent = `${run.rescue.render_mode === 'points' ? '공간 밀도를 조절한 누적 점군' : '구조물 표면'} · 사람 발견 위치 ${run.rescue.people.length}곳 · 현재 관측과 마지막 발견 구분`;
+  }
   if (run.slam) {
     $('kind').textContent = next === 'hologram' ? 'HOLOGRAM · ORB MAP' : 'ORB-SLAM3 · 특징점 지도';
     $('mode-detail').textContent = '연속 프레임의 같은 지도 점을 추적하고 카메라 위치와 희소 3D 지도를 함께 갱신합니다.';
@@ -629,6 +651,7 @@ function applyRun(value) {
     dispose();
     pointDisplay = new PointDisplay();
     root = new THREE.Group(); scene.add(root);
+    rescueLayer = createRescueLayer(THREE); root.add(rescueLayer.group);
     cloud = new THREE.Points(pointDisplay.raw.geometry, new THREE.PointsMaterial({vertexColors: true,
       size: Number($('point-size').value), sizeAttenuation: false}));
     root.add(cloud);
@@ -658,6 +681,10 @@ function applyRun(value) {
     grid = new THREE.GridHelper(gridSize, run.scale.unit === 'm' ? Math.min(gridSize * 2, 200) : 20, 0x34504e, 0x243b3f);
     grid.position.set(center.x, bounds.min.y - radius * .025, center.z); root.add(grid);
   }
+  rescueLayer?.update(run.rescue);
+  Object.assign($('viewport').dataset, {rescuePeople: run.rescue?.people?.length || 0,
+    rescueVoxels: (run.rescue?.people || []).reduce((n, p) => n + p.voxels.length, 0),
+    rescueTriangles: (run.rescue?.meshes || []).reduce((n, m) => n + m.triangles.length, 0)});
   const signature = JSON.stringify(run.cameras.map(c => [c.frame_id, c.position, c.world_from_camera_rotation]));
   if (signature !== cameraSignature) {
     const cameraLines = [];
@@ -1188,9 +1215,9 @@ connectTrackingPreview({source, following: () => replay.following});
 connectCapture({
   profiles,
   inputGate,
-  onStart(id) {
+  onStart(id, state = {}) {
     frameLatency.start(id); pendingPresentation = null; latencyStatus();
-    lastLiveState = {source: 'live', session_id: id, session_status: 'starting', status: 'starting', map_available: false};
+    lastLiveState = {...state, source: 'live', session_id: id, session_status: 'starting', status: 'starting', map_available: false};
     if (source.source === 'live') selectSource('live', true);
   },
   onFrameTiming(mark) { frameLatency.record(mark); },

@@ -471,3 +471,44 @@ test('dense live capture waits for preparation and admission, and display timeou
   assert.equal(uploads, 2);
   await f.get('camera-stop').handlers.click();
 });
+
+test('drone model preparation survives a partial UI state update and more than 65 seconds', async (t) => {
+  const originalNow = Date.now;
+  t.after(() => { Date.now = originalNow; });
+  let clock = originalNow(), polls = 0, selected = {}, handle;
+  Date.now = () => clock;
+  const ready = deferred();
+  const dense = {session_id: 'drone_map', backend: 'orb_slam3_depth', session_status: 'starting',
+    depth_job: {status: 'running', stage: 'model'}};
+  const f = fixture(t, {fetcher: (url, options, value) => {
+    if (url === '/api/live/tello/start') return reply(dense);
+    if (url.startsWith('/api/live/state')) {
+      if (++polls === 1) {
+        clock += 70000;
+        return reply({...dense, transport_ready: false,
+          depth_job: {status: 'running', stage: 'semantic_model', progress: {elapsed_seconds: 70}}});
+      }
+      ready.resolve();
+      return reply({...dense, session_status: 'receiving', transport_ready: true});
+    }
+    if (url.startsWith('/api/live/tracking')) return reply({...dense, session_status: 'receiving'});
+    return reply(value);
+  }});
+  handle = await f.connect({
+    onStart(id, state) {
+      assert.equal(state.depth_job.stage, 'model');
+      selected = {session_id: id, session_status: 'starting'};
+    },
+    onStatus(status) { f.statuses.push(status); handle?.update(selected); },
+  });
+  f.get('input-source').value = 'tello-map';
+  const starting = f.get('camera-start').handlers.click();
+  await Promise.race([ready.promise, starting]);
+  assert.equal(polls, 2);
+  assert.equal(f.requests.some(r => r.url === '/api/live/stop'), false);
+  assert.ok(f.statuses.some(status => /깊이 모델 준비 중/.test(status.message)));
+  assert.ok(f.statuses.some(status => /사람·공간 인식 모델 준비 중/.test(status.message)));
+  assert.equal(f.get('camera-stop').disabled, false);
+  await f.get('camera-stop').handlers.click();
+  await starting;
+});

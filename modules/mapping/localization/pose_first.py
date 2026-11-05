@@ -36,7 +36,7 @@ def fixed_camera_pose(result, stamp):
     return np.linalg.inv(value)
 
 
-def depth_in_pose_units(depth, anchors, tracking_size):
+def depth_in_pose_units(depth, anchors, tracking_size, excluded=None):
     """Match depth scale to the fixed monocular pose; never change its translation."""
     anchors = np.asarray(anchors, dtype=float)
     if anchors.ndim != 2 or anchors.shape[1] != 3 or len(anchors) < 8:
@@ -50,6 +50,8 @@ def depth_in_pose_units(depth, anchors, tracking_size):
         return None
     estimated = depth[uv[:, 1], uv[:, 0]]
     valid = np.isfinite(estimated) & (estimated > 0)
+    if excluded is not None:
+        valid &= ~excluded[uv[:, 1], uv[:, 0]]
     if valid.sum() < 8:
         return None
     ratios = z[valid] / estimated[valid]

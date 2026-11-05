@@ -1,5 +1,6 @@
 import * as THREE from 'three';
 import {sceneChanges, sceneToken} from './map-delta.js';
+import {mappingSettings, rescuePointColor} from './mapping-settings.js';
 
 const equal = (a, b) => a === b || Boolean(a && b && a.length === b.length && a.every((v, i) => v === b[i]));
 const evidence = scene => scene.point_observations?.schema_version === 'point-observations/1.0' ?
@@ -172,7 +173,10 @@ export class PointDisplay {
   }
   color(row, scene, mode) {
     const c = new THREE.Color();
-    if (mode === 'rgb') c.setRGB(row[4] / 255, row[5] / 255, row[6] / 255, THREE.SRGBColorSpace);
+    if (mode === 'rgb' || mode === 'semantic' || (scene.rescue?.render_mode === 'points' && scene.rescue.point_labels?.[row[0]] === 1)) {
+      const rgb = scene.rescue?.render_mode === 'points' ? rescuePointColor(row.slice(4,7),scene.rescue.point_labels?.[row[0]],scene.rescue,this.rescueStyle || mappingSettings()) : row.slice(4,7);
+      c.setRGB(rgb[0]/255,rgb[1]/255,rgb[2]/255,THREE.SRGBColorSpace);
+    }
     else {
       const bounds = scene.quality.bounds;
       const h = mode === 'error' ? Math.min(row[7] / 3, 1) : (row[2] - bounds.min[1]) / Math.max(bounds.max[1] - bounds.min[1], .001);
@@ -181,6 +185,7 @@ export class PointDisplay {
     return c.toArray();
   }
   update(scene, {errorLimit = Infinity, colorMode = 'rgb'} = {}) {
+    this.rescueStyle = mappingSettings();
     const previous = this.scene, change = sceneChanges(scene);
     const incremental = previous && change?.previousToken === sceneToken(previous) && this.errorLimit === errorLimit;
     const touched = new Set(), removed = [], upserts = [];
@@ -213,7 +218,8 @@ export class PointDisplay {
     } else if (this.cells && previous?.cameras.length !== scene.cameras.length) {
       for (const id of this.cells.fallbackIds) touched.add(id);
     }
-    const recolor = this.colorMode !== colorMode || (colorMode === 'height' &&
+    const recolor = this.colorMode !== colorMode || (scene.rescue?.render_mode === 'points' &&
+      previous?.rescue?.point_revision !== scene.rescue.point_revision) || (colorMode === 'height' &&
       JSON.stringify(previous?.quality.bounds) !== JSON.stringify(scene.quality.bounds));
     for (const id of removed) this.raw.remove(id);
     for (const row of recolor ? this.rows.values() : upserts) this.raw.upsert(row[0], row.slice(1, 4), this.color(row, scene, colorMode));

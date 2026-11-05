@@ -37,7 +37,7 @@ SLAM_SOURCE_LABEL = 'org.ssafy.mapping.source-sha256'
 
 
 def ensure_python_environment():
-    required = ['cv2', 'numpy', 'PIL', 'av', 'torch', 'transformers']
+    required = ['cv2', 'numpy', 'PIL', 'av', 'torch', 'transformers', 'ultralytics']
     missing = [name for name in required if importlib.util.find_spec(name) is None]
     try:
         if missing:
