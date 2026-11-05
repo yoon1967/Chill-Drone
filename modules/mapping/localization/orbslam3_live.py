@@ -153,7 +153,7 @@ class LiveSession:
                     "last_input_sequence": self.last_sequence if self.last_sequence >= 0 else None,
                     "recording": self.recording.stats() if getattr(self, 'recording', None) else None}
 
-    def offer(self, jpeg, pts, sequence):
+    def offer(self, jpeg, pts, sequence, *, front_tof=None):
         if not math.isfinite(pts) or not 0 <= pts <= 86400 or sequence < 0:
             raise ValueError("invalid_frame_timestamp_or_sequence")
         if len(jpeg) > 2097152 or not jpeg.startswith(b"\xff\xd8"):

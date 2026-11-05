@@ -144,7 +144,8 @@ class RecordingTests(unittest.TestCase):
         self.assertTrue(part['capture_complete'])
         self.assertNotIn('playback_error', part, part)
         self.assertEqual((part['playback']['width'], part['playback']['height']), (960, 720))
-        self.assertEqual(fake.received, ['command', 'streamon', 'streamoff'])
+        self.assertEqual([command for command in fake.received if command != 'EXT tof?'],
+            ['command', 'streamon', 'streamoff'])
 
     def test_queue_overflow_is_nonblocking_and_preserves_prefix(self):
         self.recording.limit = 1024

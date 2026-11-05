@@ -80,6 +80,7 @@ class ClassifyTest(unittest.TestCase):
         self.assertEqual(parse_ext_tof("error")["reason"], "error_response")
         self.assertEqual(parse_ext_tof(None)["reason"], "no_response")
         self.assertEqual(parse_ext_tof("ok")["reason"], "bad_format")
+        self.assertEqual(parse_ext_tof("tof inf")["reason"], "bad_format")
 
 
 class LinkWithFakeTest(unittest.TestCase):

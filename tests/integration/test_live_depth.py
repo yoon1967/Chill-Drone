@@ -31,6 +31,7 @@ class FakeWorker:
         self.tracked = []
         self.tracking_gate = None
         self.tracker_fps = None
+        self.depth_m = 2.
 
     def run(self, source, output, options, stop_event, on_preview, next_frame):
         owner = self
@@ -41,7 +42,7 @@ class FakeWorker:
                 if not owner.release.wait(5):
                     raise RuntimeError('model gate timeout')
             def estimate(self, rgb):
-                return np.full(rgb.shape[:2], 2., np.float32)
+                return np.full(rgb.shape[:2], owner.depth_m, np.float32)
         class Tracker:
             def __init__(self, output, size, original_size, camera, fps):
                 owner.tracker_fps = fps
@@ -177,6 +178,57 @@ class LiveDepthTests(unittest.TestCase):
         self.assertEqual(self.runtime.tracked, [])
         self.assertIsNone(self.session.error)
         self.assertFalse(self.session.stats()['map_available'])
+
+    def test_front_tof_stays_with_its_frame_and_corrects_only_the_forward_surface(self):
+        self.session.stop('test_reconfigure')
+        self.runtime.release.set()
+        self.session.worker.join(5)
+        self.session.recording.wait(5)
+        self.runtime.depth_m = 1.
+        self.session = LiveDepthSession(self.root, self.session.camera, 'test-image', self.manager,
+            input_kind='tello_camera', mapping={'live_policy': 'continuous'})
+        output = self.session.path / 'reconstruction'
+
+        class Source:
+            def open(self, cancelled):
+                pass
+
+            def frames(self, cancelled):
+                for sequence, distance in enumerate([.8] * 5 + [.88, .88]):
+                    stamp = 100. + sequence * .6
+                    # The last sample is too old for the corresponding frame.
+                    self.front_tof = (distance, stamp - .3 if sequence == 6 else stamp)
+                    yield jpeg, stamp
+                    wait_for(lambda: session.preview and session.preview['revision'] == sequence + 1)
+                session.stop('user_stop')
+
+            def close(self):
+                pass
+
+        session, jpeg = self.session, self.jpeg
+        adapter = TelloMapInput(None)
+        adapter.lease_until = time.monotonic() + 45
+        wait_for(lambda: session.ready)
+        adapter._run(session, Source())
+        session.worker.join(5)
+        self.assertIsNone(session.error)
+        history = output / 'history'
+        entries = [json.loads(line) for line in (history / 'index.jsonl').read_text().splitlines()]
+        self.assertFalse(entries[3]['front_tof']['corrected'])
+        self.assertTrue(entries[5]['front_tof']['corrected'])
+        self.assertIsNone(entries[6]['front_tof']['distance_m'])
+        with np.load(history / 'frames/00000006.npz') as frame:
+            depth = frame['depth']
+            self.assertAlmostEqual(float(depth[depth.shape[0] // 2, depth.shape[1] // 2]), 3.3, places=3)
+            self.assertEqual(float(depth[0, 0]), 3.)
+            self.assertAlmostEqual(float(frame['world_from_camera'][0, 3]), 3.)
+        with np.load(history / 'frames/00000007.npz') as frame:
+            np.testing.assert_array_equal(frame['depth'], 3.)
+        scene = json.loads((output / 'scene.json').read_text())
+        self.assertTrue(any(point[3] < -3.2 for point in scene['points']))
+        summary = scene['depth_mapping']['front_tof_by_map']['0']
+        self.assertEqual((summary['paired_frames'], summary['corrected_frames']), (6, 1))
+        self.assertAlmostEqual(summary['meters_per_slam_unit'], .8 / 3, delta=.003)
 
     def test_continuous_live_policy_keeps_processing_without_a_browser_ack(self):
         self.session.stop('test_reconfigure')
