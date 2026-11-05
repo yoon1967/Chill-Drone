@@ -180,7 +180,9 @@ class LiveDepthTests(unittest.TestCase):
         self.session.recording.wait(5)
         self.runtime = self.manager.depth_worker = FakeWorker()
         self.session = LiveDepthSession(self.root, self.session.camera, 'test-image', self.manager,
-            mapping={'live_policy': 'continuous'})
+            mapping={'live_policy': 'continuous', 'sample_fps': 2.5})
+        self.assertEqual(self.session.job['options']['sample_fps'], 2.5)
+        self.assertEqual(json.loads((self.session.path / 'settings.json').read_text())['sample_fps'], 2.5)
         self.runtime.release.set()
         wait_for(lambda: self.session.ready)
         self.session.offer(self.jpeg, 0., 0)

@@ -1,0 +1,5 @@
+"""Resource limits shared by live mapping and saved point-map readers."""
+DEFAULT_POINT_BUDGET = 32000
+MAX_POINT_BUDGET = 32000
+MAX_PERSON_POINTS = 2000
+MAX_PREVIEW_POINTS = MAX_POINT_BUDGET + MAX_PERSON_POINTS

@@ -36,12 +36,18 @@ class MappingLauncherTests(unittest.TestCase):
         call.assert_not_called()
         gpu.assert_not_called()
 
+    def test_ordinary_start_does_not_install_packages_without_internet(self):
+        with patch.object(self.launcher.importlib.util, 'find_spec', return_value=None), \
+                patch.object(self.launcher.subprocess, 'call') as install:
+            self.assertFalse(self.launcher.ensure_python_environment())
+        install.assert_not_called()
+
     def test_missing_torch_uses_detected_gpu_and_installs_into_the_server_python(self):
         with patch.object(self.launcher.importlib.util, 'find_spec',
                 side_effect=lambda name: None if name in {'torch', 'transformers'} else object()), \
                 patch.object(self.launcher.subprocess, 'run', return_value=self.reply('NVIDIA GPU')), \
                 patch.object(self.launcher.subprocess, 'call', return_value=0) as call:
-            self.assertTrue(self.launcher.ensure_python_environment())
+            self.assertTrue(self.launcher.ensure_python_environment(allow_install=True))
         commands = [item.args[0] for item in call.call_args_list]
         self.assertEqual(len(commands), 2)
         self.assertEqual(commands[0][:5], [self.launcher.sys.executable, '-B', '-m', 'pip', 'install'])
@@ -56,7 +62,7 @@ class MappingLauncherTests(unittest.TestCase):
                     patch.object(self.launcher.subprocess, 'run', **(
                         {'side_effect': result} if isinstance(result, Exception) else {'return_value': result})), \
                     patch.object(self.launcher.subprocess, 'call', return_value=0) as call:
-                self.assertTrue(self.launcher.ensure_python_environment())
+                self.assertTrue(self.launcher.ensure_python_environment(allow_install=True))
                 self.assertEqual(call.call_args_list[0].args[0][-1], 'https://download.pytorch.org/whl/cpu')
 
     def test_existing_torch_is_preserved_when_other_packages_are_missing(self):
@@ -64,7 +70,7 @@ class MappingLauncherTests(unittest.TestCase):
                 side_effect=lambda name: None if name == 'transformers' else object()), \
                 patch.object(self.launcher.subprocess, 'run') as gpu, \
                 patch.object(self.launcher.subprocess, 'call', return_value=0) as call:
-            self.assertTrue(self.launcher.ensure_python_environment())
+            self.assertTrue(self.launcher.ensure_python_environment(allow_install=True))
         self.assertEqual(call.call_count, 1)
         self.assertIn('-r', call.call_args_list[0].args[0])
         gpu.assert_not_called()
@@ -73,7 +79,7 @@ class MappingLauncherTests(unittest.TestCase):
         with patch.object(self.launcher.importlib.util, 'find_spec',
                 side_effect=lambda name: None if name in {'pip', 'transformers'} else object()), \
                 patch.object(self.launcher.subprocess, 'call', return_value=0) as call:
-            self.assertTrue(self.launcher.ensure_python_environment())
+            self.assertTrue(self.launcher.ensure_python_environment(allow_install=True))
         self.assertEqual(call.call_args_list[0].args[0], [self.launcher.sys.executable, '-B', '-m', 'ensurepip'])
 
     def test_failed_package_install_stops_setup(self):
@@ -82,11 +88,11 @@ class MappingLauncherTests(unittest.TestCase):
                     side_effect=lambda name: None if name == 'torch' else object()), \
                     patch.object(self.launcher.subprocess, 'run', return_value=self.reply('GPU')), \
                     patch.object(self.launcher.subprocess, 'call', side_effect=codes) as call:
-                self.assertFalse(self.launcher.ensure_python_environment())
+                self.assertFalse(self.launcher.ensure_python_environment(allow_install=True))
                 self.assertEqual(call.call_count, len(codes))
         with patch.object(self.launcher.importlib.util, 'find_spec', side_effect=lambda name: None if name == 'transformers' else object()), \
                 patch.object(self.launcher.subprocess, 'call', side_effect=OSError('cannot start Python')):
-            self.assertFalse(self.launcher.ensure_python_environment())
+            self.assertFalse(self.launcher.ensure_python_environment(allow_install=True))
 
     def test_setup_failure_never_starts_server_or_opens_browser(self):
         with patch.object(self.launcher.sys, 'argv', [str(LAUNCHER), '--no-browser']), \
@@ -99,6 +105,29 @@ class MappingLauncherTests(unittest.TestCase):
         docker.assert_not_called()
         server.assert_not_called()
         browser.assert_not_called()
+
+    def test_model_preparation_is_explicit_and_does_not_start_viewer(self):
+        with patch.object(self.launcher.sys, 'argv', [str(LAUNCHER), '--prepare-models']), \
+                patch.object(self.launcher.Path, 'is_file', return_value=True), \
+                patch.object(self.launcher, 'ensure_python_environment', return_value=True) as packages, \
+                patch.object(self.launcher.subprocess, 'call', return_value=0) as prepare, \
+                patch.object(self.launcher.subprocess, 'Popen') as viewer:
+            self.assertEqual(self.launcher.main(), 0)
+        packages.assert_called_once_with(allow_install=True)
+        self.assertEqual(prepare.call_args.args[0][-2:], ['modules.mapping.data.prepare_models', '--download'])
+        viewer.assert_not_called()
+
+    def test_missing_model_files_stop_before_docker_and_viewer(self):
+        from modules.mapping.data.model_assets import ModelAssetsMissing
+        with patch.object(self.launcher.sys, 'argv', [str(LAUNCHER), '--no-browser']), \
+                patch.object(self.launcher.Path, 'is_file', return_value=True), \
+                patch.object(self.launcher, 'ensure_python_environment', return_value=True), \
+                patch('modules.mapping.data.model_assets.require_local_models', side_effect=ModelAssetsMissing('depth')), \
+                patch.object(self.launcher, 'ensure_slam_image') as docker, \
+                patch.object(self.launcher.subprocess, 'Popen') as viewer:
+            self.assertEqual(self.launcher.main(), 1)
+        docker.assert_not_called()
+        viewer.assert_not_called()
 
     def test_source_change_invalidates_the_backend_but_generated_build_files_do_not(self):
         with tempfile.TemporaryDirectory() as folder:

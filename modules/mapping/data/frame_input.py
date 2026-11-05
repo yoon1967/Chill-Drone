@@ -99,6 +99,9 @@ def validate_options(options, summary):
     if mode not in {'sfm', 'depth_rgbd'}:
         raise ValueError('invalid_reconstruction_mode')
     result['mode'] = mode
+    if mode == 'depth_rgbd':
+        from modules.mapping.data.rescue_mapping import mapping_sample_fps
+        result['sample_fps'] = mapping_sample_fps(result)
     window = options.get('render_window_s')
     if window is not None and (type(window) not in (int, float) or not math.isfinite(window) or not 1 <= window <= 120):
         raise ValueError('invalid_render_window_s')

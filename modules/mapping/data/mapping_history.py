@@ -15,6 +15,7 @@ import threading
 import zipfile
 
 import numpy as np
+from .mapping_limits import MAX_PREVIEW_POINTS
 
 SCHEMA = 'pose-depth-history/1.0'
 
@@ -33,7 +34,7 @@ class HistoryWriter:
         self.manifest = {'schema_version': SCHEMA, 'status': 'recording', 'frames': 0,
             'coordinate_system': 'native ORB map; camera x-right/y-down/z-forward',
             'scale': 'arbitrary; depth converted to fixed monocular pose units',
-            'render_window_s': render_window_s, 'preview_points_limit': 12000,
+            'render_window_s': render_window_s, 'preview_points_limit': MAX_PREVIEW_POINTS,
             'observation_fields': ['depth', 'rgb', 'world_from_camera', 'intrinsics', 'map_id', 'depth_scale'],
             'integration': 'unproject depth with intrinsics, transform by world_from_camera; integrate only within the same map_id until maps are explicitly aligned'}
         self.write_json(self.root / 'manifest.json', self.manifest)
@@ -173,7 +174,7 @@ class HistoryReader:
             if path.is_symlink() or not path.resolve().is_relative_to(self.root.resolve()):
                 raise ValueError('invalid_history_chunk_path')
             with zipfile.ZipFile(path) as archive:
-                for name, limit in [('points.npy', 12000 * 6 * 4 + 4096), ('camera_path.npy', 300 * 3 * 4 + 4096)]:
+                for name, limit in [('points.npy', MAX_PREVIEW_POINTS * 6 * 4 + 4096), ('camera_path.npy', 300 * 3 * 4 + 4096)]:
                     if archive.getinfo(name).file_size > limit:
                         raise ValueError('history_preview_too_large')
                 points = np.load(io.BytesIO(archive.read('points.npy')), allow_pickle=False)

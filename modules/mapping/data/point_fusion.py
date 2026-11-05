@@ -3,21 +3,24 @@ from __future__ import annotations
 
 import cv2
 import numpy as np
+from .mapping_limits import DEFAULT_POINT_BUDGET
 
 
 class SemanticSurface:
     """Confidence-weighted voxel centroids with a fixed point budget.
 
     The world grid has a fixed origin. When full, adjacent cells are merged at
-    twice the spacing, including negative coordinates and old observations.
+    a fixed additional spacing, including negative coordinates and old observations.
     Persistent and temporary work are bounded by the budget plus one image.
     No volume, triangles, normals, or per-frame Python voxel loop is created.
     """
-    def __init__(self, voxel_size, *, max_cells=8000):
-        if not np.isfinite(voxel_size) or voxel_size <= 0 or type(max_cells) is not int or max_cells < 16:
+    def __init__(self, voxel_size, *, max_cells=DEFAULT_POINT_BUDGET, spacing_increment=.005):
+        if (not np.isfinite(voxel_size) or voxel_size <= 0 or type(max_cells) is not int or max_cells < 16
+                or not np.isfinite(spacing_increment) or spacing_increment <= 0):
             raise ValueError('invalid_point_fusion_budget')
         self.size, self.max_cells = float(voxel_size), max_cells
         self.base_size = self.size
+        self.spacing_increment = float(spacing_increment)
         self.frames = self.revision = self.coarsenings = 0
         self.keys = np.empty((0, 3), np.int64)
         self.xyz = self.rgb = np.empty((0, 3), np.float64)
@@ -32,7 +35,14 @@ class SemanticSurface:
         return self.keys
 
     def _merge(self, keys, xyz, rgb, weights, votes):
-        unique, inverse = np.unique(keys, axis=0, return_inverse=True)
+        # Sort numeric columns directly; np.unique(axis=0) uses structured-row
+        # comparisons that dominate fusion time once the point budget grows.
+        order = np.lexsort((keys[:, 2], keys[:, 1], keys[:, 0]))
+        ordered = keys[order]
+        starts = np.r_[True, np.any(ordered[1:] != ordered[:-1], axis=1)]
+        inverse = np.empty(len(keys), np.intp)
+        inverse[order] = np.cumsum(starts) - 1
+        unique = ordered[starts]
         total = np.bincount(inverse, weights=weights, minlength=len(unique))
         self.xyz = np.column_stack([np.bincount(inverse, weights=xyz[:, i]*weights, minlength=len(unique))/total for i in range(3)])
         self.rgb = np.column_stack([np.bincount(inverse, weights=rgb[:, i]*weights, minlength=len(unique))/total for i in range(3)])
@@ -46,9 +56,11 @@ class SemanticSurface:
         if type(budget) is not int or budget < 1:
             raise ValueError('invalid_point_fusion_budget')
         while len(self.keys) > budget:
-            self.size *= 2
             self.coarsenings += 1
-            self._merge(np.floor_divide(self.keys, 2), self.xyz, self.rgb, self.weights, self.votes)
+            self.size = self.base_size + self.coarsenings * self.spacing_increment
+            # A non-nested grid needs the actual retained centroids, not integer
+            # division of the preceding grid indices (especially around zero).
+            self._merge(np.floor(self.xyz / self.size).astype(np.int64), self.xyz, self.rgb, self.weights, self.votes)
         self._cached_points = None
         self._cached_labels = None
 
@@ -70,8 +82,8 @@ class SemanticSurface:
             self.revision += 1
         self.frames += 1
 
-    def points(self, limit=12000):
-        if len(self.keys) > limit:
+    def points(self, limit=None):
+        if limit is not None and len(self.keys) > limit:
             self.compact(limit)
         if self._cached_points is None:
             positions = np.round(self.xyz, 5).tolist()
@@ -81,7 +93,8 @@ class SemanticSurface:
 
     def metadata(self):
         return dict(point_budget=self.max_cells, static_points=len(self.keys), voxel_size=self.size,
-            base_voxel_size=self.base_size, coarsenings=self.coarsenings, observations=self.frames,
+            base_voxel_size=self.base_size, spacing_increment=self.spacing_increment,
+            spacing_policy='fixed_increment', coarsenings=self.coarsenings, observations=self.frames,
             coverage_bounds=[v.tolist() for v in self.bounds] if self.bounds is not None else [],
             policy='spatial_voxel_merge_no_age_eviction')
 

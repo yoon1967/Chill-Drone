@@ -73,8 +73,19 @@ class DualSegmentationProcessor:
         self.yolo = YOLO(args.yolo_model)
         if self.yolo.names.get(0) != "person" or getattr(self.yolo, "task", None) != "segment":
             raise RuntimeError("yolo_model_must_segment_person_class_zero")
-        self.processor = SegformerImageProcessor.from_pretrained(args.semantic_model)
-        self.semantic = SegformerForSemanticSegmentation.from_pretrained(args.semantic_model).to(self.device).eval()
+        # Tello Wi-Fi normally has no internet. Cached models must not wait for
+        # remote metadata or retry optional files before processing the stream.
+        try:
+            self.processor = SegformerImageProcessor.from_pretrained(args.semantic_model, local_files_only=True)
+            semantic = SegformerForSemanticSegmentation.from_pretrained(args.semantic_model, local_files_only=True)
+        except OSError:
+            if getattr(args, 'local_models_only', False):
+                raise RuntimeError('로컬 공간 인식 모델을 읽지 못했습니다. 인터넷 연결 상태에서 '
+                    'start_3d_mapping.cmd --prepare-models로 모델을 준비하세요.') from None
+            print('Downloading the scene recognition model for first use. Keep internet available until setup finishes.', flush=True)
+            self.processor = SegformerImageProcessor.from_pretrained(args.semantic_model)
+            semantic = SegformerForSemanticSegmentation.from_pretrained(args.semantic_model)
+        self.semantic = semantic.to(self.device).eval()
         if getattr(args, 'fp16', False) and self.device == 'cuda':
             self.semantic.half()
         self.id2label = {int(key): value for key, value in self.semantic.config.id2label.items()}

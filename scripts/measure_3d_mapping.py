@@ -252,6 +252,7 @@ def main():
     parser.add_argument('--duration', type=float, default=40)
     parser.add_argument('--warmup-inference', action='store_true', help='Measure steady state after an explicit synthetic inference/volume warmup, reported separately')
     parser.add_argument('--playwright-module', required=True)
+    parser.add_argument('--point-budget', type=int, help='Override the implementation default for a matched baseline run')
     parser.add_argument('--report', type=Path, required=True)
     args = parser.parse_args()
     root = args.implementation_root.resolve()
@@ -354,8 +355,11 @@ def main():
         source_errors = []
         initial_gpu = subprocess.check_output(['nvidia-smi','--query-gpu=name,memory.total,memory.used,driver_version','--format=csv,noheader'], text=True).strip()
         try:
-            state = live.start(dict(width=camera['width'], height=camera['height'], fps=24, camera=camera,
-                semantic_mapping=True, depth_resolution=384, live_policy='continuous'),
+            live_options = dict(width=camera['width'], height=camera['height'], fps=24, camera=camera,
+                semantic_mapping=True, depth_resolution=384, live_policy='continuous')
+            if args.point_budget is not None:
+                live_options['point_budget'] = args.point_budget
+            state = live.start(live_options,
                 input_kind='tello_camera', timestamp_basis='replayed_udp_receive_monotonic', image_id=image_id)
             session = live.require(state['session_id'])
             deadline = time.monotonic()+240

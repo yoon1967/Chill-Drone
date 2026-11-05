@@ -33,11 +33,13 @@
     <details id="rescue-settings" class="rescue-settings"><summary>인명 구조 지도 · 사람 표시와 복원 품질</summary>
       <div class="rescue-settings-fields"><label><input id="rescue-enabled" type="checkbox" checked> 사람·공간을 구분해 점군 통합</label>
       <label>복원 세밀도 <select id="rescue-resolution"><option value="256">빠르게</option><option value="384" selected>균형</option><option value="518">세밀하게</option></select></label>
-      <label>지도 점 밀도 <select id="rescue-point-budget"><option value="4000">가볍게 · 최대 4,000점</option><option value="8000" selected>균형 · 최대 8,000점</option><option value="10000">자세히 · 최대 10,000점</option></select></label>
+      <label>지도에 사용할 초당 프레임 <input id="rescue-sample-fps" type="number" value="5" min="0.1" max="15" step="any" aria-describedby="rescue-sampling-note"></label>
+      <label>지도 점 밀도 <select id="rescue-point-budget"><option value="4000">최소 부하 · 최대 4,000점</option><option value="8000">가볍게 · 최대 8,000점</option><option value="10000">기존 상세 · 최대 10,000점</option><option value="16000">균형 · 최대 16,000점</option><option value="32000" selected>자세히 · 최대 32,000점</option></select></label>
       <label>사람 색상 <input id="rescue-person-color" type="color" value="#ff3030"></label>
       <label><input id="rescue-person-outline" type="checkbox" checked> 사람 3D 외곽선</label>
       <label><input id="rescue-semantic-colors" type="checkbox"> 구조물 구분 색상</label></div>
-      <p>같은 공간의 점을 합치고, 넓어지면 전체 지도의 점 간격을 조절합니다. 이전 구간을 시간으로 지우지 않습니다. 사람 색상·외곽선은 보는 중에도 바꿀 수 있으며 지도 밀도는 다음 지도부터 적용됩니다.</p>
+      <p id="rescue-sampling-note">초당 5프레임 목표 · 약 0.2초마다 1장</p>
+      <p>초당 프레임은 지도 복원에 선택할 목표량입니다. 카메라 촬영·화면 표시 FPS와 다르며 처리 속도에 따라 실제 반영량은 줄 수 있습니다. 변경한 프레임 수와 지도 밀도는 다음 지도부터 적용됩니다. 사람 색상·외곽선은 보는 중에도 바꿀 수 있습니다.</p>
     </details>
     <div id="mapping-panel" role="tabpanel" aria-labelledby="tab-saved">
     <div id="camera-actions" class="camera-actions" hidden>
@@ -117,7 +119,7 @@
         <div id="import-summary" hidden>
           <div id="import-options" hidden><h2>복원 설정</h2>
             <label>복원 방식 <select id="import-mode"><option value="depth_rgbd" selected>빠른 복원 · 영상과 지도 함께 보기</option><option value="sfm">기존 SfM 복원 · 완료 후 보기</option></select></label>
-            <label id="import-sampling">영상 1초당 복원할 프레임 <input id="import-sample-fps" type="number" value="5" min="0.1" max="30" step="0.1" aria-describedby="saved-sampling-note"></label>
+            <label id="import-sampling">영상 1초당 복원할 프레임 <input id="import-sample-fps" type="number" value="5" min="0.1" max="15" step="any" aria-describedby="saved-sampling-note"></label>
             <label id="import-frame-timing">프레임 촬영 FPS <input id="import-frame-fps" type="number" value="2" min="0.1" max="240" step="0.1"></label>
             <p id="saved-sampling-note">모델 준비가 끝나면 선택한 프레임을 순서대로 복원합니다. 현재 프레임의 저장과 화면 표시를 마친 뒤 다음 프레임으로 진행합니다. AI 추정 깊이는 실측 치수가 아닙니다.</p>
     <div id="profile-slot-saved">

@@ -35,7 +35,11 @@ test('live reconstruction shows actual model preparation, then themed controls a
       await page.route('**/api/live', route => route.fulfill({json: {enabled: true}}));
       await page.route('**/api/drones/state*', route => route.fulfill({json: {connected: false}}));
       await page.route('**/api/tello', route => route.fulfill({json: {enabled: false}}));
+      // An existing selected saved map must not navigate this isolated live test
+      // away from its mocked camera session during application startup.
+      await page.route('**/api/import/library*', route => route.fulfill({json: {items: [], initial: null}}));
       await page.route('**/api/live/start', route => {
+        assert.equal(route.request().postDataJSON().sample_fps, 2.5);
         active = true; return route.fulfill({json: state()});
       });
       await page.route('**/api/live/state*', route => route.fulfill({json: state()}));
@@ -53,13 +57,19 @@ test('live reconstruction shows actual model preparation, then themed controls a
       await page.route('**/api/import/preview-frame?*', route => route.fulfill({contentType: 'image/png',
         body: Buffer.from('iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mP8/x8AAwMCAO+aWQ0AAAAASUVORK5CYII=', 'base64')}));
       await page.goto(url + '/#live');
+      await page.locator('#rescue-settings summary').click();
+      await page.locator('#rescue-sample-fps').fill('2.5');
       await page.waitForFunction(() => !document.querySelector('#camera-start').disabled);
       // The legacy input panel is tucked inside the result workspace. Exercise
       // its real capture handler, then use the visible live reconstruction UI.
       await page.locator('#camera-start').evaluate(button => button.click());
       for (const [stage, title] of [['model', '깊이 모델 준비 중'], ['semantic_model', '사람·공간 인식 모델 준비 중']]) {
         job.stage = stage;
-        await page.waitForFunction(title => document.querySelector('#live-progressive-workspace h2')?.textContent === title, title);
+        await page.waitForFunction(title => document.querySelector('#live-progressive-workspace h2')?.textContent === title, title, {timeout: 8000}).catch(async error => {
+          const status = await page.evaluate(() => ({hash: location.hash, camera: document.querySelector('#camera-status')?.textContent,
+            input: document.querySelector('#input-state')?.textContent, title: document.querySelector('#live-progressive-workspace h2')?.textContent}));
+          throw new Error(`${error.message}: ${JSON.stringify({active, errors, status})}`);
+        });
         assert.equal(await page.locator('#live-progressive-state').textContent(), title);
         assert.equal(await page.locator('#input-state').textContent(), '모델 준비 중');
         assert.equal(await page.locator('#map-state').textContent(), '모델 준비 중');

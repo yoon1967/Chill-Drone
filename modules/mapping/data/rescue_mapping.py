@@ -5,18 +5,26 @@ surface, never a guessed full body. Static point fusion and sightings are separa
 """
 from __future__ import annotations
 
-from pathlib import Path
 import math
 import re
 import time
 
 import cv2
 import numpy as np
+from .mapping_limits import DEFAULT_POINT_BUDGET, MAX_POINT_BUDGET, MAX_PREVIEW_POINTS
 
 CLASSES = ('unknown', 'person', 'wall', 'floor', 'ceiling', 'table', 'chair', 'door', 'windowpane')
 PERSON = 1
 SCHEMA = 'rescue-semantic-map/1.0'
 DEFAULT_COLOR = '#ff3030'
+
+
+def mapping_sample_fps(value):
+    """Selected depth-map frames per second; tracking has its own 15 Hz ceiling."""
+    rate = value.get('sample_fps', 5)
+    if type(rate) not in (int, float) or not math.isfinite(rate) or not .1 <= rate <= 15:
+        raise ValueError('invalid_sample_fps')
+    return rate
 
 
 def mapping_options(value):
@@ -36,8 +44,8 @@ def mapping_options(value):
     policy = value.get('live_policy', 'sequential')
     if policy not in ('sequential', 'continuous'):
         raise ValueError('invalid_live_policy')
-    budget = value.get('point_budget', 8000)
-    if type(budget) is not int or not 1000 <= budget <= 10000:
+    budget = value.get('point_budget', DEFAULT_POINT_BUDGET)
+    if type(budget) is not int or not 1000 <= budget <= MAX_POINT_BUDGET:
         raise ValueError('invalid_point_budget')
     return dict(semantic_mapping=enabled, depth_resolution=resolution, person_color=color.lower(),
                 person_outline=outline, live_policy=policy, point_budget=budget)
@@ -45,14 +53,23 @@ def mapping_options(value):
 
 class SemanticEstimator:
     """Reuse the perception team's two models, returning source-frame masks only."""
-    def __init__(self):
+    def __init__(self, *, allow_download=False):
         from modules.perception.inference.tello_dual_segmentation import DualSegmentationProcessor, parser
         import torch
         args = parser().parse_args([])
-        # Model weights belong in the runtime cache, not a new repository artifact.
-        checkpoint = Path(torch.hub.get_dir()) / 'checkpoints' / args.yolo_model
-        checkpoint.parent.mkdir(parents=True, exist_ok=True)
+        from .model_assets import cached_snapshot, person_checkpoint, ModelAssetsMissing
+        checkpoint = person_checkpoint()
+        if not checkpoint.is_file():
+            if not allow_download:
+                raise ModelAssetsMissing(args.yolo_model)
+            checkpoint.parent.mkdir(parents=True, exist_ok=True)
+        try:
+            args.semantic_model = str(cached_snapshot(args.semantic_model))
+        except ModelAssetsMissing:
+            if not allow_download:
+                raise
         args.yolo_model = str(checkpoint)
+        args.local_models_only = not allow_download
         args.yolo_size = 384
         args.fp16 = torch.cuda.is_available()
         self.processor = DualSegmentationProcessor(args)
@@ -194,7 +211,10 @@ class RescueMap:
         if map_id != self.map_id:
             if self.surface:
                 self.surface.close()
-            self.surface = SemanticSurface(size, max_cells=self.options['point_budget'])
+            # Convert the fixed .005 depth-unit step once into this map's
+            # coordinate scale. Later frames and the current grid cannot alter it.
+            self.surface = SemanticSurface(size, max_cells=self.options['point_budget'],
+                spacing_increment=max(1e-6, .005 * scale))
             self.sightings = PersonSightings(max(1e-5, .06 * scale))
             self.map_id = map_id
             self.chunk_started = stamp
@@ -240,7 +260,7 @@ def validate_payload(value):
     if value.get('render_mode') not in (None, 'points'):
         raise ValueError('invalid_rescue_render_mode')
     labels = value.get('point_labels', [])
-    if not isinstance(labels, list) or len(labels) > 12000 or any(type(v) is not int or not 0 <= v < len(CLASSES) for v in labels):
+    if not isinstance(labels, list) or len(labels) > MAX_PREVIEW_POINTS or any(type(v) is not int or not 0 <= v < len(CLASSES) for v in labels):
         raise ValueError('invalid_rescue_point_labels')
     def vectors(rows, maximum, *, bounds=False):
         array = np.asarray(rows, dtype=float)

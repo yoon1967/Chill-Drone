@@ -29,6 +29,13 @@ test('bounded point map, red person voxels, editable appearance and archived rep
       await page.locator('#rescue-settings summary').click();
       if (process.env.MAPPING_RESCUE_SCREENSHOT) await page.screenshot({path: process.env.MAPPING_RESCUE_SCREENSHOT, fullPage: true});
       assert.equal(await page.locator('#rescue-person-color').inputValue(), '#ff3030');
+      await page.locator('#rescue-sample-fps').fill('2.5');
+      assert.equal(await page.locator('#import-sample-fps').inputValue(), '2.5');
+      assert.equal(await page.locator('#rescue-sampling-note').textContent(), '초당 2.5프레임 목표 · 약 0.4초마다 1장');
+      await page.locator('#rescue-sample-fps').fill('16');
+      assert.equal(await page.locator('#rescue-sample-fps').evaluate(element => element.checkValidity()), false);
+      assert.equal(await page.evaluate(async () => { try { (await import('/mapping-settings.js')).mappingOptions(); return false; } catch { return true; } }), true);
+      await page.locator('#rescue-sample-fps').fill('2.5');
       await page.locator('#rescue-person-color').fill('#00ccff');
       await page.locator('#rescue-person-outline').uncheck();
       await page.locator('#rescue-point-budget').selectOption('4000');
@@ -37,6 +44,13 @@ test('bounded point map, red person voxels, editable appearance and archived rep
       await page.waitForFunction(() => Number(document.getElementById('viewport').dataset.rescueVoxels) > 0);
       await page.locator('#rescue-settings summary').click();
       assert.equal(await page.locator('#rescue-person-color').inputValue(), '#00ccff');
+      assert.equal(await page.locator('#rescue-sample-fps').inputValue(), '2.5');
+      await page.locator('#import-mode').evaluate(element => { element.value='sfm'; element.dispatchEvent(new Event('change')); });
+      await page.locator('#import-sample-fps').evaluate(element => { element.value='30'; element.dispatchEvent(new Event('input')); });
+      assert.equal(await page.locator('#import-sample-fps').getAttribute('max'), '30');
+      assert.equal(await page.locator('#rescue-sample-fps').inputValue(), '2.5');
+      await page.locator('#import-mode').evaluate(element => { element.value='depth_rgbd'; element.dispatchEvent(new Event('change')); });
+      assert.equal(await page.locator('#import-sample-fps').inputValue(), '2.5');
       assert.equal(await page.locator('#rescue-person-outline').isChecked(), false);
       assert.equal(await page.locator('#rescue-point-budget').inputValue(), '4000');
       const library = await (await page.request.get(info.url + '/api/import/library')).json();
@@ -48,7 +62,7 @@ test('bounded point map, red person voxels, editable appearance and archived rep
       assert.ok(replay.rescue.people[0].voxels.length > 0);
       assert.equal(replay.rescue.render_mode, 'points');
       assert.equal(replay.rescue.mesh, undefined);
-      assert.ok(replay.points.length <= 10000);
+      assert.ok(replay.points.length <= replay.rescue.point_fusion.point_budget + 2000);
       assert.equal(replay.rescue.point_labels.length, replay.points.length);
       const archive = await page.request.get(`${info.url}/api/import/history.zip?id=${id}`);
       assert.equal(archive.status(), 200);
@@ -75,13 +89,15 @@ test('bounded point map, red person voxels, editable appearance and archived rep
       await page.waitForFunction(() => Number(document.getElementById('progressive-viewport').dataset.rescueVoxels) > 0);
       assert.equal(await page.locator('#progressive-viewport canvas').isVisible(), true);
       assert.ok(Number(await page.locator('#progressive-viewport').getAttribute('data-point-count')) > 0);
-      assert.ok(Number(await page.locator('#progressive-viewport').getAttribute('data-point-buffer-capacity')) <= 16384);
+      assert.ok(Number(await page.locator('#progressive-viewport').getAttribute('data-point-buffer-capacity')) <= 2**Math.ceil(Math.log2(Math.max(1024,replay.rescue.point_fusion.point_budget+2000))));
       const buffer = await page.locator('#progressive-viewport').getAttribute('data-point-attribute-id');
       await page.locator('#progressive-seek').fill('0.2');
       await page.locator('#progressive-seek-go').click();
       await page.waitForFunction(() => document.getElementById('progressive-viewport').dataset.pointRevision === '2');
       assert.equal(await page.locator('#progressive-viewport').getAttribute('data-point-attribute-id'), buffer);
       await page.setViewportSize({width: 390, height: 844});
+      assert.equal(await page.locator('#rescue-sample-fps').isVisible(), true);
+      assert.ok(await page.evaluate(() => document.documentElement.scrollWidth <= innerWidth));
       assert.equal(await page.locator('#rescue-person-color').isVisible(), true);
       assert.deepEqual(errors, []);
     } finally {

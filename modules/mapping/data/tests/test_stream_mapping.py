@@ -13,23 +13,28 @@ class StreamMappingTests(unittest.TestCase):
     def test_depth_model_reuses_cached_files_without_online_lookup(self):
         torch, transformers = MagicMock(), MagicMock()
         torch.cuda.is_available.return_value = False
-        with patch.dict('sys.modules', {'torch': torch, 'transformers': transformers}):
+        with patch.dict('sys.modules', {'torch': torch, 'transformers': transformers}), \
+                patch('modules.mapping.data.stream_mapping.cached_snapshot', return_value=Path('local-depth-model')):
             estimator = DepthEstimator()
         self.assertEqual(estimator.device, 'cpu')
         transformers.AutoImageProcessor.from_pretrained.assert_called_once_with(
-            'depth-anything/Depth-Anything-V2-Metric-Indoor-Small-hf', use_fast=False, local_files_only=True)
+            'local-depth-model', use_fast=False, local_files_only=True)
         transformers.AutoModelForDepthEstimation.from_pretrained.assert_called_once_with(
-            'depth-anything/Depth-Anything-V2-Metric-Indoor-Small-hf', local_files_only=True)
+            'local-depth-model', local_files_only=True)
 
-    def test_depth_model_downloads_when_the_cache_is_missing(self):
+    def test_only_explicit_preparation_can_download_missing_depth_weights(self):
+        from modules.mapping.data.model_assets import ModelAssetsMissing
         torch, transformers = MagicMock(), MagicMock()
         torch.cuda.is_available.return_value = False
         model = MagicMock()
-        transformers.AutoModelForDepthEstimation.from_pretrained.side_effect = [OSError('not cached'), model]
-        with patch.dict('sys.modules', {'torch': torch, 'transformers': transformers}):
-            DepthEstimator()
-        self.assertEqual(transformers.AutoModelForDepthEstimation.from_pretrained.call_count, 2)
-        self.assertNotIn('local_files_only', transformers.AutoModelForDepthEstimation.from_pretrained.call_args.kwargs)
+        transformers.AutoModelForDepthEstimation.from_pretrained.return_value = model
+        with patch.dict('sys.modules', {'torch': torch, 'transformers': transformers}), \
+                patch('modules.mapping.data.stream_mapping.cached_snapshot', side_effect=ModelAssetsMissing('depth')):
+            with self.assertRaises(ModelAssetsMissing):
+                DepthEstimator()
+            transformers.AutoModelForDepthEstimation.from_pretrained.assert_not_called()
+            DepthEstimator(allow_download=True)
+        self.assertFalse(transformers.AutoModelForDepthEstimation.from_pretrained.call_args.kwargs['local_files_only'])
         model.to.assert_called_once_with('cpu')
 
     def test_snapshot_write_recovers_from_a_windows_reader_lock(self):

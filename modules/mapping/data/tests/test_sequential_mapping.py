@@ -12,12 +12,12 @@ from modules.mapping.data.stream_mapping import run
 
 
 class SequentialMappingTests(unittest.TestCase):
-    def pipeline(self, output, events, estimator_gate=None, presentation_gate=None, stop=None):
+    def pipeline(self, output, events, estimator_gate=None, presentation_gate=None, stop=None, sample_fps=5, frame_count=3):
         rgb = np.full((32, 32, 3), 120, dtype=np.uint8)
         def source(*args):
-            for number in range(1, 4):
+            for number in range(1, frame_count+1):
                 events.append(('read', number))
-                yield number, (number - 1) * .2, rgb, (32, 32)
+                yield number, (number - 1) / sample_fps, rgb, (32, 32)
         class Estimator:
             def __init__(self):
                 events.append(('model', 0))
@@ -51,8 +51,14 @@ class SequentialMappingTests(unittest.TestCase):
                 if not presentation_gate[1].wait(3):
                     raise RuntimeError('test presentation gate timed out')
         with patch('modules.mapping.data.stream_mapping.frames', side_effect=source):
-            return run('unused', output, {'frame_fps': 5, 'sample_fps': 5},
+            return run('unused', output, {'frame_fps': sample_fps, 'sample_fps': sample_fps},
                 estimator_factory=Estimator, tracker_factory=Tracker, stop_event=stop, on_preview=published)
+
+    def test_selected_15_fps_is_not_silently_limited_to_10(self):
+        with tempfile.TemporaryDirectory() as directory:
+            output = Path(directory) / 'result'
+            self.pipeline(output, [], sample_fps=15, frame_count=15)
+            self.assertEqual(json.loads((output / 'progress.json').read_text())['processed'], 15)
 
     def test_each_frame_is_recorded_and_presented_before_reading_the_next(self):
         with tempfile.TemporaryDirectory() as directory:
