@@ -29,6 +29,8 @@ class FakeWorker:
     def __init__(self):
         self.loading, self.release = threading.Event(), threading.Event()
         self.tracked = []
+        self.tracking_gate = None
+        self.tracker_fps = None
 
     def run(self, source, output, options, stop_event, on_preview, next_frame):
         owner = self
@@ -41,10 +43,13 @@ class FakeWorker:
             def estimate(self, rgb):
                 return np.full(rgb.shape[:2], 2., np.float32)
         class Tracker:
-            def __init__(self, *args):
-                pass
+            def __init__(self, output, size, original_size, camera, fps):
+                owner.tracker_fps = fps
             def track(self, rgb, stamp):
                 owner.tracked.append(stamp)
+                if len(owner.tracked) == 1 and owner.tracking_gate:
+                    if not owner.tracking_gate.wait(5):
+                        raise RuntimeError('tracker gate timeout')
                 h, w = rgb.shape[:2]
                 pose = np.eye(4); pose[0, 3] = -stamp
                 return {'timestamp_s': stamp, 'tracking_state': 2, 'map_id': 0, 'T_cw': pose.tolist(),
@@ -188,9 +193,41 @@ class LiveDepthTests(unittest.TestCase):
         self.session.offer(self.jpeg, 0., 0)
         self.session.offer(self.jpeg, .2, 1)
         wait_for(lambda: len(self.runtime.tracked) == 2)
+        wait_for(lambda: self.session.preview is not None)
         self.assertEqual(self.session.job.get('presented_revision', 0), 0)
         self.assertEqual(self.session.stats()['depth_job']['progress']['processing_policy'], 'continuous')
         self.assertFalse(self.manager.preview(self.session.depth_job_id)['needs_presentation'])
+
+    def test_continuous_tello_admits_camera_cadence_and_replaces_only_pending_input(self):
+        self.session.stop('test_reconfigure')
+        self.runtime.release.set()
+        self.session.worker.join(5)
+        self.session.recording.wait(5)
+        self.runtime = self.manager.depth_worker = FakeWorker()
+        self.runtime.tracking_gate = threading.Event()
+        camera = {**self.session.camera, 'fps': 24}
+        self.session = LiveDepthSession(self.root, camera, 'test-image', self.manager,
+            input_kind='tello_camera', mapping={'live_policy': 'continuous'})
+        try:
+            self.assertTrue(self.runtime.loading.wait(2))
+            self.assertFalse(self.session.can_accept_frame)
+            self.runtime.release.set()
+            wait_for(lambda: self.session.can_accept_frame)
+            self.session.offer(self.jpeg, 0., 0)
+            wait_for(lambda: self.runtime.tracked == [0.])
+            self.assertEqual(self.runtime.tracker_fps, 24)
+            self.session.offer(self.jpeg, 1 / 24, 1)
+            state = self.session.offer(self.jpeg, 2 / 24, 2)
+            self.assertEqual(state['queue_depth'], 1)
+            self.assertEqual(state['frame_drops'], 1)
+            self.assertEqual(state['transport_received'], 3)
+            self.runtime.tracking_gate.set()
+            wait_for(lambda: self.runtime.tracked == [0., 2 / 24])
+            self.assertEqual(self.session.submitted, 2)
+        finally:
+            self.runtime.tracking_gate.set()
+            self.session.stop('test_cleanup')
+            self.session.recording.finish_input()
 
     def test_existing_live_job_rejects_a_saved_reconstruction(self):
         key = self.manager.create()['id']

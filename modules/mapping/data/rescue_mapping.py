@@ -20,7 +20,7 @@ DEFAULT_COLOR = '#ff3030'
 
 
 def mapping_sample_fps(value):
-    """Selected depth-map frames per second; tracking has its own 15 Hz ceiling."""
+    """Selected depth-map frames per second, independently of pose tracking."""
     rate = value.get('sample_fps', 5)
     if type(rate) not in (int, float) or not math.isfinite(rate) or not .1 <= rate <= 15:
         raise ValueError('invalid_sample_fps')

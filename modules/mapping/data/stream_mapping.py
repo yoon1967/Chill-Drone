@@ -209,7 +209,7 @@ class LivePoseFrames(PoseFrames):
         self.size = scaled_size(width, height, min(640, max(width, height)))
         self.original_size = (width, height)
         # Known live geometry lets Docker finish loading before admitting the first frame.
-        self.native = self.tracker_factory(output, self.size, self.original_size, camera, 15)
+        self.native = self.tracker_factory(output, self.size, self.original_size, camera, fps if continuous else 15)
         self.continuous = continuous
         self.condition = threading.Condition()
         self.pending = None
