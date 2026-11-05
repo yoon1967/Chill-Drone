@@ -49,6 +49,18 @@ MAX_MAP_BYTES = 16_000_000   # 점 6만 개 × 한 줄 약 60바이트 + 여유
 LOCAL_HOSTS = ("127.0.0.1", "::1", "localhost")
 
 
+class ControllerFiles(StaticFiles):
+    """관제 화면 파일. 브라우저가 매번 바뀌었는지 물어보게 한다(no-cache: 그대로면 304라 가볍다).
+
+    캐시 지시가 없으면 브라우저가 옛 app.js를 한동안 그대로 써서, 게이트웨이를 새 코드로 다시 켜도
+    새 화면이 안 보였다(10/30, 11/05 지도 콘솔 화면).
+    """
+    async def get_response(self, path, scope):
+        response = await super().get_response(path, scope)
+        response.headers["Cache-Control"] = "no-cache"
+        return response
+
+
 def build_gateway(args):
     fake = None
     if args.fake:
@@ -236,7 +248,7 @@ def build_app(args) -> FastAPI:
         return mjpeg(request, gw.overlay.latest, lambda: True)
 
     if os.path.isdir(CONTROLLER_DIR):
-        app.mount("/", StaticFiles(directory=CONTROLLER_DIR, html=True), name="controller")
+        app.mount("/", ControllerFiles(directory=CONTROLLER_DIR, html=True), name="controller")
     return app
 
 
