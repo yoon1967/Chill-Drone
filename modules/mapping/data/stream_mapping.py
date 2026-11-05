@@ -146,6 +146,11 @@ def frames(source, fps, rate=None, long_side=256):
                 yield index + 1, stamp, np.asarray(image.convert('RGB')), original_size
 
 
+def scaled_size(width, height, long_side):
+    scale = long_side / max(width, height)
+    return max(1, round(width * scale)), max(1, round(height * scale))
+
+
 class PoseFrames:
     """Pull one fixed pose at a time; callers finish its depth/map before pulling again."""
     def __init__(self, source, fps, rate, output, camera=None, tracker_factory=None):
@@ -201,8 +206,7 @@ class LivePoseFrames(PoseFrames):
         super().__init__('live', fps, rate, output, camera, tracker_factory)
         self.receive = receive
         width, height = camera['width'], camera['height']
-        factor = min(1., 640 / max(width, height))
-        self.size = (round(width * factor), round(height * factor))
+        self.size = scaled_size(width, height, min(640, max(width, height)))
         self.original_size = (width, height)
         # Known live geometry lets Docker finish loading before admitting the first frame.
         self.native = self.tracker_factory(output, self.size, self.original_size, camera, 15)
@@ -368,14 +372,17 @@ def run(source, output, options, estimator_factory=DepthEstimator, tracker_facto
         publish()
         model_started = time.perf_counter()
         estimator = estimator_factory()
-        # Warm up before starting playback so model loading never consumes the input.
+        check_cancelled()
         camera = options.get('camera') or dict(width=4, height=3)
-        ratio = options['depth_resolution'] / max(camera['width'], camera['height'])
-        preparation_shape = (round(camera['height'] * ratio), round(camera['width'] * ratio), 3)
+        width, height = options.get('input_size') or (camera['width'], camera['height'])
+        model_width, model_height = scaled_size(width, height, options['depth_resolution'])
+        preparation_shape = (model_height, model_width, 3)
+        # Use the inspected, display-oriented dimensions without opening the
+        # input during model preparation.
         if hasattr(estimator, 'prepare'):
             estimator.prepare(preparation_shape)
         else:
-            estimator.estimate(np.zeros((144, 256, 3), dtype=np.uint8))
+            estimator.estimate(np.zeros(preparation_shape, dtype=np.uint8))
         from modules.mapping.data.rescue_mapping import SemanticEstimator, RescueMap
         rescue = RescueMap(options)
         if options['semantic_mapping']:
@@ -388,9 +395,12 @@ def run(source, output, options, estimator_factory=DepthEstimator, tracker_facto
         check_cancelled()
         publish(stage='tracking', device=getattr(estimator, 'device', 'test'),
                 model_preparation_ms=round((time.perf_counter() - model_started) * 1000, 2))
-        producer = (LivePoseFrames(live_receive, options['frame_fps'], options['sample_fps'],
-                    output, options['camera'], tracker_factory, continuous=options['live_policy'] == 'continuous') if live_receive is not None else
-                    PoseFrames(source, options['frame_fps'], options['sample_fps'], output, options.get('camera'), tracker_factory))
+        if live_receive is not None:
+            producer = LivePoseFrames(live_receive, options['frame_fps'], options['sample_fps'],
+                output, options['camera'], tracker_factory, continuous=options['live_policy'] == 'continuous')
+        else:
+            producer = PoseFrames(source, options['frame_fps'], options['sample_fps'],
+                output, options.get('camera'), tracker_factory)
         producer.cancel_event = stop_event
         from modules.mapping.localization.pose_first import fixed_camera_pose, depth_in_pose_units
         active_map = None
@@ -410,7 +420,7 @@ def run(source, output, options, estimator_factory=DepthEstimator, tracker_facto
             pose = fixed_camera_pose(native_pose, stamp)
             h, w = display_rgb.shape[:2]
             resolution = options['depth_resolution']
-            rgb = cv2.resize(display_rgb, (round(w * resolution / max(w, h)), round(h * resolution / max(w, h))))
+            rgb = cv2.resize(display_rgb, scaled_size(*original_size, resolution))
             params = camera_intrinsic(rgb.shape, original_size, options.get('camera'))
             status['processed'] += 1
             name = f'frame_{number:07d}.jpg'

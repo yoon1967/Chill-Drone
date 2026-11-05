@@ -303,7 +303,7 @@ export async function connectCapture({onStart = () => {}, onStatus = () => {}, o
       }
       if (!owns(run)) return;
       const drone = kind === 'tello-map';
-      video.hidden = drone;
+      video.hidden = true;
       if (demo) { video.src = '/api/source-video'; video.load(); }
       else if (!drone) {
         if (!navigator.mediaDevices?.getUserMedia) throw new Error('이 브라우저에서 카메라를 사용할 수 없습니다. localhost 또는 HTTPS에서 열어주세요.');
@@ -370,7 +370,7 @@ export async function connectCapture({onStart = () => {}, onStatus = () => {}, o
       }
       if (!owns(run)) return;
       if (drone) {
-        run.active = true; mapPreview.hidden = false;
+        run.active = true; mapPreview.hidden = run.backend === 'orb_slam3_depth';
         while (owns(run)) {
           const received = await telloState(run, '/api/live/tracking');
           if (!received) continue;
@@ -378,7 +378,7 @@ export async function connectCapture({onStart = () => {}, onStatus = () => {}, o
           if (!owns(run)) return;
           if (!response.ok || state.session_status === 'failed' || state.status === 'failed') throw new Error(state.last_error || state.error || '드론 영상 처리가 종료됐습니다.');
           if (terminal(state) || state.session_status === 'stopping') { update(state); return; }
-          if (state.last_input_sequence >= 0 && run.previewSequence !== state.last_input_sequence) {
+          if (!mapPreview.hidden && state.last_input_sequence >= 0 && run.previewSequence !== state.last_input_sequence) {
             run.previewSequence = state.last_input_sequence;
             mapPreview.src = '/api/live/tello-preview.jpg?session=' + encodeURIComponent(run.session) + '&sequence=' + state.last_input_sequence;
           }
@@ -390,6 +390,7 @@ export async function connectCapture({onStart = () => {}, onStatus = () => {}, o
       }
       await video.play();
       if (!owns(run)) return;
+      video.hidden = run.backend === 'orb_slam3_depth';
       run.active = true; schedule(run);
       message('영상 수신 중 · 카메라 위치를 천천히 옮기면 지도를 초기화합니다.', 'receiving', run);
     } catch (error) {

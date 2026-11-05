@@ -488,10 +488,12 @@ test('drone model preparation survives a partial UI state update and more than 6
         return reply({...dense, transport_ready: false,
           depth_job: {status: 'running', stage: 'semantic_model', progress: {elapsed_seconds: 70}}});
       }
-      ready.resolve();
       return reply({...dense, session_status: 'receiving', transport_ready: true});
     }
-    if (url.startsWith('/api/live/tracking')) return reply({...dense, session_status: 'receiving'});
+    if (url.startsWith('/api/live/tracking')) {
+      ready.resolve();
+      return reply({...dense, session_status: 'receiving', last_input_sequence: 4});
+    }
     return reply(value);
   }});
   handle = await f.connect({
@@ -508,6 +510,8 @@ test('drone model preparation survives a partial UI state update and more than 6
   assert.equal(f.requests.some(r => r.url === '/api/live/stop'), false);
   assert.ok(f.statuses.some(status => /깊이 모델 준비 중/.test(status.message)));
   assert.ok(f.statuses.some(status => /사람·공간 인식 모델 준비 중/.test(status.message)));
+  assert.equal(f.get('tello-map-preview').hidden, true);
+  assert.ok(!f.get('tello-map-preview').src);
   assert.equal(f.get('camera-stop').disabled, false);
   await f.get('camera-stop').handlers.click();
   await starting;
