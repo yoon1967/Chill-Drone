@@ -56,7 +56,7 @@ class MapInbox:
             if kind == "status":
                 return 200, {"ok": True}
             src = msg["source"]
-            key = (src.get("session_id"), src.get("segment_id"), src.get("revision"))
+            key = (src.get("schema_version"), src.get("session_id"), src.get("segment_id"), src.get("revision"))   # 진행 중 미리보기와 최종 결과는 버전이 같아도 다르다
             if key == self._key:
                 return 200, {"ok": True, "duplicate": True}
             self._key = key

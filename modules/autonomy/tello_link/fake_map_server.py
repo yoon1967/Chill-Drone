@@ -4,10 +4,13 @@
 - GET  /api/live/state · /api/live/run (ONLINE_SPATIAL_V1 모양, 점 행 [id,x,y,z,r,g,b,error_px,track_length])
 세션이 켜져 있는 동안 1초마다 버전이 오르고, 가상 카메라가 복도를 따라가며 3 m 안의 벽 점이 드러난다.
 heartbeat가 15초 없으면 진짜처럼 세션을 끝낸다. 영상·SLAM·Docker는 없다.
+--depth: 지금 지도 서버(-365 깊이 지도)처럼 세션이 끝나야 `map_available`이 켜지고, 그 전에는 상태의 `depth_job_id`와
+`GET /api/import/preview?id=..&revision=..`(점 행 [x,y,z,r,g,b], 카메라는 위치만)로 진행 중 지도를 내준다.
 
     python modules/autonomy/tello_link/fake_map_server.py --port 8795
     python modules/autonomy/tello_link/fake_map_server.py --obj <복도 OBJ>    # 벽 모양을 OBJ 상자들에서
     python modules/autonomy/tello_link/fake_map_server.py --start              # 바로 지도 만드는 중(세션 시작 요청 없이)
+    python modules/autonomy/tello_link/fake_map_server.py --start --depth      # 깊이 지도 방식(복원 중 미리보기)
 """
 
 from __future__ import annotations
@@ -18,6 +21,7 @@ import math
 import random
 import threading
 import time
+import urllib.parse
 import uuid
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 
@@ -64,8 +68,8 @@ def wall_points(boxes, density=40, seed=1) -> list[list]:
 class FakeMap:
     ROT = [[1, 0, 0], [0, 0, 1], [0, -1, 0]]   # 카메라 x 오른쪽, y 아래(-z), z 앞(+y)
 
-    def __init__(self, boxes, clock=time.monotonic):
-        self.pts, self.clock = wall_points(boxes), clock
+    def __init__(self, boxes, clock=time.monotonic, depth=False):
+        self.pts, self.clock, self.depth = wall_points(boxes), clock, depth
         self.path = [(0.0, 9.0 - t * 0.25) for t in range(37)] + [(-0.2 * t, -0.1 * t) for t in range(1, 15)]
         self.lock = threading.Lock()
         self.session = None   # {id, started, lease, revision_at_stop}
@@ -109,9 +113,31 @@ class FakeMap:
         with self.lock:
             s, r = self.session, self.revision()
             status = "idle" if not s else "stopped" if s["stopped"] else "mapping"
-            return {"schema_version": "mapping-source-state/1.0", "source": "live", "status": status,
-                    "mapping_state": status, "session_id": s["id"] if s else None, "segment_id": 0 if s else None,
-                    "revision": r, "map_available": r > 0}
+            value = {"schema_version": "mapping-source-state/1.0", "source": "live", "status": status,
+                     "mapping_state": status, "session_id": s["id"] if s else None, "segment_id": 0 if s else None,
+                     "revision": r, "map_available": r > 0}
+            if self.depth and s:   # 깊이 지도: 끝나야 결과가 생긴다
+                value.update(backend="orb_slam3_depth", depth_job_id=f"job_{s['id']}", map_available=bool(s["stopped"]))
+            return value
+
+    def preview(self, job: str, since: int) -> tuple[int, dict]:
+        """깊이 지도 진행 중 미리보기(session_import.preview 모양)."""
+        with self.lock:
+            s = self.session
+            if not self.depth or not s or job != f"job_{s['id']}":
+                return 400, {"error": "unknown_import_job"}
+            r, done = self.revision(), bool(s["stopped"])
+            if r < 1:
+                return 200, {"revision": 0, "waiting": True, "done": done}
+            if r == since:
+                return 200, {"revision": since, "unchanged": True, "done": done, "needs_presentation": False}
+            seen = self.path[:r]
+            pts = [[p[1], -p[3], p[2], *p[4:7]] for p in self.pts   # 카메라 세계 좌표처럼 y 아래(z 위 → -y)
+                   if min(math.hypot(p[1] - x, p[2] - y) for x, y in seen) < 3.0]
+            return 200, {"revision": r, "frame_id": f"f{r}", "tracking": "tracking", "pose_confirmed": True, "map_id": 0,
+                         "pose_rotation": [[1, 0, 0], [0, 1, 0], [0, 0, 1]], "points": pts[::max(1, math.ceil(len(pts) / 12000))],
+                         "map_points": len(pts), "cameras": [[x, -1.0, y] for x, y in seen], "done": done,
+                         "needs_presentation": False}
 
     def run(self) -> dict | None:
         with self.lock:
@@ -141,6 +167,9 @@ def make_handler(fake: FakeMap):
             self.wfile.write(body)
 
         def do_GET(self):
+            if self.path.startswith("/api/import/preview?"):
+                q = urllib.parse.parse_qs(urllib.parse.urlsplit(self.path).query)
+                return self.send(*fake.preview(q.get("id", [""])[0], int(q.get("revision", ["0"])[0] or 0)))
             if self.path == "/api/live/state":
                 return self.send(200, fake.state())
             if self.path == "/api/live/run":
@@ -169,9 +198,10 @@ def main():
     ap.add_argument("--port", type=int, default=8795)
     ap.add_argument("--obj", help="벽 모양을 읽을 OBJ(상자들). 없으면 기본 복도")
     ap.add_argument("--tello-gateway", help="진짜 지도 서버와 같은 인자를 받기 위한 자리(쓰지 않음)")
+    ap.add_argument("--depth", action="store_true", help="깊이 지도 방식(-365): 끝나야 결과, 그 전엔 진행 중 미리보기")
     ap.add_argument("--start", action="store_true", help="켜자마자 드론 지도 세션 시작(지도 화면에서 시작한 것처럼). 15초 뒤 끝나지 않게 계속 연장")
     args = ap.parse_args()
-    fake = FakeMap(load_obj(args.obj) if args.obj else BOXES)
+    fake = FakeMap(load_obj(args.obj) if args.obj else BOXES, depth=args.depth)
     if args.start:
         sid = fake.start()["session_id"]
 
