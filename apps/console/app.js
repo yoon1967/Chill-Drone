@@ -11,7 +11,7 @@ import { OrbitControls } from '/vendor/OrbitControls.js';
 import { PlanarObjects } from '/objects.js';
 import { connectCapture } from '/capture.js';
 import { MapSource, monitorConnections, mappingPreparation } from '/map-source.js';
-import { PointDisplay, PointBuffer } from '/point-display.js';
+import { PointDisplay, PointBuffer, depthPointMaterial } from '/point-display.js';
 import { applySceneDelta } from '/map-delta.js';
 import { renderRecording } from '/recording-view.js';
 import { FrameLatency } from '/frame-latency.js';
@@ -569,7 +569,8 @@ function setMode(next, toggleControls = false) {
   $('kind').textContent = {objects: 'PLANAR OBJECTS', hologram: 'HOLOGRAM · PLANAR OBJECTS', points: '원본 3D 점군'}[next];
   if (run.rescue) {
     $('kind').textContent = '인명 구조 3D 지도';
-    $('mode-detail').textContent = `${run.rescue.render_mode === 'points' ? '공간 밀도를 조절한 누적 점군' : '구조물 표면'} · 사람 발견 위치 ${run.rescue.people.length}곳 · 현재 관측과 마지막 발견 구분`;
+    const depthLegend = run.rescue.point_tof ? ' · 큰 점 ToF · 작은 점 영상 추정' : '';
+    $('mode-detail').textContent = `${run.rescue.render_mode === 'points' ? '공간 밀도를 조절한 누적 점군' : '구조물 표면'} · 사람 발견 위치 ${run.rescue.people.length}곳 · 현재 관측과 마지막 발견 구분${depthLegend}`;
   }
   if (run.slam) {
     $('kind').textContent = next === 'hologram' ? 'HOLOGRAM · ORB MAP' : 'ORB-SLAM3 · 특징점 지도';
@@ -653,8 +654,7 @@ function applyRun(value) {
     pointDisplay = new PointDisplay();
     root = new THREE.Group(); scene.add(root);
     rescueLayer = createRescueLayer(THREE); root.add(rescueLayer.group);
-    cloud = new THREE.Points(pointDisplay.raw.geometry, new THREE.PointsMaterial({vertexColors: true,
-      size: Number($('point-size').value), sizeAttenuation: false}));
+    cloud = new THREE.Points(pointDisplay.raw.geometry, depthPointMaterial(Number($('point-size').value)));
     root.add(cloud);
     cameraSignature = null;
   }

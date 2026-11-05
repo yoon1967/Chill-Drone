@@ -22,7 +22,8 @@ import numpy as np
 from PIL import Image, ImageOps
 
 from .model_assets import DEPTH_MODEL as MODEL, cached_snapshot, ModelAssetsMissing
-from .tof_depth import TofDepth
+from .mapping_limits import MAX_FRAME_PREVIEW_POINTS
+from .tof_depth import TofDepth, match_front_surface
 
 
 def write_json(path, value):
@@ -203,8 +204,10 @@ class PoseFrames:
 
 class LivePoseFrames(PoseFrames):
     """Request fresh live input only after the preceding output was presented."""
-    def __init__(self, receive, fps, rate, output, camera, tracker_factory=None, *, continuous=False):
+    def __init__(self, receive, fps, rate, output, camera, tracker_factory=None, *, continuous=False, predict_pose=False):
         super().__init__('live', fps, rate, output, camera, tracker_factory)
+        from modules.mapping.localization.pose_first import ConstantVelocityPose
+        self.motion = ConstantVelocityPose() if predict_pose else None
         self.receive = receive
         width, height = camera['width'], camera['height']
         self.size = scaled_size(width, height, min(640, max(width, height)))
@@ -214,6 +217,7 @@ class LivePoseFrames(PoseFrames):
         self.continuous = continuous
         self.condition = threading.Condition()
         self.pending = None
+        self.pending_prediction = None
         self.ended = False
         self.failure = None
         self.tracked = self.sampled_out = 0
@@ -233,15 +237,21 @@ class LivePoseFrames(PoseFrames):
                 packet = self._tracked_packet()
                 if packet is None:
                     break
-                if packet[1] + 1e-6 < self.next_output:
+                prediction_start = packet[5].get('prediction_start')
+                if packet[1] + 1e-6 < self.next_output and not prediction_start:
                     continue
                 self.next_output = packet[1] + 1 / self.rate
                 with self.condition:
                     if self.pending is not None:
                         self.sampled_out += 1
-                    # Only a not-yet-selected candidate can be superseded. Once
-                    # take() returns, RGB/pose/depth/history identity is immutable.
-                    self.pending = packet
+                    if prediction_start:
+                        # Keep the first lost frame while depth is busy, then
+                        # resume with the newest available mapping candidate.
+                        if self.pending_prediction is not None:
+                            self.sampled_out += 1
+                        self.pending_prediction, self.pending = packet, None
+                    else:
+                        self.pending = packet
                     self.condition.notify_all()
         except BaseException as error:
             self.failure = error
@@ -261,22 +271,30 @@ class LivePoseFrames(PoseFrames):
         rgb = cv2.cvtColor(cv2.resize(image, self.size), cv2.COLOR_BGR2RGB)
         received = time.monotonic()
         result = self.native.track(rgb, stamp)
+        if self.motion is not None:
+            prediction, first = self.motion.update(result, stamp)
+            if prediction is not None:
+                result = {**result, 'predicted_pose': prediction, 'prediction_start': first}
         self.tracked += 1
         return sequence + 1, stamp, rgb, received, self.original_size, result, *sensor
 
     def take(self):
         if self.continuous:
             with self.condition:
-                self.condition.wait_for(lambda: self.pending is not None or self.ended or self.cancelled(), timeout=30)
+                self.condition.wait_for(lambda: self.pending_prediction is not None or self.pending is not None
+                    or self.ended or self.cancelled(), timeout=30)
                 if self.failure:
                     raise self.failure
+                if self.pending_prediction is not None:
+                    result, self.pending_prediction = self.pending_prediction, None
+                    return result
                 result, self.pending = self.pending, None
                 return result
         while not self.cancelled():
             result = self._tracked_packet()
             if result is None:
                 return None
-            if result[1] + 1e-6 < self.next_output:
+            if result[1] + 1e-6 < self.next_output and not result[5].get('prediction_start'):
                 continue
             self.next_output = result[1] + 1 / self.rate
             return result
@@ -341,6 +359,22 @@ def expire_render_points(cells, seen, stamp, window_s):
     return removed
 
 
+def frame_depth_preview(rgb, depth, params, pose=None, scale=None, *, tof_verified=False):
+    from modules.mapping.data.rescue_mapping import unproject
+
+    map_space = pose is not None and scale is not None
+    stride = math.ceil(math.sqrt(depth.size / MAX_FRAME_PREVIEW_POINTS))
+    xyz, rows, cols = unproject(depth * scale if map_space else depth,
+        pose if map_space else np.eye(4), params, stride=stride)
+    if len(xyz) > MAX_FRAME_PREVIEW_POINTS:
+        keep = np.linspace(0, len(xyz) - 1, MAX_FRAME_PREVIEW_POINTS, dtype=int)
+        xyz, rows, cols = xyz[keep], rows[keep], cols[keep]
+    if len(xyz):
+        return {'space': 'map' if map_space else 'camera', 'tof_verified': tof_verified,
+                'points': np.column_stack((xyz.round(4), rgb[rows, cols])).tolist()}
+    return None
+
+
 def run(source, output, options, estimator_factory=DepthEstimator, tracker_factory=None,
         stop_event=None, on_preview=None, live_receive=None, semantic_factory=None):
     from modules.mapping.data.rescue_mapping import mapping_options, mapping_sample_fps
@@ -399,13 +433,15 @@ def run(source, output, options, estimator_factory=DepthEstimator, tracker_facto
                 model_preparation_ms=round((time.perf_counter() - model_started) * 1000, 2))
         if live_receive is not None:
             producer = LivePoseFrames(live_receive, options['frame_fps'], options['sample_fps'],
-                output, options['camera'], tracker_factory, continuous=options['live_policy'] == 'continuous')
+                output, options['camera'], tracker_factory, continuous=options['live_policy'] == 'continuous',
+                predict_pose=tof_calibrations is not None)
         else:
             producer = PoseFrames(source, options['frame_fps'], options['sample_fps'],
                 output, options.get('camera'), tracker_factory)
         producer.cancel_event = stop_event
         from modules.mapping.localization.pose_first import fixed_camera_pose, depth_in_pose_units
         active_map = None
+        active_visual_scale = active_tof_scale = None
         submaps = []
         while True:
             check_cancelled()
@@ -422,9 +458,12 @@ def run(source, output, options, estimator_factory=DepthEstimator, tracker_facto
                           mapping_sampled_out=getattr(producer, 'sampled_out', 0))
             pose = fixed_camera_pose(native_pose, stamp)
             h, w = display_rgb.shape[:2]
-            resolution = options['depth_resolution']
-            rgb = cv2.resize(display_rgb, scaled_size(*original_size, resolution))
-            params = camera_intrinsic(rgb.shape, original_size, options.get('camera'))
+            map_id = native_pose.get('map_id')
+            native_confirmed = pose is not None
+            prediction = native_pose.get('predicted_pose')
+            if not native_confirmed and active_visual_scale is not None and active_map == map_id:
+                pose = prediction
+            pose_predicted = pose is not None and not native_confirmed
             status['processed'] += 1
             name = f'frame_{number:07d}.jpg'
             Image.fromarray(display_rgb).save(output / 'frames' / name, quality=80)
@@ -434,11 +473,16 @@ def run(source, output, options, estimator_factory=DepthEstimator, tracker_facto
             state = 'initializing' if native_pose.get('tracking_state', 0) <= 1 else 'lost'
             depth_scale = None
             rescue_snapshot = None
+            frame_preview = None
+            tof_verified = False
             tof = None if tof_calibrations is None else dict(distance_m=tof_sample[0] if tof_sample else None,
-                meters_per_slam_unit=None, corrected=False)
-            if pose is not None:
+                meters_per_slam_unit=None, corrected=False, surface_supported=False, used=False)
+            if native_confirmed:
                 state = 'scale_wait'
-                publish(stage='depth', pose_confirmed=True)
+            if pose is not None or tof is not None:
+                publish(stage='depth', pose_confirmed=native_confirmed)
+                rgb = cv2.resize(display_rgb, scaled_size(*original_size, options['depth_resolution']))
+                params = camera_intrinsic(rgb.shape, original_size, options.get('camera'))
                 if options.get('camera') and any(options['camera'].get('distortion', [])):
                     fx, fy, cx, cy = params
                     matrix = np.array([[fx, 0, cx], [0, fy, cy], [0, 0, 1.]])
@@ -447,41 +491,61 @@ def run(source, output, options, estimator_factory=DepthEstimator, tracker_facto
                 depth = estimator.estimate(rgb)
                 depth[~np.isfinite(depth) | (depth < .2) | (depth > 8.)] = 0
                 semantics = None
-                if semantics_estimator:
+                if semantics_estimator and pose is not None:
                     publish(stage='semantics')
                     semantics = semantics_estimator.estimate(rgb, name, stamp)
                     from modules.mapping.data.rescue_mapping import validate_semantics, PERSON
                     labels, confidence = validate_semantics(semantics, depth.shape, name, stamp)
+                aligned = None
                 excluded = (labels == PERSON) if semantics is not None else None
-                aligned = depth_in_pose_units(depth, native_pose.get('depth_anchors', []), (w, h), excluded=excluded)
-                if aligned is not None and np.count_nonzero(depth) > depth.size * .05:
+                if native_confirmed:
+                    aligned = depth_in_pose_units(depth, native_pose.get('depth_anchors', []), (w, h), excluded=excluded)
+                elif pose_predicted:
+                    aligned = (depth * active_visual_scale, active_visual_scale)
+                if np.count_nonzero(depth) <= depth.size * .05:
+                    aligned = None
+                visual_scale = aligned[1] if aligned is not None else None
+                supported = None
+                if tof is not None and tof_sample is not None:
+                    supported = match_front_surface(depth, params, tof_sample[0], excluded)
+                    tof['surface_supported'] = supported is not None
+                if aligned is not None and supported is not None and native_confirmed:
+                    supported_depth, model_range = supported
+                    if map_id not in tof_calibrations:
+                        tof_calibrations[map_id] = TofDepth()
+                    calibration = tof_calibrations[map_id]
+                    scale, tof['corrected'] = calibration.scale_to_map(visual_scale, model_range, tof_sample)
+                    tof['meters_per_slam_unit'] = calibration.meters_per_unit
+                    if scale is not None:
+                        aligned = (supported_depth * scale, scale)
+                        tof_verified = True
+                if aligned is not None:
                     depth, depth_scale = aligned
-                    map_id = native_pose['map_id']
-                    if tof is not None:
-                        if tof_sample is not None:
-                            if map_id not in tof_calibrations:
-                                tof_calibrations[map_id] = TofDepth()
-                            depth, tof['corrected'] = tof_calibrations[map_id].correct(depth, depth_scale, params,
-                                tof_sample, excluded)
-                        if map_id in tof_calibrations:
-                            tof['meters_per_slam_unit'] = tof_calibrations[map_id].meters_per_unit
                     if active_map is not None and active_map != map_id:
                         # The append-only history already durably holds this
                         # segment. Avoid serializing its entire cloud again on
                         # the live transition; finalization writes full submaps.
                         submaps.append(active_map)
                         cameras = []
+                        active_tof_scale = None
                     active_map = map_id
+                    if native_confirmed:
+                        active_visual_scale = visual_scale
+                    if tof_verified:
+                        active_tof_scale = depth_scale
+                        tof['used'] = True
                     publish(stage='mapping')
                     mapping_semantics = semantics or dict(frame_id=name, timestamp_s=stamp,
                         labels=np.zeros(depth.shape, np.uint8), confidence=np.ones(depth.shape, np.float32),
                         people=[], inference_ms=0.)
                     rescue_snapshot = rescue.update(rgb, depth, pose, params, mapping_semantics,
-                        depth_scale, map_id, name, stamp)
+                        depth_scale, map_id, name, stamp, tof_verified=tof_verified, pose_predicted=pose_predicted)
                     # Keep source observations for replay; spatial fusion bounds display size.
                     observation = {'depth': depth, 'rgb': rgb, 'world_from_camera': pose,
                         'intrinsics': np.asarray(params), 'map_id': np.asarray(map_id),
                         'depth_scale': np.asarray(depth_scale), 'timestamp_s': np.asarray(stamp)}
+                    if tof_verified:
+                        observation['tof_verified'] = np.asarray(True)
                     if semantics is not None:
                         observation.update(semantic_labels=labels, semantic_confidence=confidence,
                             person_instances=np.stack([p['mask'] for p in semantics['people']]).astype(np.uint8)
@@ -492,7 +556,18 @@ def run(source, output, options, estimator_factory=DepthEstimator, tracker_facto
                         'world_from_camera_rotation': pose[:3, :3].tolist(), 'model': 'PINHOLE',
                         'width': rgb.shape[1], 'height': rgb.shape[0], 'params': list(params)})
                     status['registered'] += 1
-                    mapped, state = True, 'tracking'
+                    if pose_predicted:
+                        status['pose_predicted_frames'] = status.get('pose_predicted_frames', 0) + 1
+                    mapped, state = True, 'pose_predicted' if pose_predicted else 'tracking'
+                elif tof is not None:
+                    # A temporary projection can use the last scale of this map.
+                    # Keep it outside the accumulated cloud and observation history.
+                    scale = active_tof_scale if supported is not None else active_visual_scale
+                    if map_id != active_map:
+                        scale = None
+                    frame_preview = frame_depth_preview(rgb, supported[0] if supported is not None else depth,
+                        params, pose, scale, tof_verified=supported is not None)
+                    tof['used'] = bool(frame_preview and frame_preview['tof_verified'])
             elif hasattr(estimator, 'keep_warm'):
                 estimator.keep_warm(preparation_shape)
             status['revision'] += 1
@@ -513,7 +588,8 @@ def run(source, output, options, estimator_factory=DepthEstimator, tracker_facto
             visible_cameras = [c['position'] for c in cameras[::max(1, math.ceil(len(cameras) / 300))]]
             # Sample the entire route instead of dropping its beginning.
             snapshot = {'revision': status['revision'], 'frame_id': name,
-                'frame_number': number, 'timestamp_s': stamp, 'tracking': state, 'pose_confirmed': pose is not None, 'map_id': active_map, 'pose_map_id': native_pose.get('map_id'),
+                'frame_number': number, 'timestamp_s': stamp, 'tracking': state, 'pose_confirmed': native_confirmed,
+                'map_id': active_map, 'pose_map_id': map_id,
                 'pose_position': pose[:3, 3].tolist() if pose is not None else None,
                 'pose_rotation': pose[:3, :3].tolist() if pose is not None else None,
                 'depth_scale': depth_scale, 'submaps': len(submaps) + (active_map is not None),
@@ -522,6 +598,8 @@ def run(source, output, options, estimator_factory=DepthEstimator, tracker_facto
                 'processed': status['processed'], 'registered': status['registered'],
                 'dropped': producer.dropped, 'processing_ms': round((time.monotonic() - tick) * 1000),
                 'latency_ms': round((time.monotonic() - received) * 1000)}
+            if frame_preview is not None:
+                snapshot['frame_preview'] = frame_preview
             if tof is not None:
                 snapshot['front_tof'] = status['front_tof'] = tof
             if rescue_snapshot:
@@ -530,6 +608,8 @@ def run(source, output, options, estimator_factory=DepthEstimator, tracker_facto
                 people_points = person_points(rescue_snapshot)
                 snapshot['points'] = snapshot['points'] + people_points
                 rescue_snapshot['point_labels'] = rescue_snapshot['point_labels'] + [1]*len(people_points)
+                if rescue.surface.tof_verified.any():
+                    rescue_snapshot['point_tof'] = rescue.surface.tof_verified.tolist() + [False]*len(people_points)
                 if snapshot['points']:
                     last_nonempty_points = snapshot['points']
             history.append(snapshot, observation)
@@ -539,7 +619,10 @@ def run(source, output, options, estimator_factory=DepthEstimator, tracker_facto
             else:
                 publish(stage='presentation', tracking=state, points=len(points), frame_id=name)
                 on_preview(snapshot)
-            publish(stage='mapping' if mapped else 'pose_wait', tracking=state, pose_confirmed=pose is not None,
+            stage = 'mapping' if mapped else 'pose_wait'
+            if frame_preview is not None:
+                stage = 'frame_preview'
+            publish(stage=stage, tracking=state, pose_confirmed=native_confirmed,
                     points=len(points), frame_id=name, latency_ms=round((time.monotonic() - received) * 1000))
         if not last_nonempty_points or not cameras:
             raise ValueError('no_valid_depth_map')
@@ -584,6 +667,8 @@ def finalize_history(output, status, run_id, started, publish=lambda **fields: N
             group['rescue']['points_include_people'] = True
             if group['rescue'].get('render_mode') == 'points':
                 group['rescue']['point_labels'] += [1]*(len(group['rows'])-offset)
+            if 'point_tof' in group['rescue']:
+                group['rescue']['point_tof'] += [False]*(len(group['rows'])-offset)
         del group['cells']
         for camera in group['cameras']:
             camera['position'] = (display_rotation @ camera['position']).tolist()
@@ -646,7 +731,8 @@ def finalize_history(output, status, run_id, started, publish=lambda **fields: N
     with (output / 'trajectory.csv').open('w', newline='', encoding='utf-8') as stream:
         writer = csv.writer(stream)
         writer.writerow(['frame_id', 'timestamp_s', 'x', 'y', 'z', 'pose_source', 'unit'])
-        writer.writerows([c['frame_id'], c['timestamp_s'], *c['position'], 'orb_slam3_depth', 'arbitrary'] for c in cameras)
+        writer.writerows([c['frame_id'], c['timestamp_s'], *c['position'],
+            c.get('pose_source', 'orb_slam3_depth'), 'arbitrary'] for c in cameras)
     write_json(output / 'status.json', {'status': quality['result_status']})
 
 

@@ -5,6 +5,17 @@ import {mappingSettings, rescuePointColor} from './mapping-settings.js';
 const equal = (a, b) => a === b || Boolean(a && b && a.length === b.length && a.every((v, i) => v === b[i]));
 const evidence = scene => scene.point_observations?.schema_version === 'point-observations/1.0' ?
   scene.point_observations.frame_index_by_point : null;
+const pointAttributes = {position: 3, color: 3, tofVerified: 1};
+export const TOF_POINT_SIZE_MULTIPLIER = 1.4;
+
+export function depthPointMaterial(size) {
+  const material = new THREE.PointsMaterial({vertexColors: true, sizeAttenuation: false, size});
+  material.onBeforeCompile = shader => {
+    shader.vertexShader = shader.vertexShader.replace('uniform float size;', 'uniform float size;\nattribute float tofVerified;')
+      .replace('gl_PointSize = size;', `gl_PointSize = mix(size, size * ${TOF_POINT_SIZE_MULTIPLIER}, tofVerified);`);
+  };
+  return material;
+}
 
 // Dense slots keep one draw call. Deletion moves only the last slot; point IDs
 // never depend on the native snapshot's changing order.
@@ -18,25 +29,25 @@ export class PointBuffer {
   grow(required) {
     if (required <= this.capacity) return;
     const capacity = Math.max(1024, 2 ** Math.ceil(Math.log2(required)));
-    const old = ['position', 'color'].map(name => this.geometry.getAttribute(name));
     // Release the previous GPU allocations before replacing their attributes.
     if (this.capacity) this.geometry.dispose();
-    for (const [i, name] of ['position', 'color'].entries()) {
-      const attribute = new THREE.BufferAttribute(new Float32Array(capacity * 3), 3).setUsage(THREE.DynamicDrawUsage);
-      if (old[i]) attribute.array.set(old[i].array);
+    for (const [name, size] of Object.entries(pointAttributes)) {
+      const old = this.geometry.getAttribute(name);
+      const attribute = new THREE.BufferAttribute(new Float32Array(capacity * size), size).setUsage(THREE.DynamicDrawUsage);
+      if (old) attribute.array.set(old.array);
       this.geometry.setAttribute(name, attribute);
     }
     this.capacity = capacity;
   }
   write(attribute, slot, values) {
-    const offset = slot * 3, next = values.map(Math.fround);
+    const offset = slot * attribute.itemSize, next = values.map(Math.fround);
     if (next.every((v, i) => attribute.array[offset + i] === v)) return;
     attribute.array.set(next, offset);
-    attribute.addUpdateRange(offset, 3);
+    attribute.addUpdateRange(offset, attribute.itemSize);
     attribute.needsUpdate = true;
     if (attribute.updateRanges.length > 64) this.compactRanges();
   }
-  upsert(id, position, color) {
+  upsert(id, position, color, tofVerified = false) {
     let slot = this.slots.get(id);
     if (slot === undefined) {
       slot = this.ids.length; this.grow(slot + 1);
@@ -44,6 +55,7 @@ export class PointBuffer {
     }
     this.write(this.geometry.getAttribute('position'), slot, position);
     this.write(this.geometry.getAttribute('color'), slot, color);
+    this.write(this.geometry.getAttribute('tofVerified'), slot, [Number(tofVerified)]);
     this.geometry.setDrawRange(0, this.ids.length);
   }
   remove(id) {
@@ -52,9 +64,9 @@ export class PointBuffer {
     const last = this.ids.pop(); this.slots.delete(id);
     if (last !== id) {
       this.ids[slot] = last; this.slots.set(last, slot);
-      for (const name of ['position', 'color']) {
+      for (const [name, size] of Object.entries(pointAttributes)) {
         const attribute = this.geometry.getAttribute(name);
-        this.write(attribute, slot, [...attribute.array.subarray(this.ids.length * 3, this.ids.length * 3 + 3)]);
+        this.write(attribute, slot, [...attribute.array.subarray(this.ids.length * size, this.ids.length * size + size)]);
       }
     }
     this.geometry.setDrawRange(0, this.ids.length);
@@ -66,7 +78,7 @@ export class PointBuffer {
   }
   compactRanges() {
     // Many edits before a render must not create an unbounded range list.
-    for (const name of ['position', 'color']) {
+    for (const name of Object.keys(pointAttributes)) {
       const attribute = this.geometry.getAttribute(name), ranges = attribute.updateRanges;
       if (ranges.length > 64) {
         const low = Math.min(...ranges.map(r => r.start));
@@ -220,9 +232,11 @@ export class PointDisplay {
     }
     const recolor = this.colorMode !== colorMode || (scene.rescue?.render_mode === 'points' &&
       previous?.rescue?.point_revision !== scene.rescue.point_revision) || (colorMode === 'height' &&
-      JSON.stringify(previous?.quality.bounds) !== JSON.stringify(scene.quality.bounds));
+      JSON.stringify(previous?.quality.bounds) !== JSON.stringify(scene.quality.bounds)) ||
+      !equal(previous?.rescue?.point_tof, scene.rescue?.point_tof);
     for (const id of removed) this.raw.remove(id);
-    for (const row of recolor ? this.rows.values() : upserts) this.raw.upsert(row[0], row.slice(1, 4), this.color(row, scene, colorMode));
+    for (const row of recolor ? this.rows.values() : upserts) this.raw.upsert(row[0], row.slice(1, 4),
+      this.color(row, scene, colorMode), scene.rescue?.point_tof?.[row[0]] === true);
     if (this.cells) for (const id of touched) {
       const row = this.rows.get(id);
       if (row) this.cells.upsert(id, row, observe?.[id], scene.cameras.length); else this.cells.remove(id);

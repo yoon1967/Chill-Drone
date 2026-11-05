@@ -16,10 +16,10 @@ from urllib.request import HTTPRedirectHandler, ProxyHandler, Request, build_ope
 
 from .orbslam3_live import live_camera
 from .orbslam3 import atomic_json, read_json
+from modules.mapping.data.tof_depth import FRONT_TOF_MIN_M, FRONT_TOF_MAX_M
 
 DEFAULT_CAMERA = Path(__file__).resolve().parents[3] / 'data/mapping/tello/20261028/v1/camera.json'
 FRONT_TOF_MAX_FRAME_GAP_S = .2
-FRONT_TOF_MIN_M, FRONT_TOF_MAX_M = .1, 1.2
 
 
 def retryable(error):

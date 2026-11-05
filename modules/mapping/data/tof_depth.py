@@ -5,6 +5,36 @@ import math
 import numpy as np
 
 BEAM_RADIUS = math.tan(math.radians(12.5))
+FRONT_TOF_MIN_M, FRONT_TOF_MAX_M = .1, 1.2
+
+
+def match_front_surface(depth, params, distance, excluded=None):
+    """Return depth anchored to one front range, with every unsupported pixel set to zero."""
+    if not FRONT_TOF_MIN_M <= distance < FRONT_TOF_MAX_M:
+        return None
+    fx, fy, cx, cy = params
+    y, x = np.ogrid[:depth.shape[0], :depth.shape[1]]
+    radius = np.hypot((x - cx) / fx, (y - cy) / fy)
+    ranges = depth * np.sqrt(1 + radius ** 2)
+    beam = radius <= BEAM_RADIUS
+    valid = beam & np.isfinite(ranges) & (ranges > 0)
+    if excluded is not None:
+        valid &= ~excluded
+    core = valid & (radius <= BEAM_RADIUS / 2)
+    if valid.sum() < .7 * beam.sum() or core.sum() < 8:
+        return None
+    near = float(np.percentile(ranges[valid], 20))
+    center = float(np.median(ranges[core]))
+    # One beam reports a range, not a depth image. Use a coherent surface near
+    # the optical axis and reject edges or gross disagreement with the model.
+    if not .9 <= center / near <= 1.2 or not .6 <= distance / near <= 1.6:
+        return None
+    correction = distance / near
+    radial_m = ranges * correction
+    supported = valid & (np.abs(radial_m - distance) <= max(.04, .1 * distance)) & (radial_m < FRONT_TOF_MAX_M)
+    if np.count_nonzero(supported & core) < 8:
+        return None
+    return np.where(supported, depth * correction, 0).astype(np.float32), near
 
 
 class TofDepth:
@@ -12,43 +42,17 @@ class TofDepth:
         self.samples = deque(maxlen=16)
         self.meters_per_unit = None
 
-    def correct(self, depth, pose_scale, params, sample, excluded=None):
+    def scale_to_map(self, pose_scale, model_range, sample):
         distance, sampled_at = sample
-        fx, fy, cx, cy = params
-        # Assume the extension beam is centered on the optical axis. Limit the
-        # correction to the beam and convert camera Z into radial distance.
-        y, x = np.ogrid[:depth.shape[0], :depth.shape[1]]
-        ray_radius = np.hypot((x - cx) / fx, (y - cy) / fy)
-        radius = ray_radius / BEAM_RADIUS
-        ranges = depth * np.sqrt(1 + ray_radius ** 2)
-        valid = (radius <= 1) & np.isfinite(ranges) & (ranges > 0)
-        if excluded is not None:
-            valid &= ~excluded
-        core = valid & (radius <= .5)
-        if valid.sum() < .7 * np.count_nonzero(radius <= 1) or core.sum() < 8:
-            return depth, False
-        near = float(np.percentile(ranges[valid], 20))
-        center = float(np.median(ranges[core]))
-        # Require agreement between the foreground in the beam and the optical
-        # center. Reject likely edges, missing depth and incompatible returns.
-        if not .9 <= center / near <= 1.2 or not .6 <= distance * pose_scale / near <= 1.6:
-            return depth, False
-        candidate = distance / near
+        candidate = distance / (model_range * pose_scale)
         if self.meters_per_unit is None:
             self._calibrate(sampled_at, candidate)
         if self.meters_per_unit is None:
-            return depth, False
+            return 1 / candidate, False
         ratio = candidate / self.meters_per_unit
-        if not .8 <= ratio <= 1.2 or abs(ratio - 1) < .01:
-            return depth, False
-
-        # Feather at the beam boundary and across depth changes. Other surfaces
-        # and camera translations stay in the same SLAM coordinate frame.
-        angular_weight = np.clip(2 * (1 - radius[valid]), 0, 1)
-        surface_weight = np.clip((.2 - np.abs(ranges[valid] / near - 1)) / .15, 0, 1)
-        corrected = depth.copy()
-        corrected[valid] *= 1 + (ratio - 1) * angular_weight * surface_weight
-        return corrected, True
+        if not .8 <= ratio <= 1.2:
+            return None, False
+        return 1 / self.meters_per_unit, abs(ratio - 1) >= .01
 
     def _calibrate(self, stamp, ratio):
         # One observation per half second and a median consensus, as in the
