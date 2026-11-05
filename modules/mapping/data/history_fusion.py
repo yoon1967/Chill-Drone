@@ -1,6 +1,7 @@
 """Build final maps from all observations; new point maps retain a spatial budget."""
 import json
 import numpy as np
+from .mapping_limits import DEFAULT_POINT_BUDGET, MAX_POINT_BUDGET
 
 from modules.mapping.data.mapping_history import HistoryReader
 
@@ -24,11 +25,12 @@ def integrate_history(output, progress=lambda **fields: None):
             depth = frame['depth']
             recorded = json.loads(frame['rescue_json'].tobytes()) if 'rescue_json' in frame else {}
             if 'semantic_labels' in frame or recorded.get('render_mode') == 'points':
-                budget = recorded.get('point_fusion', {}).get('point_budget', 8000)
-                if type(budget) is not int or not 1000 <= budget <= 10000:
+                budget = recorded.get('point_fusion', {}).get('point_budget', DEFAULT_POINT_BUDGET)
+                if type(budget) is not int or not 1000 <= budget <= MAX_POINT_BUDGET:
                     raise ValueError('invalid_point_budget')
                 if 'surface' not in group:
-                    group.update(surface=SemanticSurface(group['voxel_size'] * 2 / 3, max_cells=budget),
+                    group.update(surface=SemanticSurface(max(1e-5, .04 * float(frame['depth_scale'])), max_cells=budget,
+                        spacing_increment=max(1e-6, .005 * float(frame['depth_scale']))),
                         sightings=PersonSightings(group['voxel_size']))
                 labels = frame['semantic_labels'] if 'semantic_labels' in frame else np.zeros(depth.shape, np.uint8)
                 confidence = frame['semantic_confidence'] if 'semantic_confidence' in frame else np.ones(depth.shape, np.float32)

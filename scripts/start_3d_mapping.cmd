@@ -2,15 +2,14 @@
 setlocal DisableDelayedExpansion
 set "MAPPING_CALLER=%CD%"
 pushd "%~dp0.." || exit /b 1
-if not exist ".venv\Scripts\python.exe" (
-    echo [ERROR] Project Python is missing: .venv\Scripts\python.exe
-    echo Create the Python 3.12 environment described in apps\console\README.md.
+call "%~dp0resolve_project_python.cmd"
+if errorlevel 1 (
     pause
     popd
     exit /b 1
 )
 set "MAPPING_LAUNCHER=%~f0"
-".venv\Scripts\python.exe" -B -c "import os,pathlib; p=pathlib.Path(os.environ['MAPPING_LAUNCHER']); exec(compile(p.read_text(encoding='utf-8').rsplit('# === PYTHON ===',1)[1],str(p),'exec'))" %*
+"%MAPPING_PROJECT_PYTHON%" -B -c "import os,pathlib; p=pathlib.Path(os.environ['MAPPING_LAUNCHER']); exec(compile(p.read_text(encoding='utf-8').rsplit('# === PYTHON ===',1)[1],str(p),'exec'))" %*
 set "MAPPING_EXIT=%ERRORLEVEL%"
 if not "%MAPPING_EXIT%"=="0" pause
 popd
@@ -36,11 +35,15 @@ SLAM_IMAGE = 'ssafy-orbslam3:local'
 SLAM_SOURCE_LABEL = 'org.ssafy.mapping.source-sha256'
 
 
-def ensure_python_environment():
+def ensure_python_environment(*, allow_install=False):
     required = ['cv2', 'numpy', 'PIL', 'av', 'torch', 'transformers', 'ultralytics']
     missing = [name for name in required if importlib.util.find_spec(name) is None]
     try:
         if missing:
+            if not allow_install:
+                print('[ERROR] Missing mapping packages: ' + ', '.join(missing) +
+                      '. Connect internet and run this CMD with --prepare-models first.', flush=True)
+                return False
             print('Preparing missing mapping packages: ' + ', '.join(missing) + '\n'
                   'Keep internet available. The first download can take several minutes.', flush=True)
             if importlib.util.find_spec('pip') is None:
@@ -67,7 +70,7 @@ def ensure_python_environment():
                 print('[ERROR] Mapping package installation failed. Check the messages above and retry this CMD.', flush=True)
                 return False
             importlib.invalidate_caches()
-        print('Mapping packages are ready. The server prepares the depth model once when reconstruction starts; video waits until it is ready.', flush=True)
+        print('Mapping packages are ready. Models load from local files when reconstruction starts; video waits until loading finishes.', flush=True)
         return True
     except OSError as error:
         print('[ERROR] Mapping setup failed: ' + str(error) + '. Retry this CMD after fixing the error.', flush=True)
@@ -137,6 +140,7 @@ def main():
     parser.add_argument('--port', type=int, default=8790, help='First local port to try (default: 8790)')
     parser.add_argument('--gateway', help='Optional running Tello control gateway, e.g. http://127.0.0.1:8010')
     parser.add_argument('--no-browser', action='store_true', help='Print the page URL without opening a browser')
+    parser.add_argument('--prepare-models', action='store_true', help='Prepare packages and model weights with internet before connecting to the drone')
     args = parser.parse_args()
     if not 1 <= args.port <= 65535:
         parser.error('--port must be between 1 and 65535')
@@ -147,8 +151,19 @@ def main():
     if source is not None and not source.exists():
         print('[ERROR] The input file or folder does not exist.')
         return 1
-    if not ensure_python_environment():
+    print(f'Code folder: {ROOT}', flush=True)
+    if not ensure_python_environment(allow_install=args.prepare_models):
         return 1
+    sys.path.insert(0, str(ROOT))
+    if args.prepare_models:
+        return subprocess.call([sys.executable, '-B', '-m', 'modules.mapping.data.prepare_models', '--download'], cwd=ROOT)
+    from modules.mapping.data.model_assets import require_local_models, ModelAssetsMissing
+    try:
+        assets = require_local_models()
+    except ModelAssetsMissing as error:
+        print('[ERROR] ' + str(error), flush=True)
+        return 1
+    print('All model files are available locally. Mapping does not download weights.', flush=True)
     result = None
     if not args.input:
         if not ensure_slam_image():

@@ -1,5 +1,6 @@
 """Reusable models, ordered mapping, and bounded live pose input independent of UI."""
 import multiprocessing
+import os
 import queue
 import signal
 import threading
@@ -26,6 +27,10 @@ class DepthModelCache:
 
 
 def _serve(connection, cancelled, frames):
+    # A flight's inference process must never turn a missing cache file into
+    # retries against the internet. Model setup runs in a separate command.
+    os.environ['HF_HUB_OFFLINE'] = '1'
+    os.environ['TRANSFORMERS_OFFLINE'] = '1'
     signal.signal(signal.SIGINT, signal.SIG_IGN)
     cache = DepthModelCache()
     try:

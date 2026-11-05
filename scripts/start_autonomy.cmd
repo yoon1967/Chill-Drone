@@ -1,15 +1,14 @@
 @echo off
 setlocal DisableDelayedExpansion
 pushd "%~dp0.." || exit /b 1
-if not exist ".venv\Scripts\python.exe" (
-    echo [ERROR] Project Python is missing: .venv\Scripts\python.exe
-    echo Create it with: py -3 -m venv .venv
+call "%~dp0resolve_project_python.cmd"
+if errorlevel 1 (
     pause
     popd
     exit /b 1
 )
 set "AUTONOMY_LAUNCHER=%~f0"
-".venv\Scripts\python.exe" -B -c "import os,pathlib; p=pathlib.Path(os.environ['AUTONOMY_LAUNCHER']); exec(compile(p.read_text(encoding='utf-8').rsplit('# === PYTHON ===',1)[1],str(p),'exec'))" %*
+"%MAPPING_PROJECT_PYTHON%" -B -c "import os,pathlib; p=pathlib.Path(os.environ['AUTONOMY_LAUNCHER']); exec(compile(p.read_text(encoding='utf-8').rsplit('# === PYTHON ===',1)[1],str(p),'exec'))" %*
 set "AUTONOMY_EXIT=%ERRORLEVEL%"
 if not "%AUTONOMY_EXIT%"=="0" pause
 popd

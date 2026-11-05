@@ -12,17 +12,30 @@ import numpy as np
 from modules.mapping.data.rescue_mapping import (mapping_options, validate_semantics,
     smooth_structural_depth, SemanticSurface, PersonSightings, display_coordinates)
 from modules.mapping.data.mapping_history import HistoryReader
+from modules.mapping.data.mapping_limits import MAX_POINT_BUDGET, MAX_PREVIEW_POINTS
 from modules.mapping.data.stream_mapping import run
 from modules.mapping.localization.pose_first import depth_in_pose_units
 
 
 class RescueMappingTests(unittest.TestCase):
+    def test_depth_sampling_rate_is_validated_without_restricting_legacy_sfm(self):
+        from modules.mapping.data.rescue_mapping import mapping_sample_fps
+        from modules.mapping.data.frame_input import validate_options
+        self.assertEqual(mapping_sample_fps({}), 5)
+        for rate in (.1, .25, 2.5, 12, 15):
+            self.assertEqual(mapping_sample_fps({'sample_fps': rate}), rate)
+            self.assertEqual(validate_options({'confirmed': True, 'mode': 'depth_rgbd', 'sample_fps': rate}, {})['sample_fps'], rate)
+        for rate in (True, '5', 0, 15.1, float('nan'), float('inf')):
+            with self.subTest(rate=rate), self.assertRaisesRegex(ValueError, 'invalid_sample_fps'):
+                mapping_sample_fps({'sample_fps': rate})
+        self.assertEqual(validate_options({'confirmed': True, 'mode': 'sfm', 'sample_fps': 30}, {})['sample_fps'], 30)
+
     def test_settings_validate_and_keep_legacy_clients_compatible(self):
         self.assertFalse(mapping_options({})['semantic_mapping'])
         self.assertEqual(mapping_options({'semantic_mapping': True})['depth_resolution'], 384)
         self.assertEqual(mapping_options({})['person_color'], '#ff3030')
         for value in ({'person_color': 'red'}, {'person_outline': 1}, {'depth_resolution': 0},
-                      {'semantic_mapping': 'true'}, {'live_policy': 'guess'}, {'point_budget': 10001},
+                      {'semantic_mapping': 'true'}, {'live_policy': 'guess'}, {'point_budget': MAX_POINT_BUDGET + 1},
                       {'point_budget': True}, {'point_budget': 0}):
             with self.subTest(value=value), self.assertRaises(ValueError):
                 mapping_options(value)
@@ -121,7 +134,7 @@ class RescueMappingTests(unittest.TestCase):
             self.assertNotIn('mesh', replay['rescue'])
             saved = json.loads((output / 'scene.json').read_text())
             self.assertNotIn('meshes', saved['rescue'])
-            self.assertLessEqual(len(saved['points']), 10000)
+            self.assertLessEqual(len(saved['points']), MAX_PREVIEW_POINTS)
             self.assertEqual(len(saved['rescue']['point_labels']), len(saved['points']))
             self.assertEqual(saved['rescue']['person_color'], '#ff3030')
             self.assertTrue(any(point[4:7] == [255, 48, 48] for point in saved['points']))

@@ -107,9 +107,10 @@ class PoseFirstTests(unittest.TestCase):
             self.assertEqual(last['tracking'], 'lost')
             self.assertIsNone(last['render_window_s'])
             self.assertEqual(last['render_evicted_points'], 0)
-            self.assertLessEqual(last['map_points'], 8000)
+            from modules.mapping.data.mapping_limits import DEFAULT_POINT_BUDGET, MAX_PREVIEW_POINTS
+            self.assertLessEqual(last['map_points'], DEFAULT_POINT_BUDGET)
             self.assertGreater(last['rescue']['point_fusion']['coarsenings'], 0)
-            self.assertLessEqual(len(last['points']), 12000)
+            self.assertLessEqual(len(last['points']), MAX_PREVIEW_POINTS)
             self.assertEqual(last['cameras'][0], [0., 0., 0.])
             self.assertEqual(last['cameras'][-1], [31000., 0., 0.])
             self.assertLess(min(p[0] for p in last['points']), 10.)

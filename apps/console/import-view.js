@@ -3,6 +3,7 @@ import {mappingOptions} from './mapping-settings.js';
 const stages = {upload: '자료 복사 중', inspect: '자료 검사 중', confirm: '입력 확인 대기', input: '프레임 준비 중',
   features: '특징점 추출·매칭 중', reconstruction: '3D 지도 복원 중', preview: '미리보기 생성 중', finalization: '결과 검증 중', finished: '복원 완료'};
 const errors = {
+  invalid_sample_fps: '초당 복원 프레임을 확인하세요. 빠른 복원은 0.1~15, 기존 SfM은 0.1~30 사이로 설정할 수 있습니다.',
   record_busy: '사용 중인 복원 기록입니다. 처리가 끝난 뒤 삭제하세요.',
   depth_mapping_dependencies_missing: '빠른 복원 준비가 필요합니다. 실행 중인 CMD 창을 닫고 3D 매핑 실행기를 다시 실행하면 필요한 패키지와 모델을 자동으로 준비합니다.',
   slam_image_missing: '카메라 위치 추적용 Docker 이미지가 없습니다. 실행 안내에 따라 ssafy-orbslam3:local 이미지를 준비하세요.',

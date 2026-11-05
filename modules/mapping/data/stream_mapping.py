@@ -21,7 +21,7 @@ import cv2
 import numpy as np
 from PIL import Image, ImageOps
 
-MODEL = 'depth-anything/Depth-Anything-V2-Metric-Indoor-Small-hf'
+from .model_assets import DEPTH_MODEL as MODEL, cached_snapshot, ModelAssetsMissing
 
 
 def write_json(path, value):
@@ -40,19 +40,21 @@ def write_json(path, value):
 
 
 class DepthEstimator:
-    def __init__(self):
+    def __init__(self, *, allow_download=False):
         import torch
         from transformers import AutoImageProcessor, AutoModelForDepthEstimation
         self.torch = torch
         torch.set_num_threads(2)
         self.device = 'cuda' if torch.cuda.is_available() else 'cpu'
         try:
-            self.processor = AutoImageProcessor.from_pretrained(MODEL, use_fast=False, local_files_only=True)
-            model = AutoModelForDepthEstimation.from_pretrained(MODEL, local_files_only=True)
-        except OSError:
-            print('Downloading the depth model for first use. Keep internet available until setup finishes.', flush=True)
-            self.processor = AutoImageProcessor.from_pretrained(MODEL, use_fast=False)
-            model = AutoModelForDepthEstimation.from_pretrained(MODEL)
+            location = str(cached_snapshot(MODEL))
+        except ModelAssetsMissing:
+            if not allow_download:
+                raise
+            location = MODEL
+        local_only = not allow_download or location != MODEL
+        self.processor = AutoImageProcessor.from_pretrained(location, use_fast=False, local_files_only=local_only)
+        model = AutoModelForDepthEstimation.from_pretrained(location, local_files_only=local_only)
         self.model = model.to(self.device).eval()
         if self.device == 'cuda':
             self.model.half()
@@ -322,8 +324,8 @@ def expire_render_points(cells, seen, stamp, window_s):
 
 def run(source, output, options, estimator_factory=DepthEstimator, tracker_factory=None,
         stop_event=None, on_preview=None, live_receive=None, semantic_factory=None):
-    from modules.mapping.data.rescue_mapping import mapping_options
-    options = {**options, **mapping_options(options)}
+    from modules.mapping.data.rescue_mapping import mapping_options, mapping_sample_fps
+    options = {**options, **mapping_options(options), 'sample_fps': mapping_sample_fps(options)}
     output = Path(output)
     output.mkdir(parents=True, exist_ok=False)
     (output / 'frames').mkdir()
@@ -367,9 +369,9 @@ def run(source, output, options, estimator_factory=DepthEstimator, tracker_facto
         check_cancelled()
         publish(stage='tracking', device=getattr(estimator, 'device', 'test'),
                 model_preparation_ms=round((time.perf_counter() - model_started) * 1000, 2))
-        producer = (LivePoseFrames(live_receive, options['frame_fps'], min(options['sample_fps'], 10.),
+        producer = (LivePoseFrames(live_receive, options['frame_fps'], options['sample_fps'],
                     output, options['camera'], tracker_factory, continuous=options['live_policy'] == 'continuous') if live_receive is not None else
-                    PoseFrames(source, options['frame_fps'], min(options['sample_fps'], 10.), output, options.get('camera'), tracker_factory))
+                    PoseFrames(source, options['frame_fps'], options['sample_fps'], output, options.get('camera'), tracker_factory))
         producer.cancel_event = stop_event
         from modules.mapping.localization.pose_first import fixed_camera_pose, depth_in_pose_units
         active_map = None

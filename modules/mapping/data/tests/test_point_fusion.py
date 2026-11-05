@@ -1,0 +1,56 @@
+import unittest
+import tempfile
+from pathlib import Path
+
+import numpy as np
+
+from modules.mapping.data.point_fusion import SemanticSurface
+from modules.mapping.data.mapping_limits import DEFAULT_POINT_BUDGET
+from modules.mapping.data.mapping_history import HistoryWriter, HistoryReader
+from modules.mapping.data.stream_mapping import write_json
+
+
+class PointFusionTests(unittest.TestCase):
+    def surface(self, points, *, size=.04, step=.005, budget=16):
+        surface = SemanticSurface(size, spacing_increment=step, max_cells=budget)
+        xyz = np.asarray(points, np.float64)
+        weights = np.ones(len(xyz))
+        votes = np.zeros((len(xyz), 9)); votes[:, 2] = 1
+        surface._merge(np.floor(xyz / size).astype(np.int64), xyz, np.full_like(xyz, 120), weights, votes)
+        return surface
+
+    def test_compaction_uses_constant_steps_and_regrids_negative_centroids(self):
+        points = [[x*.041, y*.041, 1.] for x in range(-8, 9) for y in range(-3, 4)]
+        surface = self.surface(points, budget=80)
+        surface.compact()
+        self.assertGreater(surface.coarsenings, 0)
+        self.assertAlmostEqual(surface.size, .04 + .005 * surface.coarsenings)
+        self.assertLessEqual(len(surface.cells), 80)
+        np.testing.assert_array_equal(surface.keys, np.floor(surface.xyz / surface.size).astype(np.int64))
+        first = surface.coarsenings
+        surface.compact(40)
+        self.assertGreater(surface.coarsenings, first)
+        self.assertAlmostEqual(surface.size, .04 + .005 * surface.coarsenings)
+        self.assertEqual(surface.metadata()['spacing_increment'], .005)
+
+    def test_points_do_not_silently_restore_the_old_12000_point_limit(self):
+        surface = self.surface([[i*.05, 0, 1] for i in range(15000)], budget=16000)
+        self.assertEqual(len(surface.points()), 15000)
+        self.assertEqual(surface.coarsenings, 0)
+
+    def test_increment_must_be_positive_and_finite(self):
+        for value in (0, -1, float('nan'), float('inf')):
+            with self.subTest(value=value), self.assertRaises(ValueError):
+                SemanticSurface(.04, spacing_increment=value)
+
+    def test_larger_point_map_survives_history_replay_without_truncation(self):
+        count = DEFAULT_POINT_BUDGET
+        snapshot = dict(revision=1, timestamp_s=0., points=[[i*.01,0,1,120,140,160] for i in range(count)],
+            cameras=[], rescue=dict(schema_version='rescue-semantic-map/1.0', render_mode='points',
+                                   point_labels=[2]*count, people=[]))
+        with tempfile.TemporaryDirectory() as temporary:
+            writer = HistoryWriter(Path(temporary), write_json, synchronous=True)
+            writer.append(snapshot); writer.close()
+            replay = HistoryReader(temporary).snapshot(1)
+        self.assertEqual(len(replay['points']), count)
+        self.assertEqual(len(replay['rescue']['point_labels']), count)

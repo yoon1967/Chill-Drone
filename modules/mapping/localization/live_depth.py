@@ -16,8 +16,8 @@ from .orbslam3 import atomic_json
 
 class LiveDepthSession:
     def __init__(self, root, camera, image_id, imports, *, input_kind='browser_camera', timestamp_basis='browser_media_time', mapping=None):
-        from modules.mapping.data.rescue_mapping import mapping_options
-        mapping = mapping_options(mapping or {})
+        from modules.mapping.data.rescue_mapping import mapping_options, mapping_sample_fps
+        mapping = {**mapping_options(mapping or {}), 'sample_fps': mapping_sample_fps(mapping or {})}
         self.id = 'live_' + uuid.uuid4().hex[:16]
         self.path = Path(root) / self.id
         self.path.mkdir(parents=True)
@@ -41,7 +41,7 @@ class LiveDepthSession:
         self.depth_job_id = imports.create('실시간 깊이 지도')['id']
         self.job = imports.job(self.depth_job_id)
         self.job.update(status='running', stage='model', output=self.path / 'reconstruction',
-            options={'mode': 'depth_rgbd', 'frame_fps': camera['fps'], 'sample_fps': 5,
+            options={'mode': 'depth_rgbd', 'frame_fps': camera['fps'],
                      'camera': camera, 'run_id': self.id, 'render_window_s': None, **mapping},
             live_session=self, presentation_sync=mapping['live_policy'] == 'sequential')
         self._write_state()
