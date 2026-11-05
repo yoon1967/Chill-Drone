@@ -96,7 +96,8 @@ try {
     source=inject(source,'      const value = await response.json();',`
       const responseText=await response.text(), benchReceived=performance.now();
       const benchParseStart=performance.now(), value=JSON.parse(responseText), benchParsed=performance.now();`);
-    source=inject(source,'      const image = new Image();', '      let benchImageStart, benchImageEnd, benchApplyStart, benchPointEnd, benchRescueEnd;\n      const image = new Image();');
+    const imageAnchor = source.includes('      let image = null;') ? '      let image = null;' : '      const image = new Image();';
+    source=inject(source,imageAnchor, '      let benchImageStart, benchImageEnd, benchApplyStart, benchPointEnd, benchRescueEnd;\n'+imageAnchor);
     source=inject(source,'      await image.decode();','      benchImageStart=performance.now(); await image.decode(); benchImageEnd=performance.now();');
     const pointAnchor=pointFusion?'      updatePoints(value);':'      const position = new Float32Array(value.points.length * 3), color = new Float32Array(position.length);';
     source=inject(source,pointAnchor,'      benchApplyStart=performance.now();\n'+pointAnchor);

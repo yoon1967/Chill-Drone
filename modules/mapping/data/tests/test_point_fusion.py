@@ -43,6 +43,27 @@ class PointFusionTests(unittest.TestCase):
             with self.subTest(value=value), self.assertRaises(ValueError):
                 SemanticSurface(.04, spacing_increment=value)
 
+    def test_spacing_is_calibrated_once_from_the_first_static_observation(self):
+        rgb = np.zeros((60, 60, 3), np.uint8)
+        labels = np.zeros((60, 60), np.uint8)
+        confidence = np.ones((60, 60), np.float32)
+        depth = np.full((60, 60), 2., np.float32)
+        surface = SemanticSurface(.08, max_cells=500)
+        params = (180, 180, 30, 30)
+        surface.integrate(rgb, np.zeros_like(depth), np.eye(4), params, labels, confidence)
+        self.assertIsNone(surface.spacing_increment)
+        surface.integrate(rgb, depth, np.eye(4), params, labels, confidence)
+        expected = (3 * 2 / 180) * np.sqrt(10 * 400 / 500) / 4
+        self.assertAlmostEqual(surface.spacing_increment, expected)
+        for shift in range(1, 12):
+            pose = np.eye(4)
+            pose[0, 3] = shift * .5
+            surface.integrate(rgb, depth * 2, pose, params, labels, confidence)
+            self.assertLessEqual(len(surface.cells), 500)
+        self.assertGreater(surface.coarsenings, 0)
+        self.assertAlmostEqual(surface.spacing_increment, expected)
+        self.assertAlmostEqual(surface.size, .08 + surface.coarsenings * expected)
+
     def test_preview_keeps_rounded_coordinates_and_integer_clipped_colors(self):
         surface = self.surface([[-.123456, .234567, 1.345678]])
         surface.rgb[:] = [-3., 128.6, 260.]

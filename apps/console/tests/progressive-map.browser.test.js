@@ -24,12 +24,21 @@ test('reconstruction has no axis widget and completed maps reopen after replay o
       await page.route('**/api/saved/run*', route => route.fulfill({json: completed}));
       await page.route('**/api/import/library', route => route.fulfill({json: {initial: job.id, items: []}}));
       await page.route('**/api/import/status?*', route => route.fulfill({json: job}));
-      await page.route('**/api/import/history?*', route => route.fulfill({json: {entries: [{revision: 1, timestamp_s: .2}, {revision: 2, timestamp_s: 2}]}}));
-      await page.route('**/api/import/history-frame?*', route => route.fulfill({json: {revision: 2, frame_id: 'frame_0000061.jpg', frame_number: 61, timestamp_s: 2, tracking: 'lost', points: [], cameras: [], processed: 2, registered: 1, dropped: 0, latency_ms: 80, processing_ms: 70}}));
-      await page.route('**/api/import/preview?*', route => route.fulfill({json: {revision: 1, frame_id: 'frame_0000001.jpg', frame_number: 1, timestamp_s: .2, tracking: 'tracking', pose_confirmed: true, pose_position: [0, 0, 0], pose_rotation: [[1, 0, 0], [0, 1, 0], [0, 0, 1]], map_id: 0, pose_map_id: 0, points: [[0, 0, 2, 255, 0, 0], [1, 0, 2, 0, 255, 0], [0, 1, 2, 0, 0, 255]], cameras: [[0, 0, 0]], processed: 1, registered: 1, dropped: 0, latency_ms: 80, processing_ms: 70}}));
+      await page.route('**/api/import/history?*', route => route.fulfill({json: {entries: [
+        {revision: 1, timestamp_s: 0}, {revision: 2, timestamp_s: .2}, {revision: 3, timestamp_s: 2}]}}));
+      await page.route('**/api/import/history-frame?*', route => route.fulfill({json: {revision: 3, frame_id: 'frame_0000061.jpg', frame_number: 61, timestamp_s: 2, tracking: 'lost', points: [], cameras: [], processed: 2, registered: 1, dropped: 0, latency_ms: 80, processing_ms: 70}}));
+      const mapped = {revision: 2, frame_id: 'frame_0000002.jpg', frame_number: 2, timestamp_s: .2, tracking: 'tracking', pose_confirmed: true, pose_position: [0, 0, 0], pose_rotation: [[1, 0, 0], [0, 1, 0], [0, 0, 1]], map_id: 0, pose_map_id: 0, points: [[0, 0, 2, 255, 0, 0], [1, 0, 2, 0, 255, 0], [0, 1, 2, 0, 0, 255]], cameras: [[0, 0, 0]], processed: 2, registered: 1, dropped: 0, latency_ms: 80, processing_ms: 70};
+      let preview = {...mapped, revision: 1, frame_id: 'frame_0000001.jpg', frame_number: 1, timestamp_s: 0,
+        tracking: 'initializing', pose_confirmed: false, points: [], cameras: [], processed: 1, registered: 0};
+      await page.route('**/api/import/preview?*', route => route.fulfill({json:
+        Number(new URL(route.request().url()).searchParams.get('revision')) === preview.revision ? {unchanged: true} : preview}));
       await page.route('**/api/import/preview-frame?*', route => route.fulfill({contentType: 'image/png', body: Buffer.from('iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mP8/x8AAwMCAO+aWQ0AAAAASUVORK5CYII=', 'base64')}));
       await page.goto(url + '/#saved');
+      await page.waitForFunction(() => document.querySelector('#progressive-count').textContent.includes('지도 반영 0'));
+      assert.equal(await page.locator('#progressive-frame').isVisible(), false);
+      preview = mapped;
       await page.locator('#progressive-frame:not([hidden])').waitFor();
+      assert.match(await page.locator('#progressive-frame').getAttribute('src'), /frame_0000002/);
       await page.waitForFunction(() => document.querySelector('#progressive-count').textContent.includes('지도 반영 1'));
       assert.equal(await page.locator('#progressive-viewport canvas').isVisible(), true);
       assert.equal(await page.locator('#progressive-download').isVisible(), false, 'a full archive needs its completed result');
@@ -51,7 +60,7 @@ test('reconstruction has no axis widget and completed maps reopen after replay o
       await page.waitForTimeout(900);
       assert.match(await page.locator('#progressive-frame').getAttribute('src'), /frame_0000061/, 'new status polling preserves historical playback');
       await page.locator('#progressive-follow').click();
-      await page.waitForFunction(() => document.querySelector('#progressive-frame').src.includes('frame_0000001'));
+      await page.waitForFunction(() => document.querySelector('#progressive-frame').src.includes('frame_0000002'));
       await page.setViewportSize({width: 390, height: 900});
       const mobileVideo = await page.locator('.progressive-video').boundingBox(), mobileMap = await page.locator('.progressive-map').boundingBox();
       assert.ok(mobileMap.y > mobileVideo.y);

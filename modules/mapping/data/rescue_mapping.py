@@ -219,10 +219,7 @@ class RescueMap:
         if map_id != self.map_id:
             if self.surface:
                 self.surface.close()
-            # Convert the fixed .005 depth-unit step once into this map's
-            # coordinate scale. Later frames and the current grid cannot alter it.
-            self.surface = SemanticSurface(size, max_cells=self.options['point_budget'],
-                spacing_increment=max(1e-6, .005 * scale))
+            self.surface = SemanticSurface(size, max_cells=self.options['point_budget'])
             self.sightings = PersonSightings(max(1e-5, .06 * scale))
             self.map_id = map_id
             self.chunk_started = stamp

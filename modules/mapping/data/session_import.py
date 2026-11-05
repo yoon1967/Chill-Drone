@@ -701,7 +701,11 @@ class ImportManager:
                             if presentation_sync:
                                 self.preview_changed.wait_for(lambda: job['cancel'].is_set() or
                                     job.get('presented_revision', 0) >= snapshot['revision'])
-                    self.depth_worker.run(source, output, options, stop_event=job['cancel'], on_preview=published)
+                    summary = job.get('summary', {})
+                    worker_options = dict(options)
+                    if summary.get('width') and summary.get('height'):
+                        worker_options['input_size'] = (summary['width'], summary['height'])
+                    self.depth_worker.run(source, output, worker_options, stop_event=job['cancel'], on_preview=published)
                     code = 0
                 else:
                     command = [sys.executable, '-B', '-m', 'modules.mapping.data.frame_input', '--source', str(job['source']),

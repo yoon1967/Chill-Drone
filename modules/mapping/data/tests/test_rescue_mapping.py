@@ -157,7 +157,7 @@ class RescueMappingTests(unittest.TestCase):
                     confidence=np.ones(image.shape[:2], np.float32), people=[], inference_ms=1.)
         class Tracker:
             def __init__(self, *args):
-                if prepared != [('depth', (192, 256, 3)), ('semantics', (192, 256, 3))]:
+                if prepared != [('depth', (205, 256, 3)), ('semantics', (205, 256, 3))]:
                     raise AssertionError('input started before full inference preparation')
             def track(self, image, stamp):
                 h, w = image.shape[:2]
@@ -169,13 +169,17 @@ class RescueMappingTests(unittest.TestCase):
             output = Path(temporary) / 'result'
             frames = [(i+1, float(i), rgb, (80, 64)) for i in range(4)]
             with patch('modules.mapping.data.stream_mapping.frames', return_value=iter(frames)):
-                run('unused', output, dict(frame_fps=5, sample_fps=5, semantic_mapping=True, depth_resolution=256),
+                run('unused', output, dict(frame_fps=5, sample_fps=5, semantic_mapping=True, depth_resolution=256, input_size=(80, 64)),
                     estimator_factory=Depth, tracker_factory=Tracker, semantic_factory=Semantics, on_preview=previews.append)
             self.assertEqual([p['map_id'] for p in previews], [0, 0, 0, 1])
             self.assertEqual(previews[0]['points'], previews[2]['points'])
             self.assertEqual(previews[3]['submaps'], 2)
             self.assertEqual(HistoryReader(output).snapshot(1)['map_id'], 0)
             self.assertEqual(HistoryReader(output).snapshot(4)['map_id'], 1)
+            replay = HistoryReader(output).snapshot(1)
+            saved = json.loads((output / 'submaps/full-0.json').read_text(encoding='utf-8'))
+            self.assertEqual(saved['rescue']['point_fusion']['spacing_increment'],
+                replay['rescue']['point_fusion']['spacing_increment'])
             self.assertTrue((output / 'submaps/full-0.json').is_file())
             self.assertTrue((output / 'submaps/full-1.json').is_file())
             self.assertFalse((output / 'submaps/0000-0.json').exists(), 'history replaces redundant live serialization')
