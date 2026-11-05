@@ -30,6 +30,7 @@ from tello_link import TelloLink, now_iso
 
 LOOP_HZ = 20
 SDK_RETRY_S = 2.0            # command 응답이 없으면 이 간격으로 다시 보낸다
+SDK_RESYNC_S = 3.0           # 땅에서 상태가 이만큼 끊기면 command를 다시 보낸다(드론을 껐다 켜면 SDK 모드가 풀린다)
 EMERGENCY_SETTLE_S = 3.0     # 비상 정지 뒤 지상 판정을 기다리는 최대 시간
 BATTERY_WARN_PCT = 30        # 경고만. 자동 착륙(15%)은 FlightController
 TEMP_WARN_C = 75             # 경고만. 고온 자동 착륙은 하지 않는다(기체 자체 보호에 맡김)
@@ -58,6 +59,7 @@ class Gateway:
         self._last_auto_land = None
         self._emergency_mono: float | None = None
         self._sdk_try_mono = -1e9
+        self._link_lost = False                 # 상태 끊김으로 command를 다시 보내는 중(끊김 한 번에 영상 정리 한 번)
         self._rc_clients: set[str] = set()
         self._video_lock = threading.Lock()     # streamon·streamoff를 한 번에 하나씩
         self._video_on = False                  # 기체에 streamon이 받아들여진 상태
@@ -275,10 +277,43 @@ class Gateway:
 
     # ---------- 루프 ----------
     def _ensure_sdk(self) -> None:
-        if self.link.sdk_mode or self.clock() - self._sdk_try_mono < SDK_RETRY_S:
+        """처음 연결할 때, 그리고 땅에서 상태가 SDK_RESYNC_S 넘게 끊기면 command를 (다시) 보낸다.
+
+        드론을 껐다 켜면 SDK 모드가 풀려 상태를 보내지 않는데 link.sdk_mode는 참으로 남아,
+        다시 보내지 않고 계속 끊김으로 있었다(11/05 실기체, 41분).
+        비행 중에는 다시 보내지 않는다: 응답을 기다리는 동안 rc·land가 같은 잠금에서 밀리고,
+        비행 중 끊김은 FlightController가 착륙시킨다. 착륙해 flying이 풀리면 다시 보낸다.
+        """
+        age = self._state_age()
+        if age < SDK_RESYNC_S:
+            self._link_lost = False
+        if self.clock() - self._sdk_try_mono < SDK_RETRY_S:
             return
+        if self.link.sdk_mode and (age < SDK_RESYNC_S or self.flight.flying):
+            return
+        if self.link.sdk_mode and not self._link_lost:
+            self._link_lost = True
+            self.link.event("gateway_link", {"lost": True, "state_age_s": None if age == float("inf") else round(age, 1)})
+            self._forget_video()
         self._sdk_try_mono = self.clock()
         threading.Thread(target=lambda: self.link.send("command", timeout=1.5, source="gateway"), daemon=True).start()
+
+    def _state_age(self) -> float:
+        state = self.link.latest_state()
+        return float("inf") if state is None else state.get("age_s", float("inf"))
+
+    def _forget_video(self) -> None:
+        """끊긴 동안 기체를 껐다 켰으면 기체 영상은 꺼져 있다. 꺼진 것으로 두고, 다시 붙으면 시작할 때처럼 streamoff로 맞춘다."""
+        with self._lock:
+            was_on = self._video_on
+            self._video_on, self._video_on_mono, self._video_ground_mono = False, None, None
+            if was_on:
+                self._video_reason = "link_lost"
+            self._video_synced = False
+        if was_on:
+            self.link.event("gateway_video", {"on": False, "ok": True, "reason": "link_lost"})
+            self._emit({"schema_version": SCHEMA_VERSION, "type": "event", "at": now_iso(), "kind": "video_changed",
+                        "detail": {"on": False, "reason": "link_lost"}})
 
     def _state_ok(self) -> bool:
         state = self.link.latest_state()

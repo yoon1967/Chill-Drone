@@ -37,7 +37,7 @@ const REASON = {
   video_disabled: "게이트웨이가 영상 수신 없이(--no-video) 실행됐습니다", video_receiver_failed: "영상 수신을 시작하지 못했습니다",
   no_response: "기체가 응답하지 않았습니다", error_response: "기체가 거절했습니다",
 };
-const VIDEO_REASON = { operator: "화면", takeoff: "이륙", ground_timeout: "지상 오래 켜짐" };
+const VIDEO_REASON = { operator: "화면", takeoff: "이륙", ground_timeout: "지상 오래 켜짐", link_lost: "드론 연결 끊김" };
 const CHECK = { sdk: "SDK 모드", state: "상태 수신", battery: "배터리", temp: "온도", operator: "주변 확인" };  // 거절 사유 이름
 
 const esc = (s) => String(s).replace(/[&<>"]/g, (c) => ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;" })[c]);
