@@ -10,6 +10,31 @@ from modules.mapping.data.stream_mapping import DepthEstimator, PoseFrames, add_
 
 
 class StreamMappingTests(unittest.TestCase):
+    def test_warmup_matches_network_shape_and_only_repeats_for_new_resolution(self):
+        estimator = DepthEstimator.__new__(DepthEstimator)
+        estimator.estimate = MagicMock()
+        estimator.prepare((288, 384, 3))
+        estimator.prepare((289, 383, 3))  # Same 14px network dimensions.
+        estimator.prepare((144, 256, 3))
+        self.assertEqual([c.args[0].shape for c in estimator.estimate.call_args_list],
+                         [(288, 384, 3), (144, 256, 3)])
+
+    def test_cuda_idle_maintenance_is_rate_limited_and_cpu_has_no_extra_work(self):
+        estimator = DepthEstimator.__new__(DepthEstimator)
+        estimator.device = 'cuda'
+        estimator.last_inference = 10.
+        estimator.estimate = MagicMock()
+        with patch('modules.mapping.data.stream_mapping.time.monotonic', return_value=10.5):
+            estimator.keep_warm((288, 384, 3))
+        estimator.estimate.assert_not_called()
+        with patch('modules.mapping.data.stream_mapping.time.monotonic', return_value=10.8):
+            estimator.keep_warm((288, 384, 3))
+        self.assertEqual(estimator.estimate.call_args.args[0].shape, (288, 384, 3))
+        estimator.estimate.reset_mock(); estimator.device = 'cpu'
+        with patch('modules.mapping.data.stream_mapping.time.monotonic', return_value=20.):
+            estimator.keep_warm((288, 384, 3))
+        estimator.estimate.assert_not_called()
+
     def test_depth_model_reuses_cached_files_without_online_lookup(self):
         torch, transformers = MagicMock(), MagicMock()
         torch.cuda.is_available.return_value = False

@@ -7,8 +7,7 @@ test('live reconstruction shows actual model preparation, then themed controls a
   {skip: !url, timeout: 45000}, async () => {
     const {chromium} = process.env.MAPPING_PLAYWRIGHT_MODULE ?
       createRequire(import.meta.url)(process.env.MAPPING_PLAYWRIGHT_MODULE) : await import('playwright');
-    const browser = await chromium.launch({headless: true, channel: 'msedge',
-      args: ['--use-fake-device-for-media-stream', '--use-fake-ui-for-media-stream']});
+    const browser = await chromium.launch({headless: true, channel: 'msedge'});
     try {
       const page = await browser.newPage({viewport: {width: 1440, height: 1000}});
       const stops = [], errors = [];
@@ -27,9 +26,14 @@ test('live reconstruction shows actual model preparation, then themed controls a
         processing_ms: 40, latency_ms: 50, render_window_s: null};
       page.on('pageerror', error => errors.push(error.message));
       await page.addInitScript(() => {
-        const get = navigator.mediaDevices.getUserMedia.bind(navigator.mediaDevices);
-        navigator.mediaDevices.getUserMedia = async options => {
-          const stream = await get(options); window.testTracks = stream.getTracks(); return stream;
+        // A real browser MediaStream with deterministic pixels, independent of
+        // Windows camera drivers. This test exercises UI preparation and stop.
+        navigator.mediaDevices.getUserMedia = async () => {
+          const canvas = document.createElement('canvas'); canvas.width = 960; canvas.height = 540;
+          const context = canvas.getContext('2d'); let frame = 0;
+          const paint = () => { context.fillStyle = `rgb(${frame++ % 255},100,140)`; context.fillRect(0, 0, 960, 540); };
+          paint(); window.testCaptureTimer = setInterval(paint, 33);
+          const stream = canvas.captureStream(30); window.testTracks = stream.getTracks(); return stream;
         };
       });
       await page.route('**/api/live', route => route.fulfill({json: {enabled: true}}));
@@ -57,6 +61,8 @@ test('live reconstruction shows actual model preparation, then themed controls a
       await page.route('**/api/import/preview-frame?*', route => route.fulfill({contentType: 'image/png',
         body: Buffer.from('iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mP8/x8AAwMCAO+aWQ0AAAAASUVORK5CYII=', 'base64')}));
       await page.goto(url + '/#live');
+      // This test mocks browser capture, independently of an enabled Tello input.
+      await page.locator('#input-source').evaluate(select => { select.value = 'camera'; select.dispatchEvent(new Event('change', {bubbles: true})); });
       await page.locator('#rescue-settings summary').click();
       await page.locator('#rescue-sample-fps').fill('2.5');
       await page.waitForFunction(() => !document.querySelector('#camera-start').disabled);
@@ -100,8 +106,10 @@ test('live reconstruction shows actual model preparation, then themed controls a
       Object.assign(snapshot, {revision: 2, timestamp_s: 24.688, tracking: 'lost', pose_confirmed: false,
         points: [], map_points: 0, render_window_s: 10});
       await page.waitForFunction(() => document.querySelector('#live-depth-error').textContent.includes('최근 10초'));
-      await page.locator('#live-progressive-map-empty').waitFor({state: 'visible'});
-      assert.doesNotMatch(await page.locator('#live-progressive-map-empty').textContent(), /첫 깊이/);
+      await page.waitForFunction(() => document.querySelector('#live-progressive-viewport').dataset.retainingMap === 'true');
+      await page.locator('#live-progressive-map-empty').waitFor({state: 'hidden'});
+      assert.equal(await page.locator('#live-progressive-viewport').getAttribute('data-point-count'), '1');
+      assert.match(await page.locator('#live-progressive-map-detail').textContent(), /마지막 유효 지도/);
       assert.match(await page.locator('#live-depth-error').textContent(), /실행 CMD를 다시/);
       job.options.render_window_s = null;
       Object.assign(snapshot, {revision: 3, points: [[0, 0, 2, 255, 0, 0]], map_points: 1, render_window_s: null});

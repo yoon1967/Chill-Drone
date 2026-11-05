@@ -144,6 +144,42 @@ class RescueMappingTests(unittest.TestCase):
                 self.assertIn('semantic_labels', frame)
                 self.assertEqual(len(frame['person_instances']), 1)
 
+    def test_preparation_precedes_input_and_reset_retains_separate_history_maps(self):
+        rgb, _, _, _, _ = self.fixture()
+        prepared, previews = [], []
+        class Depth:
+            def prepare(self, shape): prepared.append(('depth', shape))
+            def estimate(self, image): return np.full(image.shape[:2], 2., np.float32)
+        class Semantics:
+            def prepare(self, shape): prepared.append(('semantics', shape))
+            def estimate(self, image, frame_id, stamp):
+                return dict(frame_id=frame_id, timestamp_s=stamp, labels=np.full(image.shape[:2], 2, np.uint8),
+                    confidence=np.ones(image.shape[:2], np.float32), people=[], inference_ms=1.)
+        class Tracker:
+            def __init__(self, *args):
+                if prepared != [('depth', (192, 256, 3)), ('semantics', (192, 256, 3))]:
+                    raise AssertionError('input started before full inference preparation')
+            def track(self, image, stamp):
+                h, w = image.shape[:2]
+                return dict(timestamp_s=stamp, tracking_state=2 if stamp in (0., 3.) else 1,
+                    map_id=0 if stamp < 2 else 1, T_cw=np.eye(4).tolist(),
+                    depth_anchors=[[w*x, h*y, 3.] for x in (.1,.2,.7,.8) for y in (.3,.6)])
+            def close(self): pass
+        with tempfile.TemporaryDirectory() as temporary:
+            output = Path(temporary) / 'result'
+            frames = [(i+1, float(i), rgb, (80, 64)) for i in range(4)]
+            with patch('modules.mapping.data.stream_mapping.frames', return_value=iter(frames)):
+                run('unused', output, dict(frame_fps=5, sample_fps=5, semantic_mapping=True, depth_resolution=256),
+                    estimator_factory=Depth, tracker_factory=Tracker, semantic_factory=Semantics, on_preview=previews.append)
+            self.assertEqual([p['map_id'] for p in previews], [0, 0, 0, 1])
+            self.assertEqual(previews[0]['points'], previews[2]['points'])
+            self.assertEqual(previews[3]['submaps'], 2)
+            self.assertEqual(HistoryReader(output).snapshot(1)['map_id'], 0)
+            self.assertEqual(HistoryReader(output).snapshot(4)['map_id'], 1)
+            self.assertTrue((output / 'submaps/full-0.json').is_file())
+            self.assertTrue((output / 'submaps/full-1.json').is_file())
+            self.assertFalse((output / 'submaps/0000-0.json').exists(), 'history replaces redundant live serialization')
+
     def test_long_trajectory_stays_bounded_without_discarding_older_regions(self):
         rgb, depth, _, labels, params = self.fixture()
         volume = SemanticSurface(.04, max_cells=1000)

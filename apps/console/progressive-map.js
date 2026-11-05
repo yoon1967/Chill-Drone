@@ -67,6 +67,9 @@ export function connectProgressiveMap({prefix = 'progressive'} = {}) {
   let preparing = false;
   let meshRevision = -1;
   let pendingPaint = null, paintedRevision = 0;
+  let displayedMap = null;
+  const segments = new Map();
+  let segmentEntries = 0;
   async function acknowledge(id, value) {
     if (!value.needs_presentation || paintedRevision < value.revision) return;
     const response = await fetch(`/api/import/presented?id=${encodeURIComponent(id)}`, {
@@ -90,12 +93,35 @@ export function connectProgressiveMap({prefix = 'progressive'} = {}) {
       (running ? '기록 재생 · 최신 복원은 표시 대기' : '저장된 복원 기록 재생');
     $('progressive-download').hidden = !available || !resultReady;
     $('progressive-download').href = `/api/import/history.zip?id=${encodeURIComponent(active)}`;
+    if (replay.entries.length < segmentEntries) { segments.clear(); segmentEntries = 0; }
+    for (let i = segmentEntries; i < replay.entries.length; i++) {
+      const entry = replay.entries[i];
+      if (entry.map_id != null && entry.map_points > 0) segments.set(entry.map_id, entry);
+    }
+    segmentEntries = replay.entries.length;
+    const select = $('progressive-segment');
+    const selectedMap = replay.following ? null : replay.selected()?.map_id;
+    const options = [new Option('현재 구간 따라가기', 'latest')];
+    for (const mapId of segments.keys()) options.push(new Option(`구간 ${mapId + 1} · 분리 보존`, String(mapId)));
+    // Avoid replacing a focused select at every frame.
+    const signature = options.map(option => `${option.value}:${option.text}`).join('|');
+    if (select.dataset.options !== signature) { select.replaceChildren(...options); select.dataset.options = signature; }
+    select.value = selectedMap == null ? 'latest' : String(selectedMap);
+    $('progressive-segments').hidden = segments.size < 2;
   }
   function changed() { clearTimeout(timer); replayControls(); poll(); }
   on('progressive-timeline', 'input', event => { replay.seek(Number(event.target.value)); changed(); });
   on('progressive-seek-go', 'click', () => { replay.seek(Number($('progressive-seek').value)); changed(); });
   on('progressive-play', 'click', () => { if (replay.playing) replay.pause(); else replay.play(performance.now()); changed(); });
   on('progressive-follow', 'click', () => { replay.follow(); changed(); });
+  on('progressive-segment', 'change', event => {
+    if (event.target.value === 'latest') replay.follow();
+    else {
+      const entry = segments.get(Number(event.target.value));
+      if (entry) replay.seek(entry.timestamp_s);
+    }
+    changed();
+  });
   on('progressive-speed', 'change', () => { replay.tick(performance.now()); replay.rate = Number($('progressive-speed').value); });
   function fit() {
     if (!geometry.drawRange.count || !geometry.boundingSphere) return;
@@ -133,6 +159,7 @@ export function connectProgressiveMap({prefix = 'progressive'} = {}) {
       if (!replay.following && (!selected || selected.revision === revision)) return;
       const endpoint = replay.following ? `preview?id=${encodeURIComponent(id)}&revision=${revision}&mesh_revision=${meshRevision}${running ? '&wait=1' : ''}` : `history-frame?id=${encodeURIComponent(id)}&revision=${selected.revision}`;
       const response = await fetch(`/api/import/${endpoint}`, {cache: 'no-store', signal: AbortSignal.timeout(10000)});
+      if (!response.ok) throw new Error('지도 응답을 받지 못해 다시 시도합니다.');
       const value = await response.json();
       if (token !== generation || cursor !== replay.version || disposed) return;
       if (value.done) running = false;
@@ -141,7 +168,10 @@ export function connectProgressiveMap({prefix = 'progressive'} = {}) {
       // Decode the corresponding image first; stale responses never replace another job.
       const image = new Image();
       image.src = `/api/import/preview-frame?id=${encodeURIComponent(id)}&name=${encodeURIComponent(value.frame_id)}`;
-      await image.decode();
+      const imageTimeout = setTimeout(() => { image.src = ''; }, 3000);
+      try {
+        await image.decode();
+      } finally { clearTimeout(imageTimeout); }
       if (token !== generation || cursor !== replay.version || disposed) return;
       revision = value.revision;
       $('progressive-frame').src = image.src; $('progressive-frame').hidden = false; $('progressive-video-empty').hidden = true;
@@ -158,24 +188,33 @@ export function connectProgressiveMap({prefix = 'progressive'} = {}) {
         cameraMarker.quaternion.setFromRotationMatrix(new THREE.Matrix4().set(r[0][0], r[0][1], r[0][2], 0, r[1][0], r[1][1], r[1][2], 0, r[2][0], r[2][1], r[2][2], 0, 0, 0, 0, 1));
         $('progressive-pose').textContent = `위치·방향 확정 · 원본 ${value.frame_number}번째 · 위치 (${value.pose_position.map(n => n.toFixed(3)).join(', ')}) · 전방 (${r.map(row => row[2].toFixed(3)).join(', ')}) · 단안 상대 좌표${value.submaps > 1 ? ' · 다른 지도 구간은 분리 보존' : ''}`;
       } else $('progressive-pose').textContent = '위치·방향 확정 대기 · 이 프레임은 깊이 복원에 사용하지 않습니다.';
-      updatePoints(value);
-      rescue.update(value.rescue); cloud.visible = !value.rescue || value.rescue.render_mode === 'points';
-      meshRevision = value.rescue?.mesh_revision ?? -1;
-      Object.assign(host.dataset, {rescuePeople: value.rescue?.people?.length || 0,
-        rescueVoxels: (value.rescue?.people || []).reduce((n, p) => n + p.voxels.length, 0),
-        rescueTriangles: value.rescue?.mesh?.triangles?.length || 0});
-      route.geometry.dispose(); route.geometry = new THREE.BufferGeometry().setFromPoints(value.cameras.map(p => new THREE.Vector3(...p)));
-      $('progressive-map-empty').hidden = value.points.length > 0 || Boolean(value.rescue?.people?.length);
+      // A transient empty live result is not an instruction to erase the map.
+      // Historical seeks still show the exact recorded (possibly empty) frame.
+      const retaining = replay.following && !value.points.length && Boolean(pointValue?.points.length);
+      if (!retaining) {
+        if (value.points.length && value.map_id !== displayedMap) { displayedMap = value.map_id; first = true; }
+        updatePoints(value);
+        rescue.update(value.rescue); cloud.visible = !value.rescue || value.rescue.render_mode === 'points';
+        meshRevision = value.rescue?.mesh_revision ?? -1;
+        Object.assign(host.dataset, {rescuePeople: value.rescue?.people?.length || 0,
+          rescueVoxels: (value.rescue?.people || []).reduce((n, p) => n + p.voxels.length, 0),
+          rescueTriangles: value.rescue?.mesh?.triangles?.length || 0});
+        route.geometry.dispose(); route.geometry = new THREE.BufferGeometry().setFromPoints(value.cameras.map(p => new THREE.Vector3(...p)));
+      }
+      Object.assign(host.dataset, {displayedMap: displayedMap ?? '', retainingMap: String(retaining)});
+      if (retaining) cameraMarker.visible = false;
+      $('progressive-map-empty').hidden = retaining || value.points.length > 0 || Boolean(value.rescue?.people?.length);
       $('progressive-map-empty').textContent = value.registered > 0
         ? '이 시점에 표시할 지도 점이 없습니다. 복원 기록이나 전체 경로 지도를 확인하세요.'
         : value.tracking === 'lost' ? '카메라 위치·방향 추적을 잃었습니다. 같은 공간을 천천히 비춰 주세요.'
         : value.tracking === 'scale_wait' ? '깊이 배율을 연결할 근거를 기다리고 있습니다.'
         : '첫 깊이 추정을 기다리고 있습니다.';
-      $('progressive-count').textContent = `처리 ${value.processed} · 지도 반영 ${value.registered}프레임 · ${(value.map_points ?? value.points.length).toLocaleString()}점`;
+      $('progressive-count').textContent = `처리 ${value.processed} · 지도 반영 ${value.registered}프레임 · ${(retaining ? pointValue.points.length : (value.map_points ?? value.points.length)).toLocaleString()}점`;
       $('progressive-latency').textContent = `현재 프레임 복원 ${value.processing_ms}ms · 추적 포함 ${value.latency_ms}ms`;
       const fusion = value.rescue?.point_fusion;
       const scope = fusion ? `전체 공간 통합 · 구조물 최대 ${fusion.point_budget.toLocaleString()}점 · 밀도 조절 ${fusion.coarsenings}회 · 시간으로 이전 구간을 지우지 않습니다` : value.render_window_s == null ? '현재 지도 구간의 전체 누적 지도' : `최근 ${value.render_window_s}초 지도`;
-      $('progressive-map-detail').textContent = `${scope} · 드래그 회전 · 휠 확대${value.submaps > 1 ? ' · 추적이 끊긴 다른 구간은 미정렬 상태로 별도 보존' : ''}`;
+      $('progressive-map-detail').textContent = retaining ? '새 점군 대기 · 마지막 유효 지도를 유지합니다.' :
+        `${scope} · 드래그 회전 · 휠 확대${value.submaps > 1 ? ` · 현재 구간 ${value.map_id + 1} · 이전 지도는 위 지도 구간에서 다시 열 수 있습니다. 구간 사이 좌표는 아직 연결되지 않았습니다.` : ''}`;
       if (first && value.points.length) { first = false; fit(); }
       if (replay.following && value.needs_presentation) {
         const painted = await new Promise(resolve => { pendingPaint = resolve; });
@@ -188,12 +227,14 @@ export function connectProgressiveMap({prefix = 'progressive'} = {}) {
       if (token === generation && !disposed) $('progressive-map-detail').textContent = `지도 갱신 재시도 중 · ${error.message}`;
     } finally {
       polling = false;
-      if ((running || replay.playing || again) && !disposed) timer = setTimeout(poll, retry ? 500 : running && replay.following ? 0 : 200);
+      if ((running || replay.playing || again || retry) && !disposed) timer = setTimeout(poll, retry ? 500 : running && replay.following ? 0 : 200);
     }
   }
   return {update(job) {
     if (active !== job.id) { active = job.id; revision = 0; paintedRevision = 0; replay = new ProgressiveReplay(); historyAt = 0; generation++; first = true;
-      geometry.setDrawRange(0,0); pointKey = pointValue = null; rescue.update(null); meshRevision = -1;
+      geometry.setDrawRange(0,0); pointKey = pointValue = null; displayedMap = null; segments.clear(); segmentEntries = 0; rescue.update(null); meshRevision = -1;
+      route.geometry.dispose(); route.geometry = new THREE.BufferGeometry(); cameraMarker.visible = false;
+      Object.assign(host.dataset, {pointCount: 0, displayedMap: '', retainingMap: 'false'});
       $('progressive-frame').hidden = true; $('progressive-video-empty').hidden = false; }
     running = ['running', 'cancelling'].includes(job.status);
     resultReady = ['ready', 'complete'].includes(job.status);

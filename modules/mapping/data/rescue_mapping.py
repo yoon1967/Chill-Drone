@@ -74,6 +74,14 @@ class SemanticEstimator:
         args.fp16 = torch.cuda.is_available()
         self.processor = DualSegmentationProcessor(args)
 
+    def prepare(self, shape):
+        shapes = getattr(self, 'prepared_shapes', set())
+        key = tuple(shape)
+        if key not in shapes:
+            self.estimate(np.zeros(shape, np.uint8), 'model_warmup', 0.)
+            shapes.add(key)
+            self.prepared_shapes = shapes
+
     def estimate(self, rgb, frame_id, stamp):
         result = self.processor.process(cv2.cvtColor(rgb, cv2.COLOR_RGB2BGR), structured=True)
         labels = np.zeros(rgb.shape[:2], np.uint8)

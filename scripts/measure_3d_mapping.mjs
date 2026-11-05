@@ -96,11 +96,12 @@ try {
     source=inject(source,'      const value = await response.json();',`
       const responseText=await response.text(), benchReceived=performance.now();
       const benchParseStart=performance.now(), value=JSON.parse(responseText), benchParsed=performance.now();`);
-    source=inject(source,'      await image.decode();','      const benchImageStart=performance.now(); await image.decode(); const benchImageEnd=performance.now();');
+    source=inject(source,'      const image = new Image();', '      let benchImageStart, benchImageEnd, benchApplyStart, benchPointEnd, benchRescueEnd;\n      const image = new Image();');
+    source=inject(source,'      await image.decode();','      benchImageStart=performance.now(); await image.decode(); benchImageEnd=performance.now();');
     const pointAnchor=pointFusion?'      updatePoints(value);':'      const position = new Float32Array(value.points.length * 3), color = new Float32Array(position.length);';
-    source=inject(source,pointAnchor,'      const benchApplyStart=performance.now();\n'+pointAnchor);
+    source=inject(source,pointAnchor,'      benchApplyStart=performance.now();\n'+pointAnchor);
     const rescueAnchor=pointFusion?"      rescue.update(value.rescue); cloud.visible = !value.rescue || value.rescue.render_mode === 'points';":'      rescue.update(value.rescue); cloud.visible = !value.rescue;';
-    source=inject(source,rescueAnchor,'      const benchPointEnd=performance.now(); rescue.update(value.rescue); const benchRescueEnd=performance.now();'+(pointFusion?" cloud.visible = !value.rescue || value.rescue.render_mode === 'points';":' cloud.visible = !value.rescue;'));
+    source=inject(source,rescueAnchor,'      benchPointEnd=performance.now(); rescue.update(value.rescue); benchRescueEnd=performance.now();'+(pointFusion?" cloud.visible = !value.rescue || value.rescue.render_mode === 'points';":' cloud.visible = !value.rescue;'));
     source=inject(source,'      if (first && value.points.length) { first = false; fit(); }',`
       if (first && value.points.length) { first = false; fit(); }
       if(prefix === 'live-progressive' && value._benchmark){

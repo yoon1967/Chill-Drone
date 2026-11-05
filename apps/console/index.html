@@ -183,7 +183,7 @@
             </div>
             <div class="progressive-panels">
               <section class="progressive-video"><div class="section-title"><h2>실제 촬영 영상 · 현재 처리 프레임</h2><span id="progressive-frame-time">—</span></div><div class="progressive-media"><img id="progressive-frame" alt="현재 지도 갱신에 사용한 실제 영상 프레임" hidden><p id="progressive-video-empty">모델 준비 후 영상 처리를 시작합니다.</p></div><p id="progressive-frame-detail">영상 프레임과 지도는 같은 처리 시점을 표시합니다.</p></section>
-              <section class="progressive-map"><div class="section-title"><h2>생성 중인 3D 지도</h2></div><div id="progressive-viewport"><p id="progressive-map-empty">첫 깊이 추정을 기다리고 있습니다.</p></div><p id="progressive-map-detail">드래그 회전 · 휠 확대 · 오른쪽 드래그 이동</p></section>
+              <section class="progressive-map"><div class="section-title"><h2>생성 중인 3D 지도</h2></div><label id="progressive-segments" class="progressive-segments" hidden>지도 구간 <select id="progressive-segment" aria-label="분리 보존된 지도 구간"><option value="latest">현재 구간 따라가기</option></select></label><div id="progressive-viewport"><p id="progressive-map-empty">첫 깊이 추정을 기다리고 있습니다.</p></div><p id="progressive-map-detail">드래그 회전 · 휠 확대 · 오른쪽 드래그 이동</p></section>
             </div>
             <div class="progressive-stats"><span id="progressive-count">처리 0프레임</span><span id="progressive-latency">지도 반영 지연 측정 대기</span><span>위치 추적 → 자세 고정 → 깊이 복원 · 단안 상대 좌표</span></div>
           </section>
