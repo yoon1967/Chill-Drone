@@ -2,6 +2,7 @@ import {ProgressiveReplay} from '/progressive-replay.js';
 import {createRescueLayer} from '/rescue-view.js';
 import {mappingPreparation} from '/map-source.js';
 import {mappingSettings, onMappingSettings, rescuePointColor} from '/mapping-settings.js';
+import {depthPointMaterial, TOF_POINT_SIZE_MULTIPLIER} from '/point-display.js';
 import * as THREE from '/vendor/three.module.js';
 import {OrbitControls} from '/vendor/OrbitControls.js';
 
@@ -22,9 +23,50 @@ export function connectProgressiveMap({prefix = 'progressive'} = {}) {
   const camera = new THREE.PerspectiveCamera(55, 1, .02, 100);
   camera.position.set(2, -2, -3); camera.up.set(0, -1, 0);
   const controls = new OrbitControls(camera, renderer.domElement);
+  const basePointSize = 2;
+  const cameraScene = new THREE.Scene();
+  cameraScene.background = scene.background;
+  const cameraView = new THREE.PerspectiveCamera(60, 1, .02, 100);
+  cameraView.up.copy(camera.up);
+  cameraView.position.set(.16, -.1, -.35);
+  cameraView.lookAt(0, 0, 1.5);
+  const frameGeometry = new THREE.BufferGeometry();
+  const frameCloud = new THREE.Points(frameGeometry, new THREE.PointsMaterial({size: basePointSize, sizeAttenuation: false, vertexColors: true}));
+  frameCloud.frustumCulled = false;
+  let frameSpace = null;
+  function updateFramePreview(preview) {
+    frameSpace = preview?.points?.length ? preview.space : null;
+    controls.enabled = frameSpace !== 'camera';
+    host.dataset.framePreview = frameSpace ?? '';
+    if (!frameSpace) { frameCloud.visible = false; delete host.dataset.framePointSize; return; }
+    const parent = frameSpace === 'camera' ? cameraScene : scene;
+    if (frameCloud.parent !== parent) parent.add(frameCloud);
+    frameCloud.visible = true;
+    frameCloud.material.size = basePointSize * (preview.tof_verified ? TOF_POINT_SIZE_MULTIPLIER : 1);
+    host.dataset.framePointSize = frameCloud.material.size;
+    const count = preview.points.length;
+    if ((frameGeometry.getAttribute('position')?.count ?? 0) < count) {
+      frameGeometry.dispose();
+      const capacity = 2 ** Math.ceil(Math.log2(count));
+      for (const name of ['position', 'color']) {
+        frameGeometry.setAttribute(name, new THREE.BufferAttribute(new Float32Array(capacity * 3), 3).setUsage(THREE.DynamicDrawUsage));
+      }
+    }
+    const position = frameGeometry.getAttribute('position'), color = frameGeometry.getAttribute('color');
+    const linear = new THREE.Color();
+    preview.points.forEach(([x, y, z, r, g, b], i) => {
+      position.setXYZ(i, x, y, z);
+      linear.setRGB(r / 255, g / 255, b / 255, THREE.SRGBColorSpace);
+      color.setXYZ(i, linear.r, linear.g, linear.b);
+    });
+    frameGeometry.setDrawRange(0, count);
+    for (const attribute of [position, color]) {
+      attribute.clearUpdateRanges(); attribute.addUpdateRange(0, count * 3); attribute.needsUpdate = true;
+    }
+  }
   const geometry = new THREE.BufferGeometry();
-  const cloud = new THREE.Points(geometry, new THREE.PointsMaterial({size: 2, sizeAttenuation: false, vertexColors: true}));
-  let pointCapacity = 0, pointPositions = new Float32Array(), pointColors = new Float32Array(), pointKey = null, pointValue = null;
+  const cloud = new THREE.Points(geometry, depthPointMaterial(basePointSize));
+  let pointCapacity = 0, pointKey = null, pointValue = null;
   function updatePoints(value, force = false) {
     const key = value.rescue?.render_mode === 'points' ? `${value.rescue.map_id}:${value.rescue.point_revision}:${value.points.length}` : null;
     pointValue = value;
@@ -32,26 +74,32 @@ export function connectProgressiveMap({prefix = 'progressive'} = {}) {
     pointKey = key;
     if (value.points.length > pointCapacity) {
       pointCapacity = Math.max(1024, 2**Math.ceil(Math.log2(value.points.length)));
-      geometry.dispose(); pointPositions = new Float32Array(pointCapacity*3); pointColors = new Float32Array(pointCapacity*3);
-      geometry.setAttribute('position', new THREE.BufferAttribute(pointPositions,3).setUsage(THREE.DynamicDrawUsage));
-      geometry.setAttribute('color', new THREE.BufferAttribute(pointColors,3).setUsage(THREE.DynamicDrawUsage));
+      geometry.dispose();
+      for (const [name, size] of [['position', 3], ['color', 3], ['tofVerified', 1]]) {
+        geometry.setAttribute(name, new THREE.BufferAttribute(new Float32Array(pointCapacity * size), size).setUsage(THREE.DynamicDrawUsage));
+      }
     }
     const prefs = mappingSettings(), low = [Infinity,Infinity,Infinity], high = [-Infinity,-Infinity,-Infinity], linear = new THREE.Color();
+    const positions = geometry.getAttribute('position'), colors = geometry.getAttribute('color'), tof = geometry.getAttribute('tofVerified');
+    let verifiedPoints = 0;
     value.points.forEach((p,i) => {
-      pointPositions.set(p.slice(0,3),i*3);
+      positions.setXYZ(i,p[0],p[1],p[2]);
       const color = rescuePointColor(p.slice(3,6),value.rescue?.point_labels?.[i],value.rescue || {},prefs);
       linear.setRGB(color[0]/255,color[1]/255,color[2]/255,THREE.SRGBColorSpace);
-      pointColors.set(linear.toArray(),i*3);
+      colors.setXYZ(i,linear.r,linear.g,linear.b);
+      const verified = Number(value.rescue?.point_tof?.[i] === true);
+      tof.setX(i, verified); verifiedPoints += verified;
       for(let axis=0;axis<3;axis++){low[axis]=Math.min(low[axis],p[axis]);high[axis]=Math.max(high[axis],p[axis]);}
     });
-    for(const name of ['position','color']) {
-      const attribute = geometry.getAttribute(name); if(!attribute) continue;
-      attribute.clearUpdateRanges(); attribute.addUpdateRange(0,value.points.length*3); attribute.needsUpdate=true;
+    for(const attribute of [positions, colors, tof]) {
+      if(!attribute) continue;
+      attribute.clearUpdateRanges(); attribute.addUpdateRange(0,value.points.length*attribute.itemSize); attribute.needsUpdate=true;
     }
     geometry.setDrawRange(0,value.points.length);
     const center = value.points.length ? new THREE.Vector3(...low.map((n,i)=>(n+high[i])/2)) : new THREE.Vector3();
     geometry.boundingSphere = new THREE.Sphere(center,value.points.length ? Math.hypot(...high.map((n,i)=>n-low[i]))/2 : 0);
     Object.assign(host.dataset,{pointCount:value.points.length,pointBufferCapacity:pointCapacity,
+      verifiedPoints,
       pointRevision:value.rescue?.point_revision ?? '', pointGeometryId:geometry.id,
       pointAttributeId:geometry.getAttribute('position')?.id ?? ''});
   }
@@ -134,11 +182,15 @@ export function connectProgressiveMap({prefix = 'progressive'} = {}) {
   }
   const observer = new ResizeObserver(() => {
     const {width, height} = host.getBoundingClientRect();
-    if (width && height) { renderer.setSize(width, height, false); camera.aspect = width / height; camera.updateProjectionMatrix(); }
+    if (width && height) {
+      renderer.setSize(width, height, false);
+      for (const view of [camera, cameraView]) { view.aspect = width / height; view.updateProjectionMatrix(); }
+    }
   }); observer.observe(host);
   renderer.setAnimationLoop(() => {
     if (!disposed && !document.hidden && !host.closest('[hidden]') && host.getBoundingClientRect().width > 0) {
-      controls.update(); renderer.render(scene, camera);
+      if (frameSpace === 'camera') renderer.render(cameraScene, cameraView);
+      else { controls.update(); renderer.render(scene, camera); }
       if (pendingPaint) {
         const resolve = pendingPaint; pendingPaint = null;
         requestAnimationFrame(() => resolve(!disposed));
@@ -173,7 +225,7 @@ export function connectProgressiveMap({prefix = 'progressive'} = {}) {
       // Before the first map, consume tracking status and keep the video hidden.
       // Sequential jobs still receive their acknowledgement after the status is painted.
       let image = null;
-      if (hasPresentedMap || hasGeometry) {
+      if (hasPresentedMap || hasGeometry || value.frame_preview || value.front_tof?.surface_supported !== undefined) {
         image = new Image();
         image.src = `/api/import/preview-frame?id=${encodeURIComponent(id)}&name=${encodeURIComponent(value.frame_id)}`;
         const imageTimeout = setTimeout(() => { image.src = ''; }, 3000);
@@ -183,11 +235,19 @@ export function connectProgressiveMap({prefix = 'progressive'} = {}) {
       }
       if (token !== generation || cursor !== replay.version || disposed) return;
       revision = value.revision;
-      $('progressive-frame-detail').textContent = {lost: '위치·방향 추적 실패 · 깊이 추정과 지도 반영을 건너뛰고 마지막 지도를 유지합니다.',
+      updateFramePreview(value.frame_preview);
+      $('progressive-frame-detail').textContent = frameSpace === 'camera' ? '현재 프레임을 카메라 기준 임시 점군으로 표시합니다.' :
+        frameSpace === 'map' ? '확인한 카메라 자세와 최근 배율로 현재 프레임의 점을 임시로 표시합니다.' :
+        value.tracking === 'pose_predicted' ? '이전 위치·회전 속도와 배율로 예측한 점을 복셀 지도에 바로 합쳤습니다.' :
+        value.tracking === 'pose_reused' ? '최근 프레임을 기준으로 현재 자세를 추정하고 이전 배율로 복셀에 합쳤습니다.' :
+        value.front_tof?.used === true ? '전방 ToF로 확인된 표면을 큰 점으로 표시합니다.' :
+        value.front_tof?.used === false ? '현재 프레임의 영상 깊이 추정점을 작은 점으로 표시합니다.' :
+        {lost: '위치·방향 추적 실패 · 깊이 추정과 지도 반영을 건너뛰고 마지막 지도를 유지합니다.',
         initializing: '영상으로 카메라 위치·방향을 초기화 중입니다. 아직 깊이 추정을 실행하지 않습니다.',
         scale_wait: '위치·방향은 확인했습니다. 깊이 배율의 일관성이 부족해 이번 프레임은 합치지 않고 누적 지도를 유지합니다.',
         tracking: '먼저 확정한 이 프레임의 카메라 자세를 유지한 채 깊이와 지도를 복원했습니다.'}[value.tracking] || '프레임 처리 중';
       const confirmed = Boolean(value.pose_confirmed && value.pose_position && value.pose_rotation);
+      const estimated = ['pose_reused', 'pose_predicted'].includes(value.tracking) && value.pose_position && value.pose_rotation;
       const guidance = value.tracking === 'lost'
         ? '점을 잡지 못했습니다. 천천히 이동하거나 끊긴 부분을 다시 보여주세요. 마지막 지도를 유지하며 위치를 다시 찾고 있습니다.'
         : value.tracking === 'initializing'
@@ -195,13 +255,15 @@ export function connectProgressiveMap({prefix = 'progressive'} = {}) {
           : value.tracking === 'scale_wait' ? '깊이 정보를 연결하지 못했습니다. 이전에 촬영한 부분을 천천히 다시 보여주세요.' : '';
       trackingNote.hidden = !guidance;
       trackingNote.textContent = guidance;
-      cameraMarker.visible = confirmed && value.map_id === value.pose_map_id;
-      if (confirmed) {
+      cameraMarker.visible = Boolean((confirmed || estimated) && value.map_id === value.pose_map_id);
+      if (confirmed || estimated) {
         const r = value.pose_rotation;
         cameraMarker.position.fromArray(value.pose_position);
         cameraMarker.quaternion.setFromRotationMatrix(new THREE.Matrix4().set(r[0][0], r[0][1], r[0][2], 0, r[1][0], r[1][1], r[1][2], 0, r[2][0], r[2][1], r[2][2], 0, 0, 0, 0, 1));
-        $('progressive-pose').textContent = `위치·방향 확정 · 원본 ${value.frame_number}번째 · 위치 (${value.pose_position.map(n => n.toFixed(3)).join(', ')}) · 전방 (${r.map(row => row[2].toFixed(3)).join(', ')}) · 단안 상대 좌표${value.submaps > 1 ? ' · 다른 지도 구간은 분리 보존' : ''}`;
-      } else $('progressive-pose').textContent = '위치·방향 확정 대기 · 이 프레임은 깊이 복원에 사용하지 않습니다.';
+        const label = {pose_predicted: '선형 이동 기반 자세 예측', pose_reused: '이전 프레임 기준 자세 추정'}[value.tracking] || '위치·방향 확정';
+        $('progressive-pose').textContent = `${label} · 원본 ${value.frame_number}번째 · 위치 (${value.pose_position.map(n => n.toFixed(3)).join(', ')}) · 전방 (${r.map(row => row[2].toFixed(3)).join(', ')}) · 단안 상대 좌표${value.submaps > 1 ? ' · 다른 지도 구간은 분리 보존' : ''}`;
+      } else $('progressive-pose').textContent = frameSpace === 'camera' ? '위치·방향 확정 대기 · 카메라 기준 점군 표시 중' :
+        '위치·방향 확정 대기 · 이 프레임은 깊이 복원에 사용하지 않습니다.';
       // A transient empty live result is not an instruction to erase the map.
       // Historical seeks still show the exact recorded (possibly empty) frame.
       const retaining = replay.following && !value.points.length && Boolean(pointValue?.points.length);
@@ -217,7 +279,7 @@ export function connectProgressiveMap({prefix = 'progressive'} = {}) {
       }
       Object.assign(host.dataset, {displayedMap: displayedMap ?? '', retainingMap: String(retaining)});
       if (retaining) cameraMarker.visible = false;
-      $('progressive-map-empty').hidden = retaining || hasGeometry;
+      $('progressive-map-empty').hidden = retaining || hasGeometry || Boolean(frameSpace);
       $('progressive-map-empty').textContent = value.registered > 0
         ? '이 시점에 표시할 지도 점이 없습니다. 복원 기록이나 전체 경로 지도를 확인하세요.'
         : value.tracking === 'lost' ? '카메라 위치·방향 추적을 잃었습니다. 같은 공간을 천천히 비춰 주세요.'
@@ -227,8 +289,11 @@ export function connectProgressiveMap({prefix = 'progressive'} = {}) {
       $('progressive-latency').textContent = `현재 프레임 복원 ${value.processing_ms}ms · 추적 포함 ${value.latency_ms}ms`;
       const fusion = value.rescue?.point_fusion;
       const scope = fusion ? `전체 공간 통합 · 구조물 최대 ${fusion.point_budget.toLocaleString()}점 · 밀도 단계 ${fusion.coarsenings}` : value.render_window_s == null ? '현재 지도 구간의 전체 누적 지도' : `최근 ${value.render_window_s}초 지도`;
-      $('progressive-map-detail').textContent = !image ? $('progressive-map-empty').textContent : retaining ? '새 점군 대기 · 마지막 유효 지도를 유지합니다.' :
+      const detail = frameSpace === 'camera' ? '카메라 기준 임시 점군 · 자세와 배율이 확인되면 누적 지도로 돌아갑니다.' :
+        frameSpace === 'map' ? '현재 프레임 임시 점군 · 누적 지도에는 확인된 관측을 저장합니다.' :
+        !image ? $('progressive-map-empty').textContent : retaining ? '새 점군 대기 · 마지막 유효 지도를 유지합니다.' :
         `${scope} · 드래그 회전 · 휠 확대${value.submaps > 1 ? ` · 현재 구간 ${value.map_id + 1} · 이전 지도는 위 지도 구간에서 다시 열 수 있습니다. 구간 사이 좌표는 아직 연결되지 않았습니다.` : ''}`;
+      $('progressive-map-detail').textContent = value.front_tof ? `${detail} · 큰 점 ToF · 작은 점 영상 추정` : detail;
       if (first && value.points.length) { first = false; fit(); }
       if (image) {
         const frame = $('progressive-frame');
@@ -258,10 +323,11 @@ export function connectProgressiveMap({prefix = 'progressive'} = {}) {
   return {update(job) {
     if (active !== job.id) { active = job.id; revision = 0; paintedRevision = 0; replay = new ProgressiveReplay(); historyAt = 0; generation++; first = true;
       hasPresentedMap = false;
+      updateFramePreview(null);
       trackingNote.hidden = true; trackingNote.textContent = '';
       geometry.setDrawRange(0,0); pointKey = pointValue = null; displayedMap = null; segments.clear(); segmentEntries = 0; rescue.update(null); meshRevision = -1;
       route.geometry.dispose(); route.geometry = new THREE.BufferGeometry(); cameraMarker.visible = false;
-      Object.assign(host.dataset, {pointCount: 0, displayedMap: '', retainingMap: 'false'});
+      Object.assign(host.dataset, {pointCount: 0, verifiedPoints: 0, displayedMap: '', retainingMap: 'false'});
       $('progressive-frame').hidden = true;
       $('progressive-frame-time').textContent = '첫 지도 대기';
       $('progressive-video-empty').hidden = false;
@@ -271,7 +337,7 @@ export function connectProgressiveMap({prefix = 'progressive'} = {}) {
     replayControls();
     const preparation = mappingPreparation(job);
     $('progressive-state').textContent = job.status === 'ready' && job.history_available ? '저장된 복원 과정 다시보기 · 저장 지도 열기로 결과를 확인하세요' : job.status === 'complete' ? '복원 완료 · 저장 지도 열기로 계속 살펴보세요' : job.status === 'failed' ? '처리 중단 · 마지막 지도 유지' : job.status === 'cancelling' ? '현재 프레임 처리를 중단하고 있습니다' : job.status === 'cancelled' ? '취소됨 · 마지막 지도 유지' :
-      {model: '모델 준비 중 · 영상은 대기합니다', semantic_model: '사람·공간 인식 모델 준비 중', semantics: '사람과 구조물 구분 중', depth: '자세 확정 완료 → 깊이 추정 중', tracking: '카메라 위치·방향 추적 중', pose_wait: '자세 확정 대기 · 깊이 복원 보류', mapping: '확정한 자세로 지도 복원 중', presentation: '현재 프레임 표시 후 다음 프레임 진행', saving: '전체 통합 지도 저장 중'}[job.stage] || '영상 처리 준비 중';
+      {model: '모델 준비 중 · 영상은 대기합니다', semantic_model: '사람·공간 인식 모델 준비 중', semantics: '사람과 구조물 구분 중', depth: '현재 영상의 깊이 추정 중', tracking: '카메라 위치·방향 추적 중', pose_wait: '자세 확정 대기 · 깊이 복원 보류', frame_preview: '현재 프레임의 관측 점군 표시 중', mapping: '확정한 자세로 지도 복원 중', presentation: '현재 프레임 표시 후 다음 프레임 진행', saving: '전체 통합 지도 저장 중'}[job.stage] || '영상 처리 준비 중';
     if (job.stage === 'integration') $('progressive-state').textContent = `전체 경로 통합 중 · ${job.progress?.integrated_frames || 0} / ${job.progress?.integration_total || 0}`;
     if (preparation) {
       trackingNote.hidden = true;
@@ -294,5 +360,5 @@ export function connectProgressiveMap({prefix = 'progressive'} = {}) {
     }
     preparing = Boolean(preparation);
     clearTimeout(timer); poll();
-  }, dispose() { unsubscribeSettings(); rescue.dispose(); listeners.abort(); disposed = true; running = false; generation++; clearTimeout(timer); pendingPaint?.(false); pendingPaint = null; observer.disconnect(); renderer.setAnimationLoop(null); controls.dispose(); geometry.dispose(); cloud.material.dispose(); route.geometry.dispose(); route.material.dispose(); markerLines.geometry.dispose(); markerLines.material.dispose(); renderer.dispose(); renderer.domElement.remove(); }};
+  }, dispose() { unsubscribeSettings(); rescue.dispose(); listeners.abort(); disposed = true; running = false; generation++; clearTimeout(timer); pendingPaint?.(false); pendingPaint = null; observer.disconnect(); renderer.setAnimationLoop(null); controls.dispose(); geometry.dispose(); cloud.material.dispose(); frameGeometry.dispose(); frameCloud.material.dispose(); route.geometry.dispose(); route.material.dispose(); markerLines.geometry.dispose(); markerLines.material.dispose(); renderer.dispose(); renderer.domElement.remove(); }};
 }

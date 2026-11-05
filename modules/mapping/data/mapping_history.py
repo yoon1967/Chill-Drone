@@ -15,7 +15,7 @@ import threading
 import zipfile
 
 import numpy as np
-from .mapping_limits import MAX_PREVIEW_POINTS
+from .mapping_limits import MAX_FRAME_PREVIEW_POINTS, MAX_PREVIEW_POINTS
 
 SCHEMA = 'pose-depth-history/1.0'
 
@@ -84,6 +84,9 @@ class HistoryWriter:
                   'camera_path': np.asarray(snapshot['cameras'], dtype=np.float32).reshape(-1, 3)}
         if observation:
             arrays.update(observation)
+        frame_preview = snapshot.get('frame_preview')
+        if frame_preview:
+            arrays['frame_preview_points'] = np.asarray(frame_preview['points'], dtype=np.float32).reshape(-1, 6)
         if snapshot.get('rescue') is not None:
             arrays['rescue_json'] = np.frombuffer(json.dumps(snapshot['rescue'], allow_nan=False,
                 separators=(',', ':')).encode('utf-8'), dtype=np.uint8)
@@ -95,7 +98,10 @@ class HistoryWriter:
                 archive.writestr(name + '.npy', _array_bytes(array))
         from modules.mapping.localization.orbslam3 import replace_file
         replace_file(temporary, path)
-        entry = {key: value for key, value in snapshot.items() if key not in {'points', 'cameras', 'rescue'}}
+        entry = {key: value for key, value in snapshot.items() if key not in {'points', 'cameras', 'rescue', 'frame_preview'}}
+        if frame_preview:
+            entry['frame_preview_space'] = frame_preview['space']
+            entry['frame_preview_tof'] = frame_preview.get('tof_verified', False)
         if snapshot.get('rescue') is not None:
             entry['semantic_mapping'] = True
         entry.update(observation=bool(observation), visible_points=len(snapshot['points']))
@@ -173,12 +179,24 @@ class HistoryReader:
             path = self.root / 'frames' / f'{revision:08d}.npz'
             if path.is_symlink() or not path.resolve().is_relative_to(self.root.resolve()):
                 raise ValueError('invalid_history_chunk_path')
+            result = dict(entries[revision - 1])
             with zipfile.ZipFile(path) as archive:
                 for name, limit in [('points.npy', MAX_PREVIEW_POINTS * 6 * 4 + 4096), ('camera_path.npy', 300 * 3 * 4 + 4096)]:
                     if archive.getinfo(name).file_size > limit:
                         raise ValueError('history_preview_too_large')
                 points = np.load(io.BytesIO(archive.read('points.npy')), allow_pickle=False)
                 cameras = np.load(io.BytesIO(archive.read('camera_path.npy')), allow_pickle=False)
+                space = result.pop('frame_preview_space', None)
+                if space is not None:
+                    name = 'frame_preview_points.npy'
+                    if (not isinstance(space, str) or space not in {'camera', 'map'} or name not in archive.namelist()
+                            or archive.getinfo(name).file_size > MAX_FRAME_PREVIEW_POINTS * 6 * 4 + 4096):
+                        raise ValueError('invalid_frame_depth_preview')
+                    local = np.load(io.BytesIO(archive.read(name)), allow_pickle=False)
+                    if local.dtype != np.float32 or local.ndim != 2 or local.shape[1] != 6 or len(local) > MAX_FRAME_PREVIEW_POINTS or not np.isfinite(local).all():
+                        raise ValueError('invalid_frame_depth_preview')
+                    result['frame_preview'] = {'space': space, 'points': local.tolist(),
+                        'tof_verified': result.pop('frame_preview_tof', False) is True}
                 rescue = None
                 if 'rescue_json.npy' in archive.namelist():
                     if archive.getinfo('rescue_json.npy').file_size > 12 * 1024 * 1024:
@@ -191,7 +209,7 @@ class HistoryReader:
                     validate_payload(rescue)
             if points.ndim != 2 or points.shape[1] != 6 or cameras.ndim != 2 or cameras.shape[1] != 3 or not np.isfinite(points).all() or not np.isfinite(cameras).all():
                 raise ValueError('invalid_history_preview')
-            result = {**entries[revision - 1], 'points': points.tolist(), 'cameras': cameras.tolist(), 'recorded': True}
+            result.update(points=points.tolist(), cameras=cameras.tolist(), recorded=True)
             if rescue is not None:
                 result['rescue'] = rescue
             return result

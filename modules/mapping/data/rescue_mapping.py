@@ -213,7 +213,7 @@ class RescueMap:
         self.chunk = 0
         self.chunk_started = 0.
 
-    def update(self, rgb, depth, pose, params, semantics, scale, map_id, frame_id, stamp):
+    def update(self, rgb, depth, pose, params, semantics, scale, map_id, frame_id, stamp, *, tof_verified=False, pose_predicted=False):
         labels, confidence = validate_semantics(semantics, depth.shape, frame_id, stamp)
         size = max(1e-5, .04 * scale)
         if map_id != self.map_id:
@@ -225,8 +225,10 @@ class RescueMap:
             self.chunk_started = stamp
             self.chunk = 0
         started = time.perf_counter()
-        self.surface.integrate(rgb, depth, pose, params, labels, confidence)
-        people = self.sightings.update(semantics['people'], depth, pose, params, stamp, frame_id)
+        self.surface.integrate(rgb, depth, pose, params, labels, confidence,
+            tof_verified=tof_verified, pose_predicted=pose_predicted)
+        people = self.sightings.snapshot(stamp) if pose_predicted else self.sightings.update(
+            semantics['people'], depth, pose, params, stamp, frame_id)
         return dict(schema_version=SCHEMA, classes=list(CLASSES), map_id=map_id,
                     person_color=self.options['person_color'], person_outline=self.options['person_outline'],
                     people=people, render_mode='points', point_revision=self.surface.revision,
@@ -267,6 +269,9 @@ def validate_payload(value):
     labels = value.get('point_labels', [])
     if not isinstance(labels, list) or len(labels) > MAX_PREVIEW_POINTS or any(type(v) is not int or not 0 <= v < len(CLASSES) for v in labels):
         raise ValueError('invalid_rescue_point_labels')
+    tof = value.get('point_tof')
+    if tof is not None and (not isinstance(tof, list) or len(tof) != len(labels) or any(type(v) is not bool for v in tof)):
+        raise ValueError('invalid_rescue_point_tof')
     def vectors(rows, maximum, *, bounds=False):
         array = np.asarray(rows, dtype=float)
         if array.size == 0:

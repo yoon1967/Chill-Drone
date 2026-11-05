@@ -1,9 +1,11 @@
 """Reuse the existing native ORB-SLAM3 camera tracker before depth inference.
 
 One JPEG in flight. Each response pins pose, map ID and sparse depth anchors to
-the exact input timestamp. No cached trajectory or RGB-D pose optimization.
+the exact input timestamp. Recent native poses can bridge a short live gap.
 """
 from __future__ import annotations
+
+from collections import deque
 
 import json
 import math
@@ -63,6 +65,66 @@ def depth_in_pose_units(depth, anchors, tracking_size, excluded=None):
         return None
     scale = float(np.median(ratios[inliers]))
     return (depth * scale).astype(np.float32), scale
+
+
+class ConstantVelocityPose:
+    """Extrapolate from native poses only, in the same map and for a bounded gap."""
+    max_prediction_s = 1.
+    max_sample_gap_s = .25
+
+    def __init__(self):
+        self.poses = deque(maxlen=4)
+        self.map_id = None
+        self.in_gap = False
+
+    def update(self, result, stamp):
+        if result.get('timestamp_s') != stamp:
+            return None, False
+        map_id = result.get('map_id')
+        pose = fixed_camera_pose(result, stamp)
+        if map_id != self.map_id:
+            self.poses.clear()
+            self.map_id = map_id
+        if pose is not None:
+            if self.in_gap or (self.poses and stamp - self.poses[-1][0] > self.max_sample_gap_s):
+                self.poses.clear()
+            self.poses.append((stamp, pose, result.get('depth_anchors', [])))
+            self.in_gap = False
+            return None, False
+
+        first = not self.in_gap
+        self.in_gap = True
+        if not self.poses or map_id is None:
+            return None, False
+        last_stamp, last, anchors = self.poses[-1]
+        elapsed = stamp - last_stamp
+        if not 0 < elapsed <= self.max_prediction_s:
+            return None, False
+
+        predicted = last.copy()
+        previous_stamp, previous, _ = self.poses[0]
+        interval = last_stamp - previous_stamp
+        if 1 / 120 <= interval <= self.max_sample_gap_s:
+            steps = elapsed / interval
+            delta = last[:3, 3] - previous[:3, 3]
+            samples = np.asarray(anchors, dtype=float)
+            z = samples[:, 2] if samples.ndim == 2 and samples.shape[1] == 3 else np.empty(0)
+            z = z[np.isfinite(z) & (z > 0)]
+            distance = np.linalg.norm(delta)
+            if distance > 0 and z.size:
+                # Cap extrapolation in native units using visible scene depth.
+                steps_translation = min(steps, .2 * float(np.median(z)) / distance)
+            else:
+                steps_translation = min(steps, 4.)
+            predicted[:3, 3] += delta * steps_translation
+
+            relative = previous[:3, :3].T @ last[:3, :3]
+            axis_angle = cv2.Rodrigues(relative)[0]
+            angle = np.linalg.norm(axis_angle)
+            if angle > 0:
+                rotation = cv2.Rodrigues(axis_angle * min(steps, math.radians(15) / angle))[0]
+                predicted[:3, :3] = last[:3, :3] @ rotation
+        return predicted, first
 
 
 class OrbPoseTracker:

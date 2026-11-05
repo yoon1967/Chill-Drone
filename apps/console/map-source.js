@@ -138,9 +138,8 @@ export function connectionStatus({reachable = true, responseOK = true, state = {
   } else result.note = preparation ? `${preparation.title} · ${preparation.detail}` : active ? '드론 응답과 영상 수신·지도 처리를 구분해 표시합니다.' : '시작 전에는 드론 연결을 확인하지 않습니다. 종료 후에는 기록만 표시합니다.';
   const tof = state.depth_job?.progress?.front_tof;
   if (active && state.input === 'tello_camera' && !error && !preparation && tof) {
-    result.note = Number.isFinite(tof.distance_m) ?
-      `전방 ToF ${tof.distance_m.toFixed(2)} m · ${tof.corrected ? '정면 점군 보정 적용' : '영상 깊이와 대조 중'}` :
-      '전방 ToF 실측 대기 · 영상 깊이로 복원 중';
+    if (!Number.isFinite(tof.distance_m)) result.note = '전방 ToF 실측 대기 · 영상 추정 점군 표시';
+    else result.note = `전방 ToF ${tof.distance_m.toFixed(2)} m · ${tof.used ? '정면 표면 반영' : '영상 추정 점군 표시'}`;
   }
   return result;
 }

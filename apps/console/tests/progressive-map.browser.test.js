@@ -10,11 +10,13 @@ test('reconstruction has no axis widget and completed maps reopen after replay o
     try {
       const page = await browser.newPage({viewport: {width: 1440, height: 1000}});
       const errors = []; page.on('pageerror', e => errors.push(e.message));
+      page.on('console', message => { if (message.text().includes('Shader Error')) errors.push(message.text()); });
       const job = {id: 'import_1234567890123456', name: 'test', status: 'running', stage: 'mapping', history_available: true,
         options: {mode: 'depth_rgbd'}, progress: {processed: 1, points: 3}};
       const completed = {source: 'saved', schema_version: 'phone-sfm-result/1.2', input_run_id: 'replay-test',
         created_utc: '2026-11-03T00:00:00Z', pose_source: 'orb_slam3_depth', scale: {unit: 'arbitrary'}, segment_id: 0,
         points: [[0, 0, 0, 1, 255, 0, 0, 0, 1], [1, 1, 0, 1, 0, 255, 0, 0, 1], [2, 0, 1, 1, 0, 0, 255, 0, 1]],
+        rescue: {render_mode: 'points', point_labels: [0, 0, 0], point_tof: [true, false, true], people: []},
         cameras: [{frame_id: 'frame_0000001.jpg', timestamp_s: .2, position: [0, 0, 0], width: 32, height: 32,
           params: [20, 20, 16, 16], world_from_camera_rotation: [[1, 0, 0], [0, 1, 0], [0, 0, 1]]}],
         quality: {result_status: 'complete', input_frames: 1, registered_frames: 1, registration_ratio: 1,
@@ -25,19 +27,37 @@ test('reconstruction has no axis widget and completed maps reopen after replay o
       await page.route('**/api/import/library', route => route.fulfill({json: {initial: job.id, items: []}}));
       await page.route('**/api/import/status?*', route => route.fulfill({json: job}));
       await page.route('**/api/import/history?*', route => route.fulfill({json: {entries: [
-        {revision: 1, timestamp_s: 0}, {revision: 2, timestamp_s: .2}, {revision: 3, timestamp_s: 2}]}}));
-      await page.route('**/api/import/history-frame?*', route => route.fulfill({json: {revision: 3, frame_id: 'frame_0000061.jpg', frame_number: 61, timestamp_s: 2, tracking: 'lost', points: [], cameras: [], processed: 2, registered: 1, dropped: 0, latency_ms: 80, processing_ms: 70}}));
-      const mapped = {revision: 2, frame_id: 'frame_0000002.jpg', frame_number: 2, timestamp_s: .2, tracking: 'tracking', pose_confirmed: true, pose_position: [0, 0, 0], pose_rotation: [[1, 0, 0], [0, 1, 0], [0, 0, 1]], map_id: 0, pose_map_id: 0, points: [[0, 0, 2, 255, 0, 0], [1, 0, 2, 0, 255, 0], [0, 1, 2, 0, 0, 255]], cameras: [[0, 0, 0]], processed: 2, registered: 1, dropped: 0, latency_ms: 80, processing_ms: 70};
+        {revision: 1, timestamp_s: 0}, {revision: 2, timestamp_s: .1}, {revision: 3, timestamp_s: .15},
+        {revision: 4, timestamp_s: .18}, {revision: 5, timestamp_s: .2}, {revision: 6, timestamp_s: 2}]}}));
+      await page.route('**/api/import/history-frame?*', route => route.fulfill({json: {revision: 6, frame_id: 'frame_0000061.jpg', frame_number: 61, timestamp_s: 2, tracking: 'lost', points: [], cameras: [], processed: 2, registered: 1, dropped: 0, latency_ms: 80, processing_ms: 70}}));
+      const mapped = {revision: 5, frame_id: 'frame_0000002.jpg', frame_number: 2, timestamp_s: .2, tracking: 'tracking', pose_confirmed: true, pose_position: [0, 0, 0], pose_rotation: [[1, 0, 0], [0, 1, 0], [0, 0, 1]], map_id: 0, pose_map_id: 0, points: [[0, 0, 2, 255, 0, 0], [1, 0, 2, 0, 255, 0], [0, 1, 2, 0, 0, 255]], cameras: [[0, 0, 0]], processed: 2, registered: 1, dropped: 0, latency_ms: 80, processing_ms: 70,
+        rescue: {map_id: 0, render_mode: 'points', point_revision: 1, point_labels: [0, 0, 0], point_tof: [true, false, true], people: []}};
       let preview = {...mapped, revision: 1, frame_id: 'frame_0000001.jpg', frame_number: 1, timestamp_s: 0,
-        tracking: 'initializing', pose_confirmed: false, points: [], cameras: [], processed: 1, registered: 0};
+        tracking: 'initializing', pose_confirmed: false, points: [], cameras: [], processed: 1, registered: 0, rescue: null};
       await page.route('**/api/import/preview?*', route => route.fulfill({json:
         Number(new URL(route.request().url()).searchParams.get('revision')) === preview.revision ? {unchanged: true} : preview}));
       await page.route('**/api/import/preview-frame?*', route => route.fulfill({contentType: 'image/png', body: Buffer.from('iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mP8/x8AAwMCAO+aWQ0AAAAASUVORK5CYII=', 'base64')}));
       await page.goto(url + '/#saved');
       await page.waitForFunction(() => document.querySelector('#progressive-count').textContent.includes('지도 반영 0'));
       assert.equal(await page.locator('#progressive-frame').isVisible(), false);
-      preview = mapped;
+      preview = {...preview, revision: 2, timestamp_s: .1, front_tof: {distance_m: null, used: false, surface_supported: false},
+        frame_preview: {space: 'camera', tof_verified: false, points: mapped.points}};
       await page.locator('#progressive-frame:not([hidden])').waitFor();
+      const small = Number(await page.locator('#progressive-viewport').getAttribute('data-frame-point-size'));
+      assert.equal(small, 2);
+      preview = {...preview, revision: 3, timestamp_s: .15, tracking: 'lost',
+        front_tof: {distance_m: .8, surface_supported: true},
+        frame_preview: {space: 'camera', tof_verified: true, points: mapped.points}};
+      await page.locator('#progressive-viewport[data-frame-point-size="2.8"] canvas').waitFor();
+      await page.locator('#progressive-frame:not([hidden])').waitFor();
+      assert.match(await page.locator('#progressive-map-detail').textContent(), /카메라 기준 임시 점군/);
+      assert.match(await page.locator('#progressive-count').textContent(), /지도 반영 0/);
+      preview = {...mapped, revision: 4, timestamp_s: .18, tracking: 'pose_predicted', pose_confirmed: false};
+      await page.locator('#progressive-pose').filter({hasText: /선형 이동 기반 자세 예측/}).waitFor();
+      preview = mapped;
+      await page.locator('#progressive-pose').filter({hasText: /위치·방향 확정/}).waitFor();
+      await page.locator('#progressive-viewport[data-frame-preview=""][data-point-count="3"]').waitFor();
+      assert.equal(await page.locator('#progressive-viewport').getAttribute('data-verified-points'), '2');
       assert.match(await page.locator('#progressive-frame').getAttribute('src'), /frame_0000002/);
       await page.waitForFunction(() => document.querySelector('#progressive-count').textContent.includes('지도 반영 1'));
       assert.equal(await page.locator('#progressive-viewport canvas').isVisible(), true);

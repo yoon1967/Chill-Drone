@@ -18,6 +18,7 @@ def integrate_history(output, progress=lambda **fields: None):
         if not entry['observation']:
             continue
         path = reader.root / 'frames' / f"{entry['revision']:08d}.npz"
+        predicted = entry['tracking'] == 'pose_predicted'
         with np.load(path, allow_pickle=False) as frame:
             map_id = int(frame['map_id'])
             group = groups.setdefault(map_id, {'map_id': map_id, 'cells': {}, 'cameras': [],
@@ -39,11 +40,12 @@ def integrate_history(output, progress=lambda **fields: None):
                 labels = frame['semantic_labels'] if 'semantic_labels' in frame else np.zeros(depth.shape, np.uint8)
                 confidence = frame['semantic_confidence'] if 'semantic_confidence' in frame else np.ones(depth.shape, np.float32)
                 group['surface'].integrate(frame['rgb'], depth, frame['world_from_camera'],
-                    frame['intrinsics'], labels, confidence)
+                    frame['intrinsics'], labels, confidence, tof_verified=bool(frame['tof_verified']) if 'tof_verified' in frame else False,
+                    pose_predicted=predicted)
                 detections = [{'mask': mask, 'confidence': float(confidence)} for mask, confidence in
                     zip(frame['person_instances'], frame['person_confidences'])] if 'person_instances' in frame else []
-                people = group['sightings'].update(detections, depth, frame['world_from_camera'],
-                    frame['intrinsics'], entry['timestamp_s'], entry['frame_id'])
+                people = group['sightings'].snapshot(entry['timestamp_s']) if predicted else group['sightings'].update(
+                    detections, depth, frame['world_from_camera'], frame['intrinsics'], entry['timestamp_s'], entry['frame_id'])
                 group['rescue'] = dict(schema_version=SCHEMA, map_id=map_id, people=people,
                     render_mode='points', point_revision=group['surface'].revision,
                     point_labels=group['surface'].labels(),
@@ -60,6 +62,10 @@ def integrate_history(output, progress=lambda **fields: None):
                 'position': pose[:3, 3].tolist(), 'world_from_camera_rotation': pose[:3, :3].tolist(),
                 'model': 'PINHOLE', 'width': frame['rgb'].shape[1], 'height': frame['rgb'].shape[0],
                 'params': frame['intrinsics'].tolist()})
+            if predicted:
+                group['cameras'][-1]['pose_source'] = 'constant_velocity'
+            elif entry['tracking'] == 'pose_reused':
+                group['cameras'][-1]['pose_source'] = 'previous_frame_pnp'
         done += 1
         progress(integrated_frames=done, integration_total=total, integrated_maps=len(groups),
             integrated_points=sum(len(g['surface'].cells) if 'surface' in g else len(g['cells']) for g in groups.values()))
@@ -68,6 +74,8 @@ def integrate_history(output, progress=lambda **fields: None):
     for group in groups.values():
         if 'surface' in group:
             group['cells'] = dict(enumerate(group['surface'].points()))
+            if group['surface'].tof_verified.any():
+                group['rescue']['point_tof'] = group['surface'].tof_verified.tolist()
             group['surface'].close()
             del group['surface'], group['sightings']
     return groups, entries
