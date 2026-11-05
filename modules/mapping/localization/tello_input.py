@@ -127,7 +127,7 @@ class DirectCamera:
                 yield None, time.monotonic()
                 time.sleep(.05)
             else:
-                time.sleep(.015)
+                time.sleep(.005)
 
     def close(self):
         try:

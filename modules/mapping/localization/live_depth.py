@@ -23,6 +23,7 @@ class LiveDepthSession:
         self.path.mkdir(parents=True)
         self.camera, self.imports = camera, imports
         self.input_kind, self.timestamp_basis = input_kind, timestamp_basis
+        self.continuous = mapping['live_policy'] == 'continuous'
         self.condition = threading.Condition()
         self.closing = self.done = self.ready = self.waiting = False
         self.pending = self.preview = self.reason = self.error = None
@@ -43,7 +44,7 @@ class LiveDepthSession:
         self.job.update(status='running', stage='model', output=self.path / 'reconstruction',
             options={'mode': 'depth_rgbd', 'frame_fps': camera['fps'],
                      'camera': camera, 'run_id': self.id, 'render_window_s': None, **mapping},
-            live_session=self, presentation_sync=mapping['live_policy'] == 'sequential')
+            live_session=self, presentation_sync=not self.continuous)
         self._write_state()
         self.worker = threading.Thread(target=self._run, daemon=True, name=self.id)
         self.job['thread'] = self.worker
@@ -51,7 +52,13 @@ class LiveDepthSession:
 
     @property
     def can_accept_frame(self):
-        return self.waiting and not self.closing and not self.done and time.monotonic() - self.last_admitted >= 1 / 15
+        if self.closing or self.done:
+            return False
+        if self.continuous and self.input_kind == 'tello_camera':
+            # Retain the newest frame in the one-slot camera mailbox when the
+            # tracking worker is busy. Never let inference grow the backlog.
+            return self.ready
+        return self.waiting and (self.continuous or time.monotonic() - self.last_admitted >= 1 / 15)
 
     def stats(self):
         job = self.imports.status(self.depth_job_id)
@@ -129,6 +136,8 @@ class LiveDepthSession:
             self.received += 1
             if self.jpeg_recording:
                 self.jpeg_recording.offer(jpeg, pts)
+            if self.pending is not None:
+                self.dropped += 1
             self.pending = (jpeg, pts, sequence)
             self.waiting = False
             self.condition.notify_all()
