@@ -88,7 +88,7 @@ def parse_ext_tof(response: str | None) -> dict:
         return {"front_tof_m": None, "valid": False, "reason": reason, "raw": response}
     try:
         mm = int(float(parts[1]))
-    except ValueError:
+    except (ValueError, OverflowError):
         return {"front_tof_m": None, "valid": False, "reason": "bad_format", "raw": response}
     if mm >= EXT_TOF_OUT_OF_RANGE_MM:
         return {"front_tof_m": None, "valid": False, "reason": "out_of_range", "raw": response}

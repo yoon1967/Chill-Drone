@@ -22,6 +22,7 @@ import numpy as np
 from PIL import Image, ImageOps
 
 from .model_assets import DEPTH_MODEL as MODEL, cached_snapshot, ModelAssetsMissing
+from .tof_depth import TofDepth
 
 
 def write_json(path, value):
@@ -253,7 +254,7 @@ class LivePoseFrames(PoseFrames):
         packet = self.receive()
         if packet is None:
             return None
-        jpeg, stamp, sequence = packet
+        jpeg, stamp, sequence, *sensor = packet
         image = cv2.imdecode(np.frombuffer(jpeg, dtype=np.uint8), cv2.IMREAD_COLOR)
         if image is None or (image.shape[1], image.shape[0]) != self.original_size:
             raise ValueError('frame_dimensions_do_not_match_calibration')
@@ -261,7 +262,7 @@ class LivePoseFrames(PoseFrames):
         received = time.monotonic()
         result = self.native.track(rgb, stamp)
         self.tracked += 1
-        return sequence + 1, stamp, rgb, received, self.original_size, result
+        return sequence + 1, stamp, rgb, received, self.original_size, result, *sensor
 
     def take(self):
         if self.continuous:
@@ -356,6 +357,7 @@ def run(source, output, options, estimator_factory=DepthEstimator, tracker_facto
     producer = history = None
     rescue = semantics_estimator = None
     cameras = []
+    tof_calibrations = {} if options.get('front_tof_enabled') else None
     last_nonempty_points = []
     render_window_s = None  # Spatial compaction retains all ages within the point budget.
     def check_cancelled():
@@ -411,7 +413,8 @@ def run(source, output, options, estimator_factory=DepthEstimator, tracker_facto
             check_cancelled()
             if item is None:
                 break
-            number, stamp, display_rgb, received, original_size, native_pose = item
+            number, stamp, display_rgb, received, original_size, native_pose, *sensor = item
+            tof_sample = sensor[0] if sensor else None
             tick = time.monotonic()
             # Admit pose before invoking depth. The returned matrix is immutable here.
             publish(stage='tracking', frame_number=number, timestamp_s=stamp, dropped=producer.dropped)
@@ -431,6 +434,8 @@ def run(source, output, options, estimator_factory=DepthEstimator, tracker_facto
             state = 'initializing' if native_pose.get('tracking_state', 0) <= 1 else 'lost'
             depth_scale = None
             rescue_snapshot = None
+            tof = None if tof_calibrations is None else dict(distance_m=tof_sample[0] if tof_sample else None,
+                meters_per_slam_unit=None, corrected=False)
             if pose is not None:
                 state = 'scale_wait'
                 publish(stage='depth', pose_confirmed=True)
@@ -447,11 +452,19 @@ def run(source, output, options, estimator_factory=DepthEstimator, tracker_facto
                     semantics = semantics_estimator.estimate(rgb, name, stamp)
                     from modules.mapping.data.rescue_mapping import validate_semantics, PERSON
                     labels, confidence = validate_semantics(semantics, depth.shape, name, stamp)
-                aligned = depth_in_pose_units(depth, native_pose.get('depth_anchors', []), (w, h),
-                    excluded=(labels == PERSON) if semantics is not None else None)
+                excluded = (labels == PERSON) if semantics is not None else None
+                aligned = depth_in_pose_units(depth, native_pose.get('depth_anchors', []), (w, h), excluded=excluded)
                 if aligned is not None and np.count_nonzero(depth) > depth.size * .05:
                     depth, depth_scale = aligned
                     map_id = native_pose['map_id']
+                    if tof is not None:
+                        if tof_sample is not None:
+                            if map_id not in tof_calibrations:
+                                tof_calibrations[map_id] = TofDepth()
+                            depth, tof['corrected'] = tof_calibrations[map_id].correct(depth, depth_scale, params,
+                                tof_sample, excluded)
+                        if map_id in tof_calibrations:
+                            tof['meters_per_slam_unit'] = tof_calibrations[map_id].meters_per_unit
                     if active_map is not None and active_map != map_id:
                         # The append-only history already durably holds this
                         # segment. Avoid serializing its entire cloud again on
@@ -509,6 +522,8 @@ def run(source, output, options, estimator_factory=DepthEstimator, tracker_facto
                 'processed': status['processed'], 'registered': status['registered'],
                 'dropped': producer.dropped, 'processing_ms': round((time.monotonic() - tick) * 1000),
                 'latency_ms': round((time.monotonic() - received) * 1000)}
+            if tof is not None:
+                snapshot['front_tof'] = status['front_tof'] = tof
             if rescue_snapshot:
                 snapshot['rescue'] = rescue_snapshot
                 from modules.mapping.data.rescue_mapping import person_points
@@ -608,6 +623,19 @@ def finalize_history(output, status, run_id, started, publish=lambda **fields: N
             'spatial_density_adaptive': primary.get('rescue', {}).get('render_mode') == 'points'}}
     if primary.get('rescue'):
         scene['rescue'] = primary['rescue']
+    tof_by_map = {}
+    for entry in entries:
+        if not entry['observation'] or 'front_tof' not in entry:
+            continue
+        tof = entry['front_tof']
+        summary = tof_by_map.setdefault(entry['map_id'], dict(paired_frames=0, corrected_frames=0,
+            meters_per_slam_unit=None))
+        summary['paired_frames'] += tof['distance_m'] is not None
+        summary['corrected_frames'] += tof['corrected']
+        if tof['meters_per_slam_unit'] is not None:
+            summary['meters_per_slam_unit'] = tof['meters_per_slam_unit']
+    if tof_by_map:
+        scene['depth_mapping']['front_tof_by_map'] = tof_by_map
     publish(stage='saving', points=len(rows))
     write_json(output / 'scene.json', scene)
     write_json(output / 'poses.json', {k: v for k, v in scene.items() if k not in ('points', 'point_fields')})

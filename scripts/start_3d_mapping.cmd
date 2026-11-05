@@ -138,7 +138,7 @@ def main():
     parser = argparse.ArgumentParser(prog='start_3d_mapping.cmd', description=__doc__)
     parser.add_argument('input', nargs='?', type=Path, help='Optional video file or saved result folder')
     parser.add_argument('--port', type=int, default=8790, help='First local port to try (default: 8790)')
-    parser.add_argument('--gateway', help='Optional running Tello control gateway, e.g. http://127.0.0.1:8010')
+    parser.add_argument('--gateway', help='Share video and any fresh front ToF from a running Tello gateway, e.g. http://127.0.0.1:8010')
     parser.add_argument('--no-browser', action='store_true', help='Print the page URL without opening a browser')
     parser.add_argument('--prepare-models', action='store_true', help='Prepare packages and model weights with internet before connecting to the drone')
     args = parser.parse_args()
@@ -195,6 +195,8 @@ def main():
     page = url + ('#saved' if args.input else '#live')
     print(f'Page: {page}\nKeep this window open. Press Ctrl+C to stop this server.', flush=True)
     print('Live 3D mapping requires running Docker Desktop and the ssafy-orbslam3:local image.')
+    if not args.input:
+        print('Tello mapping uses fresh front ToF from the selected drone input when available.')
     process = subprocess.Popen(command, cwd=ROOT)
     opener = build_opener(ProxyHandler({}))
     try:

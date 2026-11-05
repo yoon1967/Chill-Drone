@@ -66,7 +66,9 @@ class TelloInputTests(unittest.TestCase):
                 probe.bind(('127.0.0.1', 0))
                 return probe.getsockname()[1]
         state_port, video_port = port(), port()
-        fake = FakeTello(cmd_port=0, state_port=state_port, video_port=video_port).start()
+        fake = FakeTello(cmd_port=0, state_port=state_port, video_port=video_port)
+        fake.ext_kit = True
+        fake.start()
         self.addCleanup(fake.close)
         source = DirectCamera(
             lambda **kw: TelloLink(host='127.0.0.1', cmd_port=fake._sock.getsockname()[1],
@@ -78,6 +80,8 @@ class TelloInputTests(unittest.TestCase):
             jpeg, stamp = next(frames)
             self.assertTrue(jpeg.startswith(b'\xff\xd8'))
             self.assertGreater(stamp, 0)
+            wait_for(lambda: source.front_tof is not None)
+            self.assertAlmostEqual(source.front_tof[0], .481)
             fake.send_video = False
             while next(frames)[0] is not None:
                 pass
@@ -90,11 +94,15 @@ class TelloInputTests(unittest.TestCase):
             frames.close()
         finally:
             source.close()
-        self.assertEqual(fake.received, ['command', 'streamon', 'streamoff'])
+        self.assertEqual(fake.received[:2], ['command', 'streamon'])
+        self.assertEqual(set(fake.received[2:-1]), {'EXT tof?'})
+        self.assertEqual(fake.received[-1], 'streamoff')
+        self.assertIsNone(source.front_tof)
 
-    def test_direct_camera_uses_existing_receiver_and_sends_only_session_commands(self):
+    def test_direct_camera_keeps_video_running_without_a_front_sensor(self):
         link, video = Mock(), Mock()
         link.send.return_value.ok = True
+        link.send.return_value.response = 'unknown command: tof'
         now = time.monotonic()
         video.jpeg_snapshot.side_effect = [(JPEG, now, 1), (JPEG, now, 1), (JPEG, now + .01, 2)]
         factory = Mock(return_value=link)
@@ -104,9 +112,11 @@ class TelloInputTests(unittest.TestCase):
         self.assertEqual(next(iterator)[1], now)
         self.assertEqual(next(iterator)[1], now + .01)
         iterator.close()
+        wait_for(lambda: link.send.call_count >= 3)
         source.close()
         factory.assert_called_once_with(allow_flight=False)
-        self.assertEqual([c.args[0] for c in link.send.call_args_list], ['command', 'streamon', 'streamoff'])
+        self.assertEqual([c.args[0] for c in link.send.call_args_list], ['command', 'streamon', 'EXT tof?', 'streamoff'])
+        self.assertIsNone(source.front_tof)
         video.stop.assert_called_once()
         link.close.assert_called_once()
 
@@ -136,7 +146,7 @@ class TelloInputTests(unittest.TestCase):
         with self.assertRaisesRegex(InputError, 'too_large'):
             next(mjpeg_frames(BytesIO(b'\xff\xd8' + b'x' * 2097153), lambda: False))
 
-    def gateway(self, *, old=False, age=.01, on=True, redirect=False):
+    def gateway(self, *, old=False, age=.01, on=True, redirect=False, front_tof=None):
         requests = []
         class Handler(BaseHTTPRequestHandler):
             def log_message(self, *args):
@@ -157,7 +167,7 @@ class TelloInputTests(unittest.TestCase):
                     body = b'--frame\r\nContent-Type: image/jpeg\r\n\r\n' + JPEG + b'\r\n'
                     self.send_header('Content-Type', 'multipart/x-mixed-replace; boundary=frame')
                 else:
-                    body = json.dumps({'run_id': 'fake', 'stream_on': on,
+                    body = json.dumps({'run_id': 'fake', 'stream_on': on, 'front_tof': front_tof,
                         'video': {'frame_age_s': age, **({} if old else {'on': on, 'available': on})}}).encode()
                 self.send_header('Content-Length', str(len(body)))
                 self.end_headers()
@@ -189,6 +199,14 @@ class TelloInputTests(unittest.TestCase):
             with self.subTest(values=values), self.assertRaises((InputError, HTTPError)):
                 source.open(lambda: False)
             self.assertNotIn('/video.mjpg', requests)
+
+    def test_gateway_uses_only_fresh_forward_range(self):
+        for age, expected in [(.01, .8), (1, None), (-.01, None)]:
+            with self.subTest(age=age):
+                address, _ = self.gateway(front_tof={'m': .8, 'valid': True, 'age_s': age})
+                source = GatewayCamera(address)
+                source.check()
+                self.assertEqual(source.front_tof[0] if source.front_tof else None, expected)
 
     def test_gateway_burst_frames_remain_strictly_timed_on_coarse_windows_clock(self):
         source = GatewayCamera('http://127.0.0.1:8010')

@@ -43,7 +43,8 @@ class LiveDepthSession:
         self.job = imports.job(self.depth_job_id)
         self.job.update(status='running', stage='model', output=self.path / 'reconstruction',
             options={'mode': 'depth_rgbd', 'frame_fps': camera['fps'],
-                     'camera': camera, 'run_id': self.id, 'render_window_s': None, **mapping},
+                     'camera': camera, 'run_id': self.id, 'render_window_s': None, **mapping,
+                     'front_tof_enabled': input_kind == 'tello_camera'},
             live_session=self, presentation_sync=not self.continuous)
         self._write_state()
         self.worker = threading.Thread(target=self._run, daemon=True, name=self.id)
@@ -105,7 +106,7 @@ class LiveDepthSession:
         self.last_input = time.monotonic()
         self.raw_received += 1
 
-    def offer(self, jpeg, pts, sequence):
+    def offer(self, jpeg, pts, sequence, *, front_tof=None):
         if not math.isfinite(pts) or not 0 <= pts <= 86400 or sequence < 0:
             raise ValueError('invalid_frame_timestamp_or_sequence')
         if len(jpeg) > 2097152 or not jpeg.startswith(b'\xff\xd8') or not jpeg.endswith(b'\xff\xd9'):
@@ -139,6 +140,8 @@ class LiveDepthSession:
             if self.pending is not None:
                 self.dropped += 1
             self.pending = (jpeg, pts, sequence)
+            if front_tof is not None:
+                self.pending += (front_tof,)
             self.waiting = False
             self.condition.notify_all()
             if self.input_kind == 'browser_camera':

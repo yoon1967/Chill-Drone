@@ -18,6 +18,8 @@ from .orbslam3_live import live_camera
 from .orbslam3 import atomic_json, read_json
 
 DEFAULT_CAMERA = Path(__file__).resolve().parents[3] / 'data/mapping/tello/20261028/v1/camera.json'
+FRONT_TOF_MAX_FRAME_GAP_S = .2
+FRONT_TOF_MIN_M, FRONT_TOF_MAX_M = .1, 1.2
 
 
 def retryable(error):
@@ -90,6 +92,9 @@ class DirectCamera:
         self.link = self.video = None
         self.stream_requested = False
         self.recording = self.recording_sink = None
+        self.front_tof = None
+        self.tof_stop = threading.Event()
+        self.tof_thread = None
 
     def set_recording(self, recording):
         self.recording = recording
@@ -112,6 +117,26 @@ class DirectCamera:
         self.stream_requested = True
         if not self.link.send("streamon", timeout=3, source="mapping").ok:
             raise InputError("tello_streamon_failed")
+        if not cancelled():
+            self.tof_stop.clear()
+            self.tof_thread = threading.Thread(target=self._poll_front_tof, daemon=True, name='mapping-front-tof')
+            self.tof_thread.start()
+
+    def _poll_front_tof(self):
+        from modules.autonomy.tello_link.tello_link import parse_ext_tof
+
+        while not self.tof_stop.is_set():
+            started = time.monotonic()
+            try:
+                response = self.link.send('EXT tof?', timeout=.25, source='mapping').response
+            except OSError:
+                response = None
+            finished = time.monotonic()
+            reading = parse_ext_tof(response)
+            self.front_tof = ((reading['front_tof_m'], (started + finished) / 2)
+                if reading['valid'] and finished - started <= FRONT_TOF_MAX_FRAME_GAP_S else None)
+            interval = .2 if reading['valid'] or reading['reason'] == 'out_of_range' else 2.
+            self.tof_stop.wait(max(0., interval - (finished - started)))
 
     def frames(self, cancelled):
         last, last_new = None, time.monotonic()
@@ -130,6 +155,11 @@ class DirectCamera:
                 time.sleep(.005)
 
     def close(self):
+        self.tof_stop.set()
+        if self.tof_thread:
+            self.tof_thread.join()
+            self.tof_thread = None
+        self.front_tof = None
         try:
             if self.link and self.stream_requested:
                 self.link.send("streamoff", timeout=1, source="mapping")
@@ -159,11 +189,13 @@ class GatewayCamera:
         self.run_id = None
         self.source_label = "gateway_unspecified"
         self.recording = self.recording_sink = None
+        self.front_tof = None
 
     def set_recording(self, recording):
         self.recording = recording
 
     def check(self):
+        started = time.perf_counter()
         try:
             with self.opener.open(self.address + self.state_path, timeout=2) as response:
                 data = response.read(65537)
@@ -187,6 +219,16 @@ class GatewayCamera:
         self.run_id, self.checked = run, time.monotonic()
         mode = state.get("source", state.get("mode"))
         self.source_label = "gateway_reported_fake" if mode == "fake" else "gateway_reported_tello" if mode == "tello" else "gateway_unspecified"
+        tof = state.get('front_tof')
+        self.front_tof = None
+        if isinstance(tof, dict) and tof.get('valid') is True:
+            age, distance = tof.get('age_s'), tof.get('m')
+            if (type(age) in (int, float) and type(distance) in (int, float)
+                    and 0 <= age <= FRONT_TOF_MAX_FRAME_GAP_S - (time.perf_counter() - started)
+                    and FRONT_TOF_MIN_M <= distance < FRONT_TOF_MAX_M):
+                # Both clocks are local. Subtract age from request start to
+                # conservatively account for the HTTP round trip.
+                self.front_tof = (distance, started - age)
 
     def open(self, cancelled):
         self.check()
@@ -210,6 +252,7 @@ class GatewayCamera:
             yield jpeg, stamp
 
     def close(self):
+        self.front_tof = None
         if self.response:
             self.response.close()
             self.response = None
@@ -317,7 +360,12 @@ class TelloMapInput:
                             base = stamp
                             if getattr(session, 'recording', None):
                                 session.recording.set_mapping_origin(base)
-                        session.offer(jpeg, stamp - base, sequence)
+                        sample = getattr(source, 'front_tof', None)
+                        if (sample is not None and abs(sample[1] - stamp) <= FRONT_TOF_MAX_FRAME_GAP_S
+                                and FRONT_TOF_MIN_M <= sample[0] < FRONT_TOF_MAX_M):
+                            session.offer(jpeg, stamp - base, sequence, front_tof=(sample[0], sample[1] - base))
+                        else:
+                            session.offer(jpeg, stamp - base, sequence)
                         sequence += 1
                     if not cancelled():
                         raise InputError('tello_gateway_stream_ended')
