@@ -1,0 +1,10 @@
+{
+  "repository": "https://github.com/npu-ius-lab/MoNA-Bench.git",
+  "revision": "e5a20ac47dbdff8051432fed0184243e94506e73",
+  "ros_distribution": "noetic",
+  "ubuntu": "20.04",
+  "upstream_tested_ros": "melodic",
+  "upstream_tested_ubuntu": "18.04",
+  "scope": "Tello driver, SC-DepthV2, scale recovery, ORB-SLAM2, Fast-Planner, PID controller",
+  "license": "GPL-3.0 plus component-specific licenses; SC-Depth encoder includes Monodepth2 non-commercial terms"
+}
