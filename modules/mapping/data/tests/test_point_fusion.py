@@ -43,6 +43,13 @@ class PointFusionTests(unittest.TestCase):
             with self.subTest(value=value), self.assertRaises(ValueError):
                 SemanticSurface(.04, spacing_increment=value)
 
+    def test_preview_keeps_rounded_coordinates_and_integer_clipped_colors(self):
+        surface = self.surface([[-.123456, .234567, 1.345678]])
+        surface.rgb[:] = [-3., 128.6, 260.]
+        self.assertEqual(surface.points(), [[-.12346, .23457, 1.34568, 0, 129, 255]])
+        self.assertTrue(all(type(c) is int for c in surface.points()[0][3:]))
+        self.assertIs(surface.points(), surface.points(), 'unchanged previews reuse the cached rows')
+
     def test_larger_point_map_survives_history_replay_without_truncation(self):
         count = DEFAULT_POINT_BUDGET
         snapshot = dict(revision=1, timestamp_s=0., points=[[i*.01,0,1,120,140,160] for i in range(count)],

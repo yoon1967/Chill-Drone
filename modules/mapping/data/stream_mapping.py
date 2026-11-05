@@ -59,10 +59,15 @@ class DepthEstimator:
         if self.device == 'cuda':
             self.model.half()
 
-    def prepare(self):
-        if not getattr(self, 'prepared', False):
-            self.estimate(np.zeros((144, 256, 3), dtype=np.uint8))
-            self.prepared = True
+    def prepare(self, shape=(144, 256, 3)):
+        # CUDA kernels/allocations depend on the network input shape. Preparing
+        # 256px alone leaves the first 384/518px map frame cold.
+        shapes = getattr(self, 'prepared_shapes', set())
+        key = tuple(max(14, round(n / 14) * 14) for n in shape[:2])
+        if key not in shapes:
+            self.estimate(np.zeros(shape, dtype=np.uint8))
+            shapes.add(key)
+            self.prepared_shapes = shapes
 
     def estimate(self, rgb):
         torch = self.torch
@@ -78,7 +83,16 @@ class DepthEstimator:
             depth = self.model(pixel_values=values).predicted_depth
             depth = torch.nn.functional.interpolate(depth[:, None].float(), size=(h, w),
                                                     mode='bilinear', align_corners=False)[0, 0]
-        return depth.cpu().numpy().astype(np.float32)
+        result = depth.cpu().numpy().astype(np.float32)
+        self.last_inference = time.monotonic()
+        return result
+
+    def keep_warm(self, shape):
+        # After long pose loss, WDDM/CUDA idle wake-up can cost ~700ms on the
+        # measured laptop. A bounded synthetic inference while waiting keeps
+        # the next real frame responsive; it never enters the map/history.
+        if self.device == 'cuda' and time.monotonic() - self.last_inference >= .75:
+            self.estimate(np.zeros(shape, np.uint8))
 
 
 def frames(source, fps, rate=None, long_side=256):
@@ -355,8 +369,11 @@ def run(source, output, options, estimator_factory=DepthEstimator, tracker_facto
         model_started = time.perf_counter()
         estimator = estimator_factory()
         # Warm up before starting playback so model loading never consumes the input.
+        camera = options.get('camera') or dict(width=4, height=3)
+        ratio = options['depth_resolution'] / max(camera['width'], camera['height'])
+        preparation_shape = (round(camera['height'] * ratio), round(camera['width'] * ratio), 3)
         if hasattr(estimator, 'prepare'):
-            estimator.prepare()
+            estimator.prepare(preparation_shape)
         else:
             estimator.estimate(np.zeros((144, 256, 3), dtype=np.uint8))
         from modules.mapping.data.rescue_mapping import SemanticEstimator, RescueMap
@@ -364,6 +381,8 @@ def run(source, output, options, estimator_factory=DepthEstimator, tracker_facto
         if options['semantic_mapping']:
             publish(stage='semantic_model')
             semantics_estimator = (semantic_factory or SemanticEstimator)()
+            if hasattr(semantics_estimator, 'prepare'):
+                semantics_estimator.prepare(preparation_shape)
             status['semantic_mapping'] = True
             status['depth_resolution'] = options['depth_resolution']
         check_cancelled()
@@ -424,11 +443,10 @@ def run(source, output, options, estimator_factory=DepthEstimator, tracker_facto
                     depth, depth_scale = aligned
                     map_id = native_pose['map_id']
                     if active_map is not None and active_map != map_id:
-                        (output / 'submaps').mkdir(exist_ok=True)
-                        archive = f'submaps/{len(submaps):04d}-{active_map}.json'
-                        write_json(output / archive, {'map_id': active_map,
-                            'points': rescue.surface.points() if rescue.surface else [], 'cameras': cameras})
-                        submaps.append({'map_id': active_map, 'file': archive})
+                        # The append-only history already durably holds this
+                        # segment. Avoid serializing its entire cloud again on
+                        # the live transition; finalization writes full submaps.
+                        submaps.append(active_map)
                         cameras = []
                     active_map = map_id
                     publish(stage='mapping')
@@ -452,6 +470,8 @@ def run(source, output, options, estimator_factory=DepthEstimator, tracker_facto
                         'width': rgb.shape[1], 'height': rgb.shape[0], 'params': list(params)})
                     status['registered'] += 1
                     mapped, state = True, 'tracking'
+            elif hasattr(estimator, 'keep_warm'):
+                estimator.keep_warm(preparation_shape)
             status['revision'] += 1
             # One immutable snapshot binds this image and its map to the same revision.
             points = []

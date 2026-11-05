@@ -72,7 +72,7 @@ export function mappingPreparation(job) {
   if (job?.status !== 'running') return null;
   const stage = job.progress?.stage || job.stage;
   const title = {model: '깊이 모델 준비 중', semantic_model: '사람·공간 인식 모델 준비 중'}[stage];
-  return title ? {title, detail: '모델을 불러오고 있습니다. 준비가 끝나면 카메라 위치 추적과 3D 지도 생성을 시작합니다.'} : null;
+  return title ? {title, detail: '모델을 불러오고 선택한 해상도로 첫 추론을 준비하고 있습니다. 준비가 끝나면 카메라 위치 추적과 3D 지도 생성을 시작합니다.'} : null;
 }
 
 // Read-only status: a browser/server failure never proves that the drone is offline.

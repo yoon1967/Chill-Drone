@@ -86,9 +86,13 @@ class SemanticSurface:
         if limit is not None and len(self.keys) > limit:
             self.compact(limit)
         if self._cached_points is None:
-            positions = np.round(self.xyz, 5).tolist()
-            colors = np.rint(self.rgb).clip(0,255).astype(np.uint8).tolist()
-            self._cached_points = [p+c for p,c in zip(positions, colors)]
+            # Box the numeric columns once, then allocate one row list per point.
+            # Separate position/color lists plus concatenation triple the number
+            # of GC-tracked rows and trigger long scans of loaded model objects.
+            rows = np.empty((len(self.xyz), 6), dtype=object)
+            rows[:, :3] = np.round(self.xyz, 5)
+            rows[:, 3:] = np.rint(self.rgb).clip(0,255).astype(np.uint8)
+            self._cached_points = rows.tolist()
         return self._cached_points
 
     def metadata(self):
