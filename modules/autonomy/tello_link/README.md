@@ -232,6 +232,8 @@ python modules/autonomy/tello_link/gateway_server.py             # 실제 Tello 
 | `POST /api/detections` | 사람 탐지 이벤트 `person-detection-event/1.0` 1개. 201 저장, 200 중복(`event_id`), 400 검증 실패, 403 다른 PC, 500 저장 실패 |
 | `GET /api/detections` | 발견 목록(최신순)과 탐지 상태 |
 | `GET`·`PUT /api/detections/<event_id>.jpg` | 발견 사진. PUT은 게이트웨이 프레임이 아닌 이벤트의 사진 올리기(JPEG) |
+| `WS /ws/autonomy` | 자율 비행 하나(`AUTONOMY_BRIDGE_V0_1`). 게이트웨이 → `hello`·`tello_state`(원문 약 10Hz)·`flight_status`(바뀔 때 + 1Hz)·`control`, 자율 → `hello`·`cmd_vel`·`mission_state`·`ack`·`request`·`pose`·`path`·`people`. 기본은 같은 PC만, 두 번째 연결은 `busy` |
+| `GET /api/autonomy` | 자율 위치·계획 경로·찾은 사람 전체. 상태(`drone_state.autonomy`)에는 버전만 싣는다 |
 
 - `gateway.py`가 화면 메시지 → 모드 판정기 → `FlightController`를 잇는다. 20Hz 루프에서 연결·안전 착륙·착륙 완료·비상 정지 뒤 지상을
   판정기에 알리고, 판정기가 고른 rc를 `FlightController.set_input()`에 넣는다.
@@ -246,9 +248,16 @@ python modules/autonomy/tello_link/gateway_server.py             # 실제 Tello 
   - 드론을 자동으로 멈추지 않는다. 시험·시연용 가짜 탐지: `python modules/autonomy/tello_link/fake_detector.py`(영상을 켠 뒤)
 - 프레임 번호: `/snapshot.jpg`로 내준 프레임은 최근 64장(최대 10초)을 보관한다(`frame_store.py`). 탐지처럼 프레임을 가져가 처리하는 쪽은
   결과에 `input_id`·`frame_id`만 담으면 게이트웨이가 같은 사진과 시각을 다시 찾는다. 영상을 켜기 전에 남아 있던 프레임은 내주지 않는다.
-- 아직 없는 것: 자율 비행 연결(`/ws/autonomy`), 전방 ToF 조회(`front_tof`는 `not_polled`), 통신 품질(`link`), 기록 재생(`--replay`).
+- 자율 비행 연결(`autonomy_link.py`): 판정(속도 명령을 기체로 보낼지, 끊김 0.5초 제자리·2초 일시정지, 넘겨받기, 도착하면 일시정지)은 모드 판정기가 한다.
+  - 자율이 지상에서 붙어야 자율 시작이 된다(위치 원점 = 출발점). 이륙 뒤 붙으면 `autonomy_joined_in_air`로 거절.
+  - `pose`·`path`·`people`은 `frame: "map"`(켠 자리 원점, x 앞·y 왼쪽, m)만 받고 좌표를 바꾸지 않는다. `drone_state.pose`에 위치, `drone_state.autonomy`에 연결·명령 빈도·찾은 사람 수.
+  - `people`은 0.1.0 초안에 없던 것으로, 자율 비행 쪽 `people.json`(확정 `people`·미확정 `unconfirmed`, 각 `x`·`y`·`conf`·`hits`·`gone`·`t_first`·`top`) 모양 그대로.
+  - 회차 폴더 `autonomy/`: `events.jsonl`(연결·control·ack·request·임무 상태 변화·찾은 사람 변화), `pose.jsonl`(1초에 한 번), `latest.json`(경로·찾은 사람).
+  - 시험용 가짜 자율: `python modules/autonomy/tello_link/fake_autonomy.py --gateway http://127.0.0.1:8010` (2 m 네모를 돌며 사람 2명을 찾는다. `--stall-at 5`는 끊김 시험, `--reject-start`는 시작 거절)
+  - 다리 노드(ROS 2)와 WSL2 접속(`--allow-remote-autonomy`), 영상 UDP 복사는 다음 단계.
+- 아직 없는 것: 전방 ToF 조회(`front_tof`는 `not_polled`, 자율에도 보내지 않음), 통신 품질(`link`), 기록 재생(`--replay`).
 - `check_server.py`와 같은 기본 포트(8010)를 쓴다. Tello는 처음 `command`를 보낸 쪽에만 답하므로 둘을 동시에 켜지 않는다.
-- 시험: `python -B -m unittest discover -s modules/autonomy/tello_link/tests -p "test_gateway.py"` (가짜 Tello, 약 6초)
+- 시험: `python -B -m unittest discover -s modules/autonomy/tello_link/tests -p "test_gateway.py"` (가짜 Tello, 약 6초), 자율 연결은 `-p "test_autonomy.py"`
 
 ## 회차 로그
 

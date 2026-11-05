@@ -15,6 +15,9 @@
 - GET /overlay.mjpg        AI 합성 영상(최신 장만). 2초 넘게 안 오면 보내지 않는다
 - POST /api/map           3D 지도(gateway-map/0.1, 지도 연결기 gateway_map_bridge.py). 탐지와 같이 기본은 같은 PC에서만 받는다
 - GET  /api/map           최신 3D 지도(점군·카메라 경로). 없으면 404
+- WS  /ws/autonomy        자율 비행 하나(AUTONOMY_BRIDGE_V0_1). 게이트웨이 → hello·tello_state·flight_status·control,
+                          자율 → hello·cmd_vel·mission_state·ack·request·pose·path·people. 기본은 같은 PC만, 두 번째는 busy
+- GET  /api/autonomy      자율 위치·경로·찾은 사람 전체 (시험용 가짜 자율: fake_autonomy.py)
 이륙·rc가 허용된 상태로 뜨므로, 실제 기체에서는 주변을 비우고 실행한다. 이륙은 화면에서 주변 확인 뒤에만 된다.
 check_server.py(연결 점검·첫 조작 화면)와 같은 포트를 쓰므로 동시에 켜지 않는다. Tello는 처음 command를 보낸 쪽에만 답한다.
 """
@@ -143,6 +146,53 @@ def build_app(args) -> FastAPI:
             clients.pop(key, None)
             gw.client_closed(key)  # 그 화면의 rc는 바로 0
 
+    def autonomy_sender_ok(ws: WebSocket) -> bool:
+        # 인증이 없으므로 기본은 같은 PC의 자율(가짜 자율, mirrored 네트워크의 WSL2)만. 다리 노드 단계에서 --allow-remote-autonomy
+        return getattr(args, "allow_remote_autonomy", False) or (ws.client is not None and ws.client.host in LOCAL_HOSTS)
+
+    @app.websocket("/ws/autonomy")
+    async def ws_autonomy(ws: WebSocket):
+        """자율 비행 하나(AUTONOMY_BRIDGE_V0_1). 두 번째 연결은 busy로 닫는다."""
+        await ws.accept()
+        if not autonomy_sender_ok(ws):
+            await ws.send_json({"schema_version": "0.1.0", "type": "error", "reason": "not_local"})
+            await ws.close(code=1008)
+            return
+        key = f"au-{next(ids)}"
+        loop = asyncio.get_running_loop()
+        queue: asyncio.Queue = asyncio.Queue(maxsize=200)
+
+        def put(msg):   # 게이트웨이 스레드에서 불린다. 자율이 못 받아 쌓이면 버린다(오래된 상태는 쓸모없다)
+            if not queue.full():
+                queue.put_nowait(msg)
+
+        if not await asyncio.to_thread(gw.autonomy_open, key, lambda msg: loop.call_soon_threadsafe(put, msg)):
+            await ws.send_json({"schema_version": "0.1.0", "type": "error", "reason": "busy"})
+            await ws.close(code=1013)
+            return
+
+        async def sender():
+            while True:
+                await ws.send_json(await queue.get())
+
+        send_task = asyncio.create_task(sender())
+        try:
+            while True:
+                msg = await ws.receive_json()
+                reply = await asyncio.to_thread(gw.autonomy_message, key, msg)
+                if reply is not None:
+                    put(reply)
+        except (WebSocketDisconnect, ValueError, RuntimeError):
+            pass
+        finally:
+            send_task.cancel()
+            await asyncio.to_thread(gw.autonomy_closed, key)   # auto였으면 바로 paused
+
+    @app.get("/api/autonomy")
+    def get_autonomy():
+        """자율 위치·경로·찾은 사람 전체. 상태(drone_state.autonomy)에는 버전만 싣는다."""
+        return gw.autonomy.snapshot()
+
     @app.get("/snapshot.jpg")
     def snapshot():
         """최신 프레임 1장. 탐지 결과는 헤더의 X-Input-Id·X-Frame-Id로 이 프레임을 가리킨다."""
@@ -260,6 +310,8 @@ def main():
     ap.add_argument("--log-root", default=DEFAULT_LOG_ROOT, help="회차 로그 폴더 (기본: data/outputs/tello)")
     ap.add_argument("--host", default="127.0.0.1", help="폰에서 열려면 0.0.0.0 (같은 망 안에서만)")
     ap.add_argument("--port", type=int, default=8010)
+    ap.add_argument("--allow-remote-autonomy", action="store_true",
+                    help="다른 주소(WSL2 NAT 등)의 자율 연결도 받는다. 인증이 없으니 같은 PC·같은 망 시험에서만")
     ap.add_argument("--allow-remote-detections", action="store_true",
                     help="다른 PC의 탐지 결과·3D 지도도 받기 (인증이 없으므로 같은 망 시험에서만)")
     args = ap.parse_args()
