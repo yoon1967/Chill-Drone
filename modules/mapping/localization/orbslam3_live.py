@@ -17,26 +17,29 @@ from modules.mapping.data.live_recording import SessionRecording
 
 
 def require_slam_image():
-    """Bounded preflight; reconcile a failed tag lookup with the engine's image list.
-
-    Retry once when tag lookup and image listing disagree.
-    Never pull/build implicitly: a genuine missing image remains an actionable error.
-    """
+    """Retry transient engine startup delays without pulling or building images."""
     inspect = ["docker", "image", "inspect", "--format", "{{.Id}}", IMAGE]
-    try:
+    timed_out = False
+    for attempt in range(3):
+        if attempt:
+            time.sleep(.5)
         try:
-            return subprocess.check_output(inspect, stderr=subprocess.DEVNULL, text=True, timeout=4).strip()
-        except subprocess.CalledProcessError:
-            listed = subprocess.check_output(["docker", "image", "ls", "--no-trunc", "--quiet", IMAGE],
-                                             stderr=subprocess.DEVNULL, text=True, timeout=4).strip()
-            if not listed:
-                raise RuntimeError("slam_image_missing")
             try:
-                return subprocess.check_output(inspect, stderr=subprocess.DEVNULL, text=True, timeout=4).strip()
+                image_id = subprocess.check_output(inspect, stderr=subprocess.DEVNULL, text=True, timeout=4).strip()
+                if image_id:
+                    return image_id
             except subprocess.CalledProcessError:
-                raise RuntimeError("slam_image_missing") from None
-    except (OSError, subprocess.TimeoutExpired, subprocess.CalledProcessError):
-        raise RuntimeError("slam_docker_unavailable") from None
+                listed = subprocess.check_output(["docker", "image", "ls", "--no-trunc", "--quiet", IMAGE],
+                                                 stderr=subprocess.DEVNULL, text=True, timeout=4).strip()
+                if not listed:
+                    raise RuntimeError("slam_image_missing")
+        except subprocess.TimeoutExpired:
+            timed_out = True
+        except subprocess.CalledProcessError:
+            timed_out = False
+        except OSError:
+            raise RuntimeError("slam_docker_unavailable") from None
+    raise RuntimeError('slam_docker_timeout' if timed_out else 'slam_docker_unavailable')
 
 
 def live_camera(config):

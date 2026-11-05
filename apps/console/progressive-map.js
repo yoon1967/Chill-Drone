@@ -10,6 +10,8 @@ export function connectProgressiveMap({prefix = 'progressive'} = {}) {
   const listeners = new AbortController();
   const on = (id, event, callback) => $(id).addEventListener(event, callback, {signal: listeners.signal});
   const host = $('progressive-viewport');
+  const trackingNote = $('progressive-tracking-note') || document.createElement('p'); trackingNote.id = `${prefix}-tracking-note`;
+  trackingNote.hidden = true; trackingNote.setAttribute('role', 'status'); host.append(trackingNote);
   const renderer = new THREE.WebGLRenderer({antialias: false, powerPreference: 'low-power'});
   renderer.setPixelRatio(Math.min(devicePixelRatio, 1.5));
   host.append(renderer.domElement);
@@ -186,6 +188,13 @@ export function connectProgressiveMap({prefix = 'progressive'} = {}) {
         scale_wait: '위치·방향은 확인했습니다. 깊이 배율의 일관성이 부족해 이번 프레임은 합치지 않고 누적 지도를 유지합니다.',
         tracking: '먼저 확정한 이 프레임의 카메라 자세를 유지한 채 깊이와 지도를 복원했습니다.'}[value.tracking] || '프레임 처리 중';
       const confirmed = Boolean(value.pose_confirmed && value.pose_position && value.pose_rotation);
+      const guidance = value.tracking === 'lost'
+        ? '점을 잡지 못했습니다. 천천히 이동하거나 끊긴 부분을 다시 보여주세요. 마지막 지도를 유지하며 위치를 다시 찾고 있습니다.'
+        : value.tracking === 'initializing'
+          ? '첫 위치를 찾고 있습니다. 벽과 바닥의 무늬가 함께 보이도록 카메라를 천천히 옆으로 이동해 주세요.'
+          : value.tracking === 'scale_wait' ? '깊이 정보를 연결하지 못했습니다. 이전에 촬영한 부분을 천천히 다시 보여주세요.' : '';
+      trackingNote.hidden = !guidance;
+      trackingNote.textContent = guidance;
       cameraMarker.visible = confirmed && value.map_id === value.pose_map_id;
       if (confirmed) {
         const r = value.pose_rotation;
@@ -249,6 +258,7 @@ export function connectProgressiveMap({prefix = 'progressive'} = {}) {
   return {update(job) {
     if (active !== job.id) { active = job.id; revision = 0; paintedRevision = 0; replay = new ProgressiveReplay(); historyAt = 0; generation++; first = true;
       hasPresentedMap = false;
+      trackingNote.hidden = true; trackingNote.textContent = '';
       geometry.setDrawRange(0,0); pointKey = pointValue = null; displayedMap = null; segments.clear(); segmentEntries = 0; rescue.update(null); meshRevision = -1;
       route.geometry.dispose(); route.geometry = new THREE.BufferGeometry(); cameraMarker.visible = false;
       Object.assign(host.dataset, {pointCount: 0, displayedMap: '', retainingMap: 'false'});
@@ -264,6 +274,7 @@ export function connectProgressiveMap({prefix = 'progressive'} = {}) {
       {model: '모델 준비 중 · 영상은 대기합니다', semantic_model: '사람·공간 인식 모델 준비 중', semantics: '사람과 구조물 구분 중', depth: '자세 확정 완료 → 깊이 추정 중', tracking: '카메라 위치·방향 추적 중', pose_wait: '자세 확정 대기 · 깊이 복원 보류', mapping: '확정한 자세로 지도 복원 중', presentation: '현재 프레임 표시 후 다음 프레임 진행', saving: '전체 통합 지도 저장 중'}[job.stage] || '영상 처리 준비 중';
     if (job.stage === 'integration') $('progressive-state').textContent = `전체 경로 통합 중 · ${job.progress?.integrated_frames || 0} / ${job.progress?.integration_total || 0}`;
     if (preparation) {
+      trackingNote.hidden = true;
       $('progressive-state').textContent = preparation.title;
       $('progressive-video-empty').textContent = preparation.title;
       $('progressive-map-empty').textContent = preparation.detail;

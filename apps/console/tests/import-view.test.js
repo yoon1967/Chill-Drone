@@ -15,6 +15,14 @@ test('fast reconstruction shows frame work instead of offline SIFT stages', () =
   assert.equal(processingSteps(integration)[4].state, 'active');
 });
 
+test('live model preparation and per-frame stages use the same reconstruction steps', () => {
+  for (const [stage, index] of [['semantic_model', 0], ['pose_wait', 1], ['depth', 2], ['semantics', 3], ['presentation', 3], ['saving', 5]]) {
+    const steps = processingSteps({status: 'running', stage, options: {mode: 'depth_rgbd'}});
+    assert.equal(steps[index].state, 'active');
+    assert.equal(steps.filter(step => step.state === 'active').length, 1);
+  }
+});
+
 test('feature extraction shows observed frame counts and switches to matching', () => {
   const job = {status: 'running', stage: 'features', feature_progress: {phase: 'extraction', completed: 12, total: 30}};
   assert.match(importMessage(job), /12 \/ 총 30프레임 완료/);

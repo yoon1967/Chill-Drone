@@ -40,6 +40,7 @@ export function captureError(error) {
   const telloErrors = {
     slam_image_missing: 'SLAM 실행 이미지가 없습니다. 실행 안내의 docker build 명령으로 ssafy-orbslam3:local 이미지를 준비한 뒤 다시 시작하세요.',
     slam_docker_unavailable: 'Docker에 연결하지 못했습니다. Docker Desktop의 Linux 엔진이 실행된 뒤 다시 시작하세요.',
+    slam_docker_timeout: 'Docker 응답이 늦어 자동 재시도 후에도 준비를 확인하지 못했습니다. Docker Desktop의 Linux 엔진 상태를 확인하세요.',
     tello_sdk_unavailable_check_wifi: '드론에 연결하지 못했습니다. 노트북의 드론 Wi-Fi 연결과 다른 드론 수신 프로그램 실행 여부를 확인하세요.',
     tello_streamon_failed: '드론 카메라를 켜지 못했습니다. 드론 연결을 확인한 뒤 다시 시작하세요.',
     tello_video_timeout_check_wifi_and_udp: '드론 카메라 영상이 들어오지 않습니다. Wi-Fi 연결과 UDP 11111 수신 설정을 확인하세요.',

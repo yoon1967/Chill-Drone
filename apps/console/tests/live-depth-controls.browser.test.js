@@ -11,12 +11,12 @@ test('live reconstruction shows actual model preparation, then themed controls a
     try {
       const page = await browser.newPage({viewport: {width: 1440, height: 1000}});
       const stops = [], errors = [], presented = [], imageRequests = [];
-      let uploaded = 0;
+      let uploaded = 0, starts = 0;
       let active = false, lifecycle = 'receiving';
       const job = {id: 'import_1234567890123456', status: 'running', stage: 'model', history_available: true,
         options: {render_window_s: null}};
       const preparing = () => ['model', 'semantic_model'].includes(job.stage);
-      const state = () => active ? {source: 'live', session_id: 'test-live', session_status: preparing() ? 'starting' : lifecycle,
+      const state = () => active ? {source: 'live', session_id: starts > 1 ? 'test-live-2' : 'test-live', session_status: preparing() ? 'starting' : lifecycle,
         status: preparing() ? 'starting' : lifecycle, backend: 'orb_slam3_depth', input: 'browser_camera', transport_ready: !preparing(),
         can_accept_frame: !preparing(), map_available: false, depth_job_id: job.id, depth_job: job} :
         {source: 'live', session_status: 'idle', status: 'idle', map_available: false};
@@ -48,6 +48,10 @@ test('live reconstruction shows actual model preparation, then themed controls a
       await page.route('**/api/import/library*', route => route.fulfill({json: {items: [], initial: null}}));
       await page.route('**/api/live/start', route => {
         assert.equal(route.request().postDataJSON().sample_fps, 2.5);
+        starts++;
+        if (starts === 2) {
+          job.id = 'import_2345678901234567'; job.status = 'running'; job.stage = 'model'; lifecycle = 'receiving';
+        }
         active = true; return route.fulfill({json: state()});
       });
       await page.route('**/api/live/state*', route => route.fulfill({json: state()}));
@@ -100,6 +104,7 @@ test('live reconstruction shows actual model preparation, then themed controls a
         await page.waitForFunction(() => document.querySelector('#connection-map').textContent === '모델 준비 중');
         assert.match(await page.locator('#connection-note').textContent(), /모델 준비 중/);
         assert.equal(await page.locator('#live-progressive-frame').isVisible(), false);
+        assert.equal(await page.locator('#live-depth-steps [aria-current="step"]').textContent(), '추적·깊이 모델 준비');
         assert.equal(await page.locator('#input-preview').getAttribute('hidden'), '');
       }
       assert.equal(uploaded, 0);
@@ -111,6 +116,7 @@ test('live reconstruction shows actual model preparation, then themed controls a
       assert.deepEqual(imageRequests, []);
       assert.equal(await page.locator('#live-progressive-frame').isVisible(), false);
       assert.equal(await page.locator('#live-progressive-play').isDisabled(), true);
+      assert.match(await page.locator('#live-progressive-tracking-note').textContent(), /첫 위치를 찾고 있습니다/);
       Object.assign(snapshot, mapped, {needs_presentation: false});
       await page.locator('#live-progressive-frame:not([hidden])').waitFor();
       assert.equal(imageRequests[0], mapped.frame_id);
@@ -119,6 +125,8 @@ test('live reconstruction shows actual model preparation, then themed controls a
       assert.doesNotMatch(await page.locator('#live-progressive-video-empty').textContent(), /인식 모델 준비 중/);
       await page.waitForFunction(() => window.testTracks?.some(track => track.readyState === 'live'));
       assert.equal(await page.locator('#live-depth-stop').isVisible(), true);
+      assert.equal(await page.locator('#live-depth-restart').isDisabled(), true);
+      assert.equal(await page.locator('#live-progressive-tracking-note').count(), 1);
       assert.match(await page.locator('#live-progressive-map-detail').textContent(), /전체 누적 지도/);
       for (const width of [1440, 390]) {
         await page.setViewportSize({width, height: 1000});
@@ -129,6 +137,19 @@ test('live reconstruction shows actual model preparation, then themed controls a
           }));
         assert.ok(styles.every(style => style.radius === '8px' && style.size === '12px' && style.font === styles[0].font));
         assert.ok(await page.evaluate(() => document.documentElement.scrollWidth <= innerWidth));
+        // Both capture controls share the heading above the map.
+        const offsets = () => page.evaluate(() => {
+          const map = document.querySelector('#live-progressive-viewport').getBoundingClientRect();
+          const button = document.querySelector('#live-depth-stop').getBoundingClientRect();
+          const restart = document.querySelector('#live-depth-restart').getBoundingClientRect();
+          const video = document.querySelector('#live-progressive-frame').parentElement.getBoundingClientRect();
+          return {sameRow: Math.abs(button.top - restart.top) < 1,
+            gap: Math.round(restart.left - button.right), outsideMap: button.bottom <= map.top,
+            alignedPanels: innerWidth <= 600 || Math.abs(video.top - map.top) < 1};
+        });
+        assert.deepEqual(await offsets(), {sameRow: true, gap: 12, outsideMap: true, alignedPanels: true});
+        await page.evaluate(() => scrollBy(0, 140));
+        assert.deepEqual(await offsets(), {sameRow: true, gap: 12, outsideMap: true, alignedPanels: true});
       }
       // A browser can load new JS from a server that still runs old Python.
       job.options.render_window_s = 10;
@@ -139,11 +160,15 @@ test('live reconstruction shows actual model preparation, then themed controls a
       await page.locator('#live-progressive-map-empty').waitFor({state: 'hidden'});
       assert.equal(await page.locator('#live-progressive-viewport').getAttribute('data-point-count'), '1');
       assert.match(await page.locator('#live-progressive-map-detail').textContent(), /마지막 유효 지도/);
+      assert.match(await page.locator('#live-progressive-tracking-note').textContent(), /점을 잡지 못했습니다.*천천히 이동하거나 끊긴 부분/);
+      assert.equal(await page.locator('#live-progressive-tracking-note').isVisible(), true);
       assert.match(await page.locator('#live-depth-error').textContent(), /실행 CMD를 다시/);
       job.options.render_window_s = null;
       Object.assign(snapshot, {revision: 4, points: [[0, 0, 2, 255, 0, 0]], map_points: 1, render_window_s: null});
       await page.locator('#live-depth-error').waitFor({state: 'hidden'});
       await page.locator('#live-progressive-map-empty').waitFor({state: 'hidden'});
+      Object.assign(snapshot, {revision: 5, tracking: 'tracking', pose_confirmed: true});
+      await page.locator('#live-progressive-tracking-note').waitFor({state: 'hidden'});
       await page.locator('#live-progressive-seek-go').click();
       assert.equal(await page.locator('#live-progressive-follow').getAttribute('aria-pressed'), 'false');
       await page.locator('#live-depth-stop').click();
@@ -151,9 +176,22 @@ test('live reconstruction shows actual model preparation, then themed controls a
       assert.deepEqual(stops, [{session_id: 'test-live', reason: 'user_stop'}]);
       assert.equal(await page.locator('#input-preview').evaluate(video => video.srcObject), null);
       assert.equal(await page.locator('#live-depth-stop').isDisabled(), true);
-      lifecycle = 'complete'; job.status = 'complete';
+      assert.equal(await page.locator('#live-depth-restart').isDisabled(), true);
+      lifecycle = 'complete'; job.stage = 'integration';
+      await page.waitForFunction(() => document.querySelector('#live-depth-steps [aria-current="step"]')?.textContent.includes('전체 경로 통합'));
+      assert.equal(await page.locator('#live-depth-restart').isDisabled(), true);
+      job.stage = 'saving';
+      await page.waitForFunction(() => document.querySelector('#live-depth-steps [aria-current="step"]')?.textContent === '전체 지도 저장');
+      job.status = 'complete';
       await page.waitForFunction(() => document.querySelector('#live-depth-stop').textContent === '촬영 종료됨');
       assert.equal(await page.locator('#live-progressive-workspace').isVisible(), true);
+      await page.waitForFunction(() => !document.querySelector('#live-depth-restart').disabled);
+      assert.equal(await page.locator('#live-depth-steps [data-state="done"]').count(), 6);
+      await page.locator('#live-depth-restart').click();
+      await page.waitForFunction(() => document.querySelector('#live-progressive-state')?.textContent === '깊이 모델 준비 중');
+      assert.equal(starts, 2);
+      assert.equal(await page.locator('#live-progressive-frame').isVisible(), false);
+      assert.equal(await page.locator('#live-progressive-viewport').getAttribute('data-point-count'), '0');
       assert.deepEqual(errors, []);
     } finally { await browser.close(); }
   });

@@ -1,11 +1,53 @@
+import ctypes
 import unittest
 from unittest.mock import Mock, patch
 
-from modules.autonomy.tello_link.wifi import windows_networks, linux_networks, current_wifi
+from modules.autonomy.tello_link.wifi import windows_networks, linux_networks, current_wifi, scan_wifi
+from modules.autonomy.tello_link import windows_wifi
 from modules.autonomy.tello_link.discovery import DroneDiscovery, run_os
 
 
 class WifiTests(unittest.TestCase):
+    def test_windows_refresh_requests_driver_scan_before_reading_networks(self):
+        calls = []
+        with patch('modules.autonomy.tello_link.wifi.request_windows_scan', side_effect=lambda: calls.append('scan')):
+            rows = scan_wifi(lambda command: calls.append('read') or 'SSID 1 : TELLO-new\n', 'win32')
+        self.assertEqual(calls, ['scan', 'read'])
+        self.assertEqual(rows[0]['ssid'], 'TELLO-new')
+
+    def test_failed_driver_scan_never_reports_a_cached_list_as_fresh(self):
+        runner = Mock()
+        with patch('modules.autonomy.tello_link.wifi.request_windows_scan',
+                   side_effect=RuntimeError('wifi_scan_request_failed')):
+            with self.assertRaisesRegex(RuntimeError, 'wifi_scan_request_failed'):
+                scan_wifi(runner, 'win32')
+        runner.assert_not_called()
+
+    def test_native_scan_waits_for_driver_and_frees_handles_on_success_and_failure(self):
+        class Buffer(ctypes.Structure):
+            _fields_ = [('header', windows_wifi.InterfaceList), ('rows', windows_wifi.InterfaceInfo * 2)]
+        buffer = Buffer(); buffer.header.count = 2
+        for results in ([0, 0], [5, 5], [0, 5023]):
+            api = Mock()
+            api.WlanOpenHandle.return_value = 0
+            def enumerate_interfaces(handle, reserved, out):
+                ctypes.cast(out, ctypes.POINTER(ctypes.c_void_p)).contents.value = ctypes.addressof(buffer)
+                return 0
+            api.WlanEnumInterfaces.side_effect = enumerate_interfaces
+            api.WlanScan.side_effect = results
+            with self.subTest(results=results), patch.object(windows_wifi.ctypes, 'WinDLL', return_value=api, create=True), \
+                 patch.object(windows_wifi.time, 'sleep') as wait:
+                if all(results):
+                    with self.assertRaisesRegex(RuntimeError, 'wifi_location_permission_required'):
+                        windows_wifi.request_windows_scan()
+                    wait.assert_not_called()
+                else:
+                    windows_wifi.request_windows_scan()
+                    wait.assert_called_once_with(4)
+                self.assertEqual(api.WlanScan.call_count, 2)
+                api.WlanFreeMemory.assert_called_once()
+                api.WlanCloseHandle.assert_called_once()
+
     def test_scan_returns_only_real_networks_and_failure_never_invents_a_drone(self):
         manager = DroneDiscovery(runner=Mock())
         items = [{'id': 'Home', 'ssid': 'Home', 'kind': 'wifi'},
