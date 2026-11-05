@@ -11,8 +11,11 @@
   드론을 자동으로 멈추지 않는다(운용자가 정함).
 - AI 합성 영상: `overlay`(overlay_store.py)가 탐지 프로그램이 그려 보낸 최신 장을 들고 있다. 화면이 원본 대신 볼 수 있다.
 - 3D 지도: `map`(map_inbox.py)이 지도 연결기(gateway_map_bridge.py)가 보낸 최신 점군을 들고 있다가 화면에 `map` 알림을 보낸다.
+- 자율 비행: `autonomy`(autonomy_link.py)가 `/ws/autonomy`로 붙은 자율 하나와 주고받는다(AUTONOMY_BRIDGE_V0_1).
+  속도 명령·임무 상태·ack·request는 판정기에 넘기고, 판정기가 내준 `control`을 자율에 보낸다.
+  자율에는 Tello 상태 원문(10Hz)과 `flight_status`(바뀔 때 + 1Hz)를 보낸다. 위치·경로·찾은 사람은 화면용으로 들고 있다.
 실행(이륙·착륙·비상 정지, rc 전송, 안전 착륙, 높이 상한, 데드맨)은 실기체로 검증한 FlightController가 그대로 맡는다.
-웹 서버는 gateway_server.py에 있다. 자율 비행 연결(`/ws/autonomy`)은 다음 작업이다.
+웹 서버는 gateway_server.py에 있다.
 """
 
 from __future__ import annotations
@@ -20,7 +23,8 @@ from __future__ import annotations
 import threading
 import time
 
-from flight_control import STATE_STALE_S, FlightController
+from autonomy_link import AutonomyLink
+from flight_control import HEIGHT_LIMIT_M, STATE_STALE_S, FlightController
 from detection_inbox import DetectionInbox
 from frame_store import FrameStore
 from map_inbox import MapInbox
@@ -39,6 +43,8 @@ VIDEO_START_GRACE_S = 3.0    # streamon 직후 첫 프레임까지는 video_stal
 VIDEO_GROUND_WARN_S = 30.0   # 지상에서 영상이 이만큼 켜져 있으면 video_on_ground 경고
 VIDEO_GROUND_OFF_S = 60.0    # 지상에서 영상이 이만큼 켜져 있으면 자동으로 끈다
 VIDEO_CMDS = ("video_on", "video_off")
+AUTONOMY_STATE_S = 0.1       # 자율에 Tello 상태 원문을 보내는 간격(약 10Hz)
+AUTONOMY_STATUS_S = 1.0      # flight_status는 바뀔 때 + 이 간격
 CLIENTS = ("monitor", "control")
 
 
@@ -74,6 +80,12 @@ class Gateway:
                                          emit=self._emit, clock=clock)
         self.overlay = OverlayStore(clock=clock)
         self.map = MapInbox(run_dir=link.log.dir if link.log else None, emit=self._emit, clock=clock)  # 3D 지도(지도 연결기)
+        self.autonomy = AutonomyLink(run_dir=link.log.dir if link.log else None, clock=clock)  # 자율 비행(/ws/autonomy)
+        self._autonomy_send = None              # 자율 연결에 메시지 하나를 보내는 함수(서버가 넣는다)
+        self._autonomy_state_at = None          # 마지막으로 보낸 Tello 상태의 수신 시각
+        self._autonomy_state_mono = -1e9
+        self._autonomy_status = None            # 마지막으로 보낸 flight_status(시각 뺀 것)
+        self._autonomy_status_mono = -1e9
 
     # ---------- 수명 ----------
     def start(self) -> "Gateway":
@@ -128,6 +140,83 @@ class Gateway:
                 self._rc_clients.discard(client_key)
                 self.arbiter.on_operator_disconnected()
 
+    # ---------- 자율 비행 (/ws/autonomy) ----------
+    def autonomy_open(self, session: str, send) -> bool:
+        """자율 하나가 붙었다. 이미 붙은 자율이 있으면 False(서버가 busy로 닫는다). send(dict)는 그 연결로 보낸다."""
+        if not self.autonomy.open(session):
+            return False
+        with self._lock:
+            self._autonomy_send = send
+            self._autonomy_state_at, self._autonomy_status = None, None
+            self.arbiter.on_autonomy_connected()
+            self._run_actions()
+        self._send_autonomy({
+            "schema_version": SCHEMA_VERSION, "type": "hello", "at": now_iso(), "gateway": "tello_link", "source": self.source,
+            "rc_limit": self.arbiter.rc_limit, "k_lin": self.arbiter.k_lin, "k_yaw": self.arbiter.k_yaw,
+            "max_speed_mps": round(self.arbiter.rc_limit / self.arbiter.k_lin, 3), "height_limit_m": HEIGHT_LIMIT_M,
+            "video_forward": None,   # 영상 UDP 복사는 다리 노드 단계에서
+        })
+        return True
+
+    def autonomy_message(self, session: str, msg) -> dict | None:
+        """자율이 보낸 JSON 하나. 자율에 돌려줄 답이 있으면 돌려준다(형식 오류, request 결과)."""
+        if session != self.autonomy.session:
+            return None
+        try:
+            kind = self.autonomy.receive(msg)
+        except ValueError as e:
+            return {"schema_version": SCHEMA_VERSION, "type": "error", "at": now_iso(), "reason": str(e),
+                    "for": msg.get("type") if isinstance(msg, dict) else None}
+        reply = None
+        with self._lock:
+            if kind == "cmd_vel":
+                self.arbiter.on_cmd_vel(msg)
+            elif kind == "mission_state":
+                self.arbiter.on_mission_state(msg)
+            elif kind == "ack":
+                self.arbiter.on_ack(msg)
+            elif kind == "request":
+                r = self.arbiter.on_autonomy_request(str(msg.get("name", "")))
+                self.autonomy.event("request_result", name=msg.get("name"), **r)
+                reply = {"schema_version": SCHEMA_VERSION, "type": "request_result", "at": now_iso(),
+                         "name": msg.get("name"), "id": msg.get("id"), **r}
+            self._run_actions()
+        return reply
+
+    def autonomy_closed(self, session: str) -> None:
+        if not self.autonomy.close(session):
+            return
+        with self._lock:
+            self._autonomy_send = None
+            self.arbiter.on_autonomy_disconnected()   # auto였으면 바로 paused
+            self._run_actions()
+
+    def _send_autonomy(self, msg: dict) -> None:
+        send = self._autonomy_send
+        if send is not None:
+            try:
+                send(msg)
+            except Exception:  # 연결이 닫히는 중이면 서버가 곧 autonomy_closed를 부른다
+                pass
+
+    def _autonomy_tick(self) -> None:
+        """루프에서 부른다(잠금 안). Tello 상태 원문은 새 값일 때 약 10Hz, flight_status는 바뀔 때 + 1Hz."""
+        if self._autonomy_send is None:
+            return
+        now = self.clock()
+        sample = self.link.latest_state()
+        if (sample and sample.get("received_at") != self._autonomy_state_at
+                and now - self._autonomy_state_mono >= AUTONOMY_STATE_S * 0.9):
+            msg = self.autonomy.tello_state_message(sample)
+            if msg is not None:
+                self._autonomy_state_at, self._autonomy_state_mono = sample.get("received_at"), now
+                self._send_autonomy(msg)
+        status = self.autonomy.flight_status_message(self.arbiter.snapshot(), self.arbiter.link_ok)
+        body = {k: v for k, v in status.items() if k != "at"}
+        if body != self._autonomy_status or now - self._autonomy_status_mono >= AUTONOMY_STATUS_S:
+            self._autonomy_status, self._autonomy_status_mono = body, now
+            self._send_autonomy(status)
+
     # ---------- 할 일 실행 ----------
     def _run_actions(self) -> None:
         for action in self.arbiter.drain():
@@ -137,7 +226,9 @@ class Gateway:
                 self._emit({"schema_version": SCHEMA_VERSION, "type": "event", "at": now_iso(), **p})
             elif action.kind == "flight":
                 self._run_flight(p)
-            # autonomy: 자율 비행 연결(/ws/autonomy)이 생기면 보낸다. 지금은 연결된 자율이 없어 판정기가 내지 않는다.
+            elif action.kind == "autonomy":
+                self.autonomy.event("control", cmd=p.get("cmd"), id=p.get("id"), sent=self._autonomy_send is not None)
+                self._send_autonomy({**p, "at": now_iso()})
 
     def _run_flight(self, p: dict) -> None:
         name = p["name"]
@@ -344,6 +435,7 @@ class Gateway:
                 self.flight.set_input(*(v / 100 for v in out.rc), source="gateway:" + out.source)
             self._run_actions()
             self._video_tick()
+            self._autonomy_tick()
 
     def _loop(self) -> None:
         period = 1.0 / LOOP_HZ
@@ -400,8 +492,10 @@ class Gateway:
             "attitude": {k: si.get(k) for k in ("roll_rad", "pitch_rad", "yaw_rad")},
             "front_tof": {"m": None, "valid": False, "reason": "not_polled", "age_s": None},
             "down_tof": {"m": si.get("tof_m"), "valid": down_valid, "reason": si.get("tof_reason")},
-            "pose": None,
+            "pose": self.autonomy.pose_state(),   # 자율 위치(frame map). 자율이 없으면 None
             "mission": snap["mission"],
+            "autonomy": {**self.autonomy.status(), "ground_origin": snap["autonomy"]["ground_origin"],
+                         "mission_active": snap["autonomy"]["mission_active"]},
             "video": {"enabled": self.video is not None, "on": video_on, "reason": video_reason,
                       "ground_s": None if ground_s is None else round(ground_s, 1), "ground_off_s": VIDEO_GROUND_OFF_S,
                       "available": video_ok, "fps": video["fps"] if video_ok else None,

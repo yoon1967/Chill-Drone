@@ -166,3 +166,10 @@ body[data-view=map] .controls{position:static;padding:8px 12px;border:1px solid 
   body[data-view=map] .console-view{min-height:0}
   body[data-view=map] .console-slot{min-height:0}
 }
+/* 자율 지도(2D): 1 m 눈금·찾은 사람(확정/다시 봤는데 없음/미확정)·오래된 위치 */
+.map .grid line{stroke:var(--line);stroke-width:1}
+.mark.gone circle{fill:none;stroke:#e24b4a;stroke-width:2.5;stroke-dasharray:4 3}.mark.gone text{fill:#e24b4a}
+.mark.unsure circle{fill:#e24b4a;opacity:.45}
+.drone.stale path{opacity:.35}
+.scale line{stroke:var(--muted);stroke-width:2}.scale text{font-size:12px;fill:var(--muted)}
+.lg.mark.gone{background:none;border:2px dashed #e24b4a;width:10px;height:10px}

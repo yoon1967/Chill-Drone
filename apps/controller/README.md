@@ -11,7 +11,8 @@
 | 샘플 | 정적 서버로 열거나 주소에 `?sample` | 샘플 데이터 | 보내지 않는다. 샘플 값은 실측이 아니다 |
 
 지금 실시간으로 채워지는 칸은 상태줄, 조종 줄, 영상, 상세 상태, 비행 기록, 발견 목록(사람 탐지)이다.
-지도(자율 비행 위치 추정)는 아직 연결 전이라 실시간에서는 빈 칸으로 안내만 한다.
+2D 지도는 자율 비행이 게이트웨이 `/ws/autonomy`로 보낸 위치·계획 경로·찾은 사람을 m 눈금으로 그린다(지나온 길은 화면이 위치를 모아 그림).
+자율이 연결되지 않았으면 안내만 한다. 시험은 게이트웨이 `--fake` + `tello_link/fake_autonomy.py`.
 
 사람 탐지(실시간): 탐지 프로그램이 게이트웨이 영상을 받아 결과를 `POST /api/detections`로 보내면 화면에 나온다
 (형식 `contracts/perception/PERSON_DETECTION_EVENT_V1.md`, 흐름은 `modules/autonomy/tello_link/README.md`).
@@ -113,7 +114,7 @@ PC는 드론 Wi-Fi, 폰은 USB 테더링으로 PC와 잇고 폰 브라우저에�
 | 상태줄, 조종 줄, 상세 상태 | `drone_state` | `contracts/api/DRONE_CONTROL_V0_1.md`(초안) | 드론 게이트웨이, 기체 제어 |
 | 영상 | MJPEG `/video.mjpg` | 같은 문서 5장 | 드론 게이트웨이 |
 | 탐지 윤곽선, 발견 목록 | WS `detection`, `GET /api/detections`, 사진 `/api/detections/<event_id>.jpg` | `person-detection-event/1.0` (`contracts/perception/`) | 사람 탐지 → 드론 게이트웨이 |
-| 지도 경로, 현재 위치 | `pose`, `path` (map 좌표, m) | `contracts/api/AUTONOMY_BRIDGE_V0_1.md` 4장(초안) | 자율 비행 |
+| 지도 경로, 현재 위치, 찾은 사람 | `drone_state.pose`, `GET /api/autonomy`의 `path`·`people` (map 좌표, m) | `contracts/api/AUTONOMY_BRIDGE_V0_1.md` 4장(초안, `people` 추가) | 자율 비행 |
 | 3D 지도 | 점군·카메라 경로 | `contracts/mapping/VIEWER_SOURCES_V1.md` (`apps/console`) | 지도 |
 
 - **발견 지점은 사람 위치가 아니다.** 탐지 시각에 가장 가까운 드론 위치를 찍는다(실시간은 위치 추정 연결 전이라 모드·높이만). POC 4장대로 `object_position`은 null이며

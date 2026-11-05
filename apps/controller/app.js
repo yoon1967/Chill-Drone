@@ -14,6 +14,7 @@ const ui = {
   map3d: { mode: loadPref("map-mode", "3d"), host: null, view: null, revision: undefined, loading: false, has: false },  // 3D 점군(지도 연결기)
   mapBig: loadPref("map-big", "0") === "1",   // 지도 칸을 영상 자리(왼쪽 큰 칸)로 바꿔 크게 본다
   console: { frame: null, url: null, slot: null, ro: null, loadedUp: null },   // 지도 콘솔 iframe(placeConsole). loadedUp: 열 때 콘솔 상태
+  autonomy: { connected: false, path: null, people: null, pathRev: 0, peopleRev: 0, loading: false, track: [] },  // 자율 지도(/api/autonomy)
 };
 if (!["2d", "3d"].includes(ui.map3d.mode)) ui.map3d.mode = "3d";   // 지도 콘솔은 따로 화면(#/map)
 function loadPref(key, fallback) { try { return localStorage.getItem(key) || fallback; } catch (e) { return fallback; } }
@@ -33,6 +34,7 @@ const REASON = {
   not_allowed_in_mode: "지금 상태에서는 할 수 없습니다", preflight_failed: "이륙 전 점검을 통과하지 못했습니다",
   client_not_allowed: "자율 시작은 PC 감독 화면에서만 할 수 있습니다", autonomy_not_connected: "자율 비행이 연결되지 않았습니다",
   autonomy_joined_in_air: "이륙 뒤에 연결된 자율이라 시작할 수 없습니다", replay_source: "기록 재생 중에는 명령을 보내지 않습니다",
+  autonomy_rejected: "자율이 시작을 거절했습니다",
   busy: "앞 요청을 처리하는 중입니다", unknown_message: "알 수 없는 요청입니다",
   video_disabled: "게이트웨이가 영상 수신 없이(--no-video) 실행됐습니다", video_receiver_failed: "영상 수신을 시작하지 못했습니다",
   no_response: "기체가 응답하지 않았습니다", error_response: "기체가 거절했습니다",
@@ -68,7 +70,10 @@ function current() {
     const st = adapt(ui.state || { mode: "disconnected", authority: "none", connected: false });
     if (!ui.wsOpen) { st.mode = ui.everOpen ? "disconnected" : st.mode; st.allowed = []; }
     const w = st.warnings;
-    const alert = !ui.wsOpen ? (ui.everOpen ? "gateway" : "connecting") : w.includes("link_weak") ? "link" : w.includes("autonomy_stale") ? "stale" : null;
+    const done = st.mode === "paused" && ["arrived", "failed"].includes(st.mission?.phase);
+    const alert = !ui.wsOpen ? (ui.everOpen ? "gateway" : "connecting") : w.includes("link_weak") ? "link"
+      : w.includes("autonomy_disconnected") && st.mode === "paused" ? "autonomy_lost" : w.includes("autonomy_timeout") ? "autonomy_timeout"
+      : w.includes("autonomy_stale") ? "stale" : done ? "mission_done" : null;
     const events = liveFindings();
     const person = !alert && events[0] && Date.now() - ui.newFindingAt < PERSON_ALERT_MS && events[0].review === "unreviewed";
     return { sc: { alert: alert || (person ? "person" : null) }, st, events, track: [] };
@@ -117,6 +122,7 @@ function statusStrip(st, events, compact = false) {
     <span class="who">${AUTHORITY[st.authority] || ""}</span>
     ${found ? chip(`사람 ${found}건 발견`, "danger") : chip("발견 없음")}
     ${st.mission ? chip(`탐색 ${pct(st.mission.progress)}`) : ""}
+    ${ui.live && st.autonomy?.connected ? chip(st.autonomy.ground_origin ? "자율 연결" : "자율 연결 · 공중에서 붙음", st.autonomy.ground_origin ? "accent" : "warning") : ""}
     <span class="spacer"></span>
     ${chip(link, ltone)}
     ${chip(`배터리 ${st.battery_pct ?? "없음"}${st.battery_pct == null ? "" : "%"}`, st.battery_pct != null && st.battery_pct < 30 ? "warning" : "neutral")}
@@ -136,6 +142,17 @@ function alertBox(sc, events) {
   } else if (sc.alert === "link") {
     body = `<div class="alert warning" role="alert"><b>통신 약함</b><span>더 진행하지 않고 멈췄습니다. 다시 시작하면 연결이 끊길 수 있습니다.</span>
       <button data-cmd="return_home">출발점으로 복귀</button></div>`;
+  } else if (sc.alert === "autonomy_lost") {
+    body = `<div class="alert danger" role="alert"><b>자율 연결 끊김</b><span>자율 비행 연결이 끊겨 제자리에서 멈췄습니다. 착륙하거나 넘겨받아 조종하세요.</span>
+      <button data-cmd="takeover">넘겨받기</button></div>`;
+  } else if (sc.alert === "autonomy_timeout") {
+    body = `<div class="alert warning" role="alert"><b>자율 명령 끊김</b><span>2초 넘게 이동 명령이 없어 일시정지했습니다. 자율 상태를 확인하고 다시 시작하거나 넘겨받으세요.</span>
+      <button data-cmd="takeover">넘겨받기</button></div>`;
+  } else if (sc.alert === "mission_done") {
+    const failed = ui.state?.mission?.phase === "failed";
+    const why = failed ? esc(ui.state.mission.reason || "자율이 임무를 끝내지 못했습니다") : "자율 탐색을 마쳤습니다";
+    body = `<div class="alert ${failed ? "danger" : "warning"} slim" role="status"><b>${failed ? "임무 실패" : "임무 끝"}</b><span>${why}. 제자리에서 기다립니다. 착륙하거나 넘겨받으세요.</span>
+      <button data-cmd="land">착륙</button></div>`;
   } else if (sc.alert === "stale") {
     body = `<div class="alert warning" role="alert"><b>자율 응답 지연</b><span>0.5초 넘게 명령이 없어 제자리에서 기다립니다. 2초가 지나면 일시정지합니다.</span></div>`;
   }
@@ -267,10 +284,7 @@ function mapPanel(st, events, track, tall = false) {
   const head = `<header><h2>지도</h2>${src("map")}${mode === "2d" ? chip("경로: 자율 비행", "neutral", "src-inline") : ""}
       <span class="spacer"></span>${seg || `<a class="link" href="${CONSOLE_URL}" target="_blank" rel="noopener">3D 지도 열기 (apps/console)</a>`}</header>`;
   if (mode === "3d") return map3dPanel(st, head);
-  if (ui.live) {
-    return `<section class="panel map ${tall ? "tall" : ""}" data-part="map" aria-label="2D 지도">${head}
-      <div class="map-empty">자율 비행의 위치 추정(pose)이 연결되면 지나온 경로와 현재 위치가 그려집니다.</div></section>`;
-  }
+  if (ui.live) return autonomyMapPanel(st, head, tall);
   const pts = [...S.track, ...S.plan, ...S.rooms.flatMap((r) => [{ x_m: r.x, y_m: r.y }, { x_m: r.x + r.w, y_m: r.y + r.h }])];
   const minX = Math.min(...pts.map((p) => p.x_m)) - 0.6, maxX = Math.max(...pts.map((p) => p.x_m)) + 0.6;
   const minY = Math.min(...pts.map((p) => p.y_m)) - 0.6, maxY = Math.max(...pts.map((p) => p.y_m)) + 0.6;
@@ -294,6 +308,83 @@ function mapPanel(st, events, track, tall = false) {
       ${rooms}${path}${planned}${start}${marks}${drone}
     </svg>
     <p class="legend"><i class="lg flown"></i>지나온 경로 <i class="lg planned"></i>계획 경로 <i class="lg mark"></i>발견 지점 = 그때 드론 위치(사람 위치 아님)</p>
+  </section>`;
+}
+
+// 자율 지도(2D): 자율 비행이 보낸 위치·계획 경로·찾은 사람(frame map: 켠 자리 원점, x 앞·y 왼쪽, m).
+// 화면에는 x를 오른쪽, y를 위로 그린다. 지나온 길은 화면이 위치를 모아 그린다(자율 연결이 새로 붙으면 비운다).
+// 경로·찾은 사람은 길어서 상태에는 버전만 오고, 버전이 바뀌면 GET /api/autonomy로 읽는다.
+function syncAutonomy(st) {
+  const a = ui.autonomy, s = st.autonomy;
+  if (!s) return;
+  if (s.connected && !a.connected) a.track = [];
+  a.connected = s.connected;
+  const p = st.pose;
+  if (p && p.valid) {
+    const last = a.track[a.track.length - 1];
+    if (!last || Math.hypot(p.x_m - last[0], p.y_m - last[1]) > 0.03) a.track.push([p.x_m, p.y_m]);
+    if (a.track.length > 3000) a.track.splice(0, a.track.length - 3000);
+  }
+  if ((s.path_revision !== a.pathRev || s.people_revision !== a.peopleRev) && !a.loading) loadAutonomy();
+}
+
+async function loadAutonomy() {
+  const a = ui.autonomy;
+  a.loading = true;
+  try {
+    const r = await fetch("/api/autonomy", { cache: "no-store" });
+    if (r.ok) {
+      const d = await r.json();
+      a.path = d.path; a.people = d.people;
+      a.pathRev = d.status.path_revision; a.peopleRev = d.status.people_revision;
+    }
+  } catch (e) { /* 다음 상태 때 다시 */ }
+  a.loading = false;
+}
+
+function autonomyMapPanel(st, head, tall) {
+  const a = ui.autonomy, pose = st.pose, s = st.autonomy || {};
+  const path = a.path?.points || [], found = a.people?.people || [], unsure = a.people?.unconfirmed || [];
+  if (!pose && !path.length && !found.length && !unsure.length) {
+    return `<section class="panel map ${tall ? "tall" : ""}" data-part="map" aria-label="2D 지도">${head}
+      <div class="map-empty">${s.connected ? "자율 비행이 연결됐습니다. 위치 추정이 시작되면 위치·경로·찾은 사람이 m 단위로 그려집니다."
+        : "자율 비행이 연결되면 드론 위치·지나온 길·계획 경로·찾은 사람이 m 단위로 그려집니다."}</div></section>`;
+  }
+  const pts = [[0, 0], ...path, ...a.track, ...found.map((q) => [q.x_m, q.y_m]), ...unsure.map((q) => [q.x_m, q.y_m]),
+    ...(pose ? [[pose.x_m, pose.y_m]] : [])];
+  const span = (vals) => {
+    const lo = Math.min(...vals) - 0.6, hi = Math.max(...vals) + 0.6, d = Math.max(3, hi - lo), c = (lo + hi) / 2;
+    return [c - d / 2, c + d / 2];
+  };
+  const [minX, maxX] = span(pts.map((p) => p[0])), [minY, maxY] = span(pts.map((p) => p[1]));
+  const W = 800, H = tall ? 360 : 260, k = Math.min(W / (maxX - minX), H / (maxY - minY));
+  const X = (x) => ((x - minX) * k + (W - (maxX - minX) * k) / 2).toFixed(1);
+  const Y = (y) => (H - (y - minY) * k - (H - (maxY - minY) * k) / 2).toFixed(1);
+  const line = (list, cls) => list.length > 1 ? `<polyline class="${cls}" points="${list.map((p) => `${X(p[0])},${Y(p[1])}`).join(" ")}"/>` : "";
+  const grid = [];
+  for (let gx = Math.ceil(minX); gx <= maxX; gx++) grid.push(`<line x1="${X(gx)}" y1="0" x2="${X(gx)}" y2="${H}"/>`);
+  for (let gy = Math.ceil(minY); gy <= maxY; gy++) grid.push(`<line x1="0" y1="${Y(gy)}" x2="${W}" y2="${Y(gy)}"/>`);
+  const label = { found: "확정", gone: "다시 봤는데 없음", unsure: "미확정" };
+  const person = (q, n, cls) => {
+    const tip = `사람 ${n} · ${label[cls]} · 신뢰도 ${q.conf != null ? q.conf.toFixed(2) : "?"} · ${q.hits ?? "?"}번 봄${q.top_m != null ? ` · 키 약 ${q.top_m.toFixed(1)} m` : ""}`;
+    const num = cls === "unsure" ? "" : `<text x="${X(q.x_m)}" y="${+Y(q.y_m) + 4}">${n}</text>`;
+    return `<g class="mark ${cls}"><title>${esc(tip)}</title><circle cx="${X(q.x_m)}" cy="${Y(q.y_m)}" r="${cls === "unsure" ? 7 : 10}"/>${num}</g>`;
+  };
+  const marks = found.map((q, i) => person(q, i + 1, q.gone ? "gone" : "found")).join("")
+    + unsure.map((q, i) => person(q, found.length + i + 1, "unsure")).join("");
+  const drone = pose ? `<g class="drone ${pose.valid ? "" : "stale"}" transform="translate(${X(pose.x_m)},${Y(pose.y_m)}) rotate(${(90 - pose.yaw_rad * 180 / Math.PI).toFixed(1)})"><path d="M0,-11 L8,7 L0,3 L-8,7 Z"/></g>` : "";
+  const start = `<circle class="start" cx="${X(0)}" cy="${Y(0)}" r="7"/><text class="start-label" x="${+X(0) + 12}" y="${+Y(0) + 4}">출발</text>`;
+  const scale = `<g class="scale"><line x1="12" y1="${H - 12}" x2="${(12 + k).toFixed(1)}" y2="${H - 12}"/><text x="${(16 + k).toFixed(1)}" y="${H - 8}">1 m</text></g>`;
+  const ms = st.mission, people = s.people;
+  const info = [s.connected ? "자율 연결" : "자율 끊김",
+    ms ? `${ms.state || "?"} · ${PHASE[ms.phase] || ms.phase || "?"}${ms.progress != null ? ` · 진행 ${pct(ms.progress)}` : ""}` : null,
+    people ? `찾은 사람 ${people.confirmed}명${people.gone ? ` · 사라짐 ${people.gone}` : ""}${people.unconfirmed ? ` · 미확정 ${people.unconfirmed}` : ""}` : null,
+    pose && !pose.valid ? `위치 ${pose.age_s ?? "?"}초 전` : null].filter(Boolean).join(" · ");
+  return `<section class="panel map ${tall ? "tall" : ""}" data-part="map" aria-label="2D 지도">${head}
+    <svg viewBox="0 0 ${W} ${H}" preserveAspectRatio="xMidYMid meet" role="img" aria-label="자율 지도: 드론 위치, 지나온 길, 계획 경로, 찾은 사람">
+      <g class="grid">${grid.join("")}</g>${line(path, "planned")}${line(a.track, "flown")}${start}${marks}${drone}${scale}
+    </svg>
+    <p class="legend"><i class="lg flown"></i>지나온 길 <i class="lg planned"></i>계획 경로 <i class="lg mark"></i>찾은 사람 <i class="lg mark gone"></i>다시 봤는데 없음 · ${esc(info)} · 자율 지도(m, 켠 자리 기준)</p>
   </section>`;
 }
 
@@ -615,6 +706,7 @@ function sendCmd(name, args = {}) {
 function onMessage(msg) {
   if (msg.type === "drone_state") {
     ui.state = msg;
+    syncAutonomy(msg);
   } else if (msg.type === "result" && !msg.ok) {
     const failed = (msg.failed || []).map((k) => CHECK[k] || k).join(", ");
     toast(`${REASON[msg.reason] || msg.reason}${failed ? `: ${failed}` : ""}`);
@@ -622,10 +714,16 @@ function onMessage(msg) {
     onDetection(msg);
   } else if (msg.type === "event") {
     const d = msg.detail || {};
+    if (msg.kind === "cmd_ignored") return render();   // 자율이 auto가 아닐 때 보낸 이동 명령(1초에 한 번까지). 기록에는 남기지 않는다
     const text = msg.kind === "mode_changed" ? `${(MODE[d.from] || [d.from])[0]} → ${(MODE[d.to] || [d.to])[0]} (${d.reason})`
       : msg.kind === "safety_landing" ? `안전 착륙: ${d.reason}`
-      : msg.kind === "video_changed" ? `영상 ${d.on ? "켜짐" : "꺼짐"} (${VIDEO_REASON[d.reason] || d.reason})` : msg.kind;
-    const kind = msg.kind === "mode_changed" ? "mode" : msg.kind === "video_changed" ? "video" : "intervention";
+      : msg.kind === "video_changed" ? `영상 ${d.on ? "켜짐" : "꺼짐"} (${VIDEO_REASON[d.reason] || d.reason})`
+      : msg.kind === "autonomy_connected" ? `자율 연결 (${d.ground_origin ? "지상에서" : "공중에서 붙어 자율 시작 불가"})`
+      : msg.kind === "autonomy_disconnected" ? "자율 연결 끊김"
+      : msg.kind === "mission_finished" ? `임무 끝: ${d.phase === "arrived" ? "도착" : "실패"}${d.reason ? ` (${d.reason})` : ""}`
+      : msg.kind === "command_rejected" ? `${CMD_LABEL[d.name] || d.name} 거절: ${REASON[d.reason] || d.reason}${d.detail ? ` (${d.detail})` : ""}` : msg.kind;
+    const kind = msg.kind === "mode_changed" || msg.kind.startsWith("autonomy") || msg.kind === "mission_finished" ? "mode"
+      : msg.kind === "video_changed" ? "video" : "intervention";
     ui.timeline.unshift({ time: hhmmss(msg.at), kind, text });
     ui.timeline.length = Math.min(ui.timeline.length, 200);
     if (msg.kind === "safety_landing") toast(`안전 착륙: ${d.reason}`);
