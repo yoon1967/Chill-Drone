@@ -65,6 +65,12 @@ class FakeTello:
             self._threads.append(t)
         return self
 
+    def restart(self) -> None:
+        """전원을 껐다 켠 것처럼: SDK 모드가 풀려 다음 command 전까지 상태를 보내지 않고, 영상·비행도 멈춘다."""
+        self._client_ip = None
+        self._streaming.clear()
+        self.flying, self.h_cm, self._rc = False, 0.0, (0, 0, 0, 0)
+
     def close(self) -> None:
         self._stop.set()
         for t in self._threads:

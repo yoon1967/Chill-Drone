@@ -264,5 +264,43 @@ class GatewayVideoTest(GatewayCase):
         self.assertIsNone(self.gw.frames.get(f1["input_id"], "frame-000001"))
 
 
+
+class GatewayReconnectTest(GatewayCase):
+    """드론을 껐다 켜면 SDK 모드가 풀려 상태가 끊긴다. 땅에서는 command를 다시 보내 다시 붙는다(11/05 실기체)."""
+    def make_video(self):
+        self.video = StubVideo()
+        return self.video
+
+    def setUp(self):
+        self._saved = gateway.SDK_RESYNC_S
+        gateway.SDK_RESYNC_S = 0.5
+        super().setUp()
+
+    def tearDown(self):
+        super().tearDown()
+        gateway.SDK_RESYNC_S = self._saved
+
+    def test_reconnects_after_drone_restart(self):
+        self.assertTrue(self.cmd("video_on")["ok"])
+        n = self.fake.received.count("command")
+        self.fake.restart()
+        self.assertTrue(wait_until(lambda: self.gw.arbiter.mode == "disconnected", timeout=3))
+        self.assertTrue(wait_until(lambda: self.gw.arbiter.mode == "grounded", timeout=8), self.fake.received[-6:])
+        self.assertGreater(self.fake.received.count("command"), n)
+        st = self.gw.drone_state()        # 기체 영상은 꺼졌으니 게이트웨이도 꺼진 것으로, 다시 붙은 뒤 streamoff로 맞춘다
+        self.assertEqual((st["video"]["on"], st["video"]["reason"]), (False, "link_lost"))
+        self.assertIn({"on": False, "reason": "link_lost"}, [m["detail"] for m in self.sent if m.get("kind") == "video_changed"])
+        self.assertTrue(wait_until(lambda: self.fake.received[-1:] == ["streamoff"] or
+                                   "streamoff" in self.fake.received[self.fake.received.index("command", n):]))
+
+    def test_no_command_while_flying(self):
+        self.take_off()
+        start = len(self.fake.received)
+        self.fake.send_state = False      # 비행 중 끊김: FlightController가 착륙시킨다. 그 전에 command로 잠금을 잡지 않는다
+        self.assertTrue(wait_until(lambda: "land" in self.fake.received[start:], timeout=5), self.fake.received[start:])
+        after = self.fake.received[start:]
+        self.assertNotIn("command", after[:after.index("land")])
+
+
 if __name__ == "__main__":
     unittest.main()
