@@ -153,6 +153,20 @@ class FakeMap:
                     "points": pts, "cameras": cams}
 
 
+# 관제 화면 "지도 콘솔" 보기가 이 서버 주소를 열 때 보이는 안내(진짜 지도 콘솔 화면은 apps/console)
+PAGE = """<!doctype html><html lang="ko"><head><meta charset="utf-8"><title>가짜 지도 서버</title>
+<style>body{margin:0;padding:24px;font:14px/1.6 system-ui,sans-serif;background:#eef2ea;color:#1f2a22}
+b{font-size:16px}code{background:#fff8;padding:1px 5px;border-radius:4px}</style></head><body>
+<b>가짜 지도 서버 (시험용)</b>
+<p>진짜 지도 콘솔(<code>apps/console</code>) 대신 켜진 시험용 서버입니다. 콘솔 화면은 없고, 지도 연결기가 읽는 상태와 점군만 흉내 냅니다.</p>
+<p id="s">상태 읽는 중…</p>
+<script>
+async function tick(){try{const s=await (await fetch('/api/live/state',{cache:'no-store'})).json();
+document.getElementById('s').textContent='상태 '+s.status+' · 버전 '+s.revision+(s.backend?' · '+s.backend:'');}
+catch(e){document.getElementById('s').textContent='상태를 읽지 못했습니다';}setTimeout(tick,1000);}tick();
+</script></body></html>"""
+
+
 def make_handler(fake: FakeMap):
     class H(BaseHTTPRequestHandler):
         def log_message(self, *a):
@@ -167,6 +181,13 @@ def make_handler(fake: FakeMap):
             self.wfile.write(body)
 
         def do_GET(self):
+            if self.path in ("/", "/index.html"):
+                body = PAGE.encode()
+                self.send_response(200)
+                self.send_header("Content-Type", "text/html; charset=utf-8")
+                self.send_header("Content-Length", str(len(body)))
+                self.end_headers()
+                return self.wfile.write(body)
             if self.path.startswith("/api/import/preview?"):
                 q = urllib.parse.parse_qs(urllib.parse.urlsplit(self.path).query)
                 return self.send(*fake.preview(q.get("id", [""])[0], int(q.get("revision", ["0"])[0] or 0)))

@@ -144,3 +144,25 @@ body[data-view=control] main{padding-bottom:24px}body[data-view=review] main{pad
 .thumb.photo img{width:100%;height:100%;object-fit:cover;display:block}
 .thumb.photo span{position:absolute;top:4px;left:4px}
 .overlay.tl{top:8px;bottom:auto;left:8px;background:#c0392bdd;color:#fff}
+/* 지도 콘솔 보기(apps/console 화면을 지도 칸에) · 크게 보기 */
+.map-big{padding:3px 10px;font-size:12px;margin-left:6px}
+.console-slot{flex:1;min-height:420px;display:flex;background:var(--map);border-radius:9px}
+.console-slot>.map-empty{flex:1}
+.console-frame{position:absolute;z-index:4;border:0;border-radius:9px;background:var(--map)}
+.console-frame.away{visibility:hidden;pointer-events:none}
+.map3d-info .mini{padding:2px 9px;font-size:12px}
+.console-tools{margin-left:auto;display:inline-flex;gap:10px;align-items:center;white-space:nowrap}
+.console-hint{flex-basis:100%}
+.map-open{font-size:12px;color:var(--accent);text-decoration:none;margin-left:8px;padding:3px 8px;border:1px solid var(--line);border-radius:6px;white-space:nowrap}
+.map-open:hover{border-color:var(--accent)}
+.console-view{display:flex;flex-direction:column}
+body[data-view=map] main{padding-bottom:24px}
+body[data-view=map] .controls{position:static;padding:8px 12px;border:1px solid var(--line);border-radius:12px}
+/* 지도 콘솔 화면: 모니터 한 화면에 스크롤 없이, 콘솔이 남는 높이를 다 쓴다 */
+@media (min-width:1100px) and (min-height:700px){
+  body[data-view=map]{height:100vh;overflow:hidden;display:flex;flex-direction:column}
+  body[data-view=map] main{flex:1;min-height:0;max-width:none;width:100%;padding:10px 16px;gap:10px;grid-template-rows:auto auto minmax(0,1fr) auto}
+  body[data-view=map] .alert-slot:empty{margin-top:-10px}
+  body[data-view=map] .console-view{min-height:0}
+  body[data-view=map] .console-slot{min-height:0}
+}

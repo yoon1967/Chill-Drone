@@ -7,6 +7,7 @@ import os
 import sys
 import threading
 import unittest
+import urllib.request
 from http.server import ThreadingHTTPServer
 
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
@@ -43,6 +44,11 @@ class MapBridgeTest(unittest.TestCase):
         if self.server is not None:
             self.server.shutdown()
             self.server.server_close()
+
+    def test_root_page_explains_fake_server(self):   # 관제 화면 "지도 콘솔" 보기가 이 주소를 열면 빈 오류 대신 안내
+        with urllib.request.urlopen(self.url + "/", timeout=5) as r:
+            self.assertTrue(r.headers["Content-Type"].startswith("text/html"))
+            self.assertIn("가짜 지도 서버", r.read().decode("utf-8"))
 
     def test_no_map_until_session_then_new_revisions_only(self):
         self.bridge.poll_once()
