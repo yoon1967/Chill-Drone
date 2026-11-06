@@ -8,7 +8,7 @@
 - `pose`·`path`·`people`은 `frame: "map"`(자율 지도: 켠 자리 원점, x 앞·y 왼쪽·z 위, m, yaw 반시계 +). 좌표를 바꾸지 않는다.
 - `people`은 0.1.0 초안에 없던 것으로, 자율 비행 쪽 `people.json`(찾은 사람) 모양을 그대로 받는다.
 - 회차 폴더 autonomy/: events.jsonl(연결·control·ack·request·임무 상태 변화·찾은 사람 수 변화),
-  pose.jsonl(1초에 한 번), latest.json(경로·찾은 사람 최신, 덮어씀).
+  pose.jsonl(받는 대로 전부), path.jsonl·people.jsonl(바뀔 때마다 전체, 기록 재생용), latest.json(경로·찾은 사람 최신, 덮어씀).
 """
 
 from __future__ import annotations
@@ -25,7 +25,7 @@ from tello_link import now_iso
 
 FROM_AUTONOMY = ("hello", "cmd_vel", "mission_state", "ack", "request", "pose", "path", "people")
 POSE_STALE_S = 1.0          # 이보다 오래된 위치는 화면에 "오래됨"으로 보인다
-POSE_LOG_S = 1.0            # 위치는 1초에 한 번만 기록
+POSE_LOG_S = 0.0            # 위치는 받는 대로 다 남긴다(기록 재생용, 10Hz면 시간당 약 5 MB)
 MAX_PATH_POINTS = 5000
 MAX_PEOPLE = 200
 FLOAT_KEYS = ("baro", "agx", "agy", "agz")   # Tello 원문에서 소수 둘째 자리까지 오는 값
@@ -179,6 +179,8 @@ class AutonomyLink:
         with self._lock:
             self.path_revision += 1
             self._path = {"points": points, "frame": "map", "revision": self.path_revision, "at": now_iso()}
+            path = self._path
+        self._log("path", path)
         self._save_latest()
 
     def _receive_people(self, msg) -> None:
@@ -195,7 +197,11 @@ class AutonomyLink:
                 (len(value["people"]), sum(p["gone"] for p in value["people"]), len(value["unconfirmed"]))
             if before is None or value["people"] != before["people"] or value["unconfirmed"] != before["unconfirmed"]:
                 self.people_revision += 1
+            new = before is None or value["people"] != before["people"] or value["unconfirmed"] != before["unconfirmed"]
             self._people = {**value, "revision": self.people_revision, "at": now_iso()}
+            people = self._people
+        if new:
+            self._log("people", people)
         if changed:
             self._log("events", {"kind": "people", "confirmed": len(value["people"]),
                                  "gone": sum(p["gone"] for p in value["people"]), "unconfirmed": len(value["unconfirmed"])})

@@ -259,6 +259,22 @@ python modules/autonomy/tello_link/gateway_server.py             # 실제 Tello 
 - `check_server.py`와 같은 기본 포트(8010)를 쓴다. Tello는 처음 `command`를 보낸 쪽에만 답하므로 둘을 동시에 켜지 않는다.
 - 시험: `python -B -m unittest discover -s modules/autonomy/tello_link/tests -p "test_gateway.py"` (가짜 Tello, 약 6초), 자율 연결은 `-p "test_autonomy.py"`
 
+## 기록 재생 (`--replay`)
+
+게이트웨이 회차 폴더를 기체 대신 시간에 맞춰 다시 내보낸다(`replay.py`). 드론 없이 화면이 잘 도는지 확인하거나, 같은 비행으로 화면·탐지를 비교할 때 쓴다.
+
+```powershell
+python modules/autonomy/tello_link/gateway_server.py --replay data/outputs/tello/<회차> --replay-loop      # http://127.0.0.1:8010
+python modules/autonomy/tello_link/gateway_server.py --replay <회차> --replay-speed 2 --replay-start 60    # 2배속, 60초부터
+```
+
+- 화면은 실시간과 똑같이 붙는다(위쪽 표시 "기록 재생"). 명령은 모두 `replay_source`로 거절하고, 자율 연결도 받지 않는다. 원래 회차 폴더에는 쓰지 않는다.
+- 다시 내보내는 것: 드론 상태(`sensor.jsonl`), 모드 변화·영상 켜고 끔(`events.jsonl`), 영상(`video/`, 받은 시각대로 같은 디코더에),
+  사람 탐지·발견·사진(`detections.jsonl`·`detections/`, 발견은 기록된 `finding_id`로 묶음), 3D 지도(`map/snapshots/`, 없으면 `map/latest.json`),
+  자율 위치·경로·찾은 사람·임무 상태(`autonomy/`). 시각은 원래 회차의 UTC 그대로. `drone_state.replay`에 재생 위치·길이·속도.
+- 영상 원본을 남기기 전(11/05 이전) 회차는 영상 없이 재생된다. `/snapshot.jpg`도 재생 영상으로 내주므로 탐지 연결기를 다시 돌려 볼 수 있다(결과 수신은 아직 거절).
+- 재생 시험: `python -B -m unittest discover -s modules/autonomy/tello_link/tests -p "test_replay.py"`
+
 ## 회차 로그
 
 `log_root/<run_id>/`에 남는다. 기본 위치 `data/outputs/tello/`는 Git에서 제외된다.
@@ -270,8 +286,13 @@ python modules/autonomy/tello_link/gateway_server.py             # 실제 Tello 
 | `sensor.jsonl` | 상태 패킷 전체(약 10Hz), 원시값과 SI 값 |
 | `events.jsonl` | 연결 시작·종료, 점검 실행, 영상 켜기·끄기, 버린 응답 |
 | `metrics.json` | 종료 시 명령 수, 차단 수, 타임아웃 수, 왕복 시간 중앙값·최대값, 상태 패킷 수 |
+| `video/part_NNNN.h264`·`.jsonl`, `video/parts.jsonl` | 게이트웨이(`gateway_server.py`)만. 영상을 켤 때마다 받은 H.264 그대로 한 조각 + 패킷마다 `offset`·`size`·`timestamp_s`(monotonic)·`wall`(UTC epoch). 조각 시작·끝(영상 세션 `input_id`, 상태 `captured`/`partial`). 분당 약 10 MB, `--no-record-video`로 끈다. 지도 파트 녹화(`modules/mapping/data/live_recording.py`)와 같은 칸 |
+| `detections.jsonl`·`detections/` | 게이트웨이만. 사람 탐지 결과와 발견 사진(실제 사람이 찍히므로 저장소·공유에 올리지 않는다) |
+| `map/latest.json`, `map/snapshots/NNNN_rev<버전>.json.gz`, `map_updates.jsonl` | 게이트웨이만. 3D 지도 최신본, 5초마다 + 형식·세션·구간이 바뀔 때 한 버전, 버전마다 요약(`saved` = 남긴 파일) |
+| `autonomy/` | 게이트웨이만. `events.jsonl`, `pose.jsonl`(받는 대로 전부), `path.jsonl`·`people.jsonl`(바뀔 때마다), `latest.json` |
 
-pose는 만들지 않는다(`manifest.files.pose = null`).
+pose는 만들지 않는다(`manifest.files.pose = null`). 자율 비행이 보낸 위치는 `autonomy/pose.jsonl`에 있다.
+영상·지도 버전·자율 기록은 기록 재생과 화면 시험용 목업 데이터를 만들려고 남긴다. 실제 사람이 찍힌 영상·사진은 저장소에 넣지 않는다.
 
 ## 실기체 확인 결과 (2026-10-23, 이륙 없음)
 

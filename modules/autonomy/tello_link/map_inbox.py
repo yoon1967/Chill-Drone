@@ -5,11 +5,13 @@
 (지도 표시 좌표 그대로, 단위는 `scale.unit`. 온라인 지도는 보통 `arbitrary` = m가 아님).
 - kind `snapshot`: 새 지도 버전. 최신 하나만 메모리에 든다. 화면에는 WS로 알림(`map`)만 보내고 점군은 GET /api/map으로 읽게 한다.
 - kind `status`: 연결기가 본 지도 서버 상태(꺼짐·지도 없음·동작 중). 버전이 안 바뀌어도 연결기가 살아 있다는 근거.
-회차 폴더: map/latest.json(덮어씀), map_updates.jsonl(버전마다 한 줄: 시각·버전·점 수·출처).
+회차 폴더: map/latest.json(덮어씀), map_updates.jsonl(버전마다 한 줄: 시각·버전·점 수·출처·저장 파일),
+map/snapshots/NNNN_rev<버전>.json.gz(지도가 자라는 과정. 5초에 한 번 + 형식·세션·구간이 바뀔 때. 기록 재생용).
 """
 
 from __future__ import annotations
 
+import gzip
 import json
 import math
 import os
@@ -23,6 +25,7 @@ SCHEMA = "gateway-map/0.1"
 MAX_POINTS = 60_000          # 연결기 기본은 20,000. 지도 쪽 최대 융합 셀 50,000보다 조금 넉넉히
 MAX_CAMERAS = 20_000
 ALIVE_S = 5.0                # 연결기 소식이 이 시간 안에 왔으면 동작 중
+SNAPSHOT_S = 5.0             # 지도 버전은 이 간격마다 하나씩 남긴다(점 2만 개면 gzip 약 0.3 MB)
 UPSTREAM = ("ok", "no_map", "unreachable", "error")
 
 
@@ -38,8 +41,11 @@ class MapInbox:
         self._upstream: dict | None = None
         self.updates = 0
         self.rejected = 0
+        self._saved_mono: float | None = None
+        self._saved_kind = None              # (형식, 세션, 구간): 바뀌면 간격과 상관없이 남긴다(미리보기 → 최종 지도 등)
+        self.snapshots = 0
         if run_dir:
-            os.makedirs(os.path.join(run_dir, "map"), exist_ok=True)
+            os.makedirs(os.path.join(run_dir, "map", "snapshots"), exist_ok=True)
 
     def receive(self, msg) -> tuple[int, dict]:
         """(HTTP 상태, 응답). 201 새 버전, 200 상태·같은 버전, 400 형식 오류, 500 저장 실패."""
@@ -106,8 +112,18 @@ class MapInbox:
         with open(path + ".tmp", "w", encoding="utf-8") as f:
             json.dump(snap, f, ensure_ascii=False, separators=(",", ":"))
         os.replace(path + ".tmp", path)
+        src = snap.get("source") or {}
+        kind = (src.get("schema_version"), src.get("session_id"), src.get("segment_id"))
+        now = self.clock()
+        name = None
+        if kind != self._saved_kind or self._saved_mono is None or now - self._saved_mono >= SNAPSHOT_S:
+            name = f"{self.snapshots:04d}_rev{src.get('revision')}.json.gz"
+            with gzip.open(os.path.join(self.run_dir, "map", "snapshots", name), "wt", encoding="utf-8") as f:
+                json.dump(snap, f, ensure_ascii=False, separators=(",", ":"))
+            self.snapshots += 1
+            self._saved_mono, self._saved_kind = now, kind
         with open(os.path.join(self.run_dir, "map_updates.jsonl"), "a", encoding="utf-8") as f:
-            f.write(json.dumps(line, ensure_ascii=False) + "\n")
+            f.write(json.dumps({**line, "saved": f"map/snapshots/{name}" if name else None}, ensure_ascii=False) + "\n")
 
 
 def _check(msg) -> str:
