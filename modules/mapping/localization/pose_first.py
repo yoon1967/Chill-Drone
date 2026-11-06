@@ -67,6 +67,18 @@ def depth_in_pose_units(depth, anchors, tracking_size, excluded=None):
     return (depth * scale).astype(np.float32), scale
 
 
+def extrapolate_pose(previous, latest, position_steps, rotation_steps, *, max_turn=None):
+    predicted = latest.copy()
+    predicted[:3, 3] += (latest[:3, 3] - previous[:3, 3]) * position_steps
+    axis_angle = cv2.Rodrigues(previous[:3, :3].T @ latest[:3, :3])[0]
+    angle = np.linalg.norm(axis_angle)
+    if angle > 0:
+        if max_turn is not None:
+            rotation_steps = min(rotation_steps, max_turn / angle)
+        predicted[:3, :3] = latest[:3, :3] @ cv2.Rodrigues(axis_angle * rotation_steps)[0]
+    return predicted
+
+
 class ConstantVelocityPose:
     """Extrapolate from native poses only, in the same map and for a bounded gap."""
     max_prediction_s = 1.
@@ -116,14 +128,7 @@ class ConstantVelocityPose:
                 steps_translation = min(steps, .2 * float(np.median(z)) / distance)
             else:
                 steps_translation = min(steps, 4.)
-            predicted[:3, 3] += delta * steps_translation
-
-            relative = previous[:3, :3].T @ last[:3, :3]
-            axis_angle = cv2.Rodrigues(relative)[0]
-            angle = np.linalg.norm(axis_angle)
-            if angle > 0:
-                rotation = cv2.Rodrigues(axis_angle * min(steps, math.radians(15) / angle))[0]
-                predicted[:3, :3] = last[:3, :3] @ rotation
+            predicted = extrapolate_pose(previous, last, steps_translation, steps, max_turn=math.radians(15))
         return predicted, first
 
 

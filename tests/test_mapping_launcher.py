@@ -1,5 +1,6 @@
 """CMD setup, image freshness and failure isolation without downloads or Docker."""
 import os
+from contextlib import nullcontext
 from pathlib import Path
 import subprocess
 import tempfile
@@ -106,10 +107,25 @@ class MappingLauncherTests(unittest.TestCase):
         server.assert_not_called()
         browser.assert_not_called()
 
+    def test_live_default_owns_one_gateway_and_passes_it_to_viewer(self):
+        with patch.object(self.launcher.sys, 'argv', [str(LAUNCHER), '--no-browser']), \
+                patch.object(self.launcher.Path, 'is_file', return_value=True), \
+                patch.object(self.launcher, 'ensure_python_environment', return_value=True), \
+                patch.object(self.launcher, 'ensure_gateway_environment', return_value=True), \
+                patch.object(self.launcher, 'ensure_slam_image') as docker, \
+                patch('modules.mapping.data.model_assets.require_local_models', return_value={}), \
+                patch.object(self.launcher, 'managed_gateway', return_value=nullcontext('http://127.0.0.1:8021')) as gateway, \
+                patch.object(self.launcher, 'run_viewer', return_value=0) as viewer:
+            self.assertEqual(self.launcher.main(), 0)
+        docker.assert_not_called()
+        gateway.assert_called_once_with(viewer.call_args.args[1], fake=False)
+        self.assertEqual(viewer.call_args.args[4:6], ('http://127.0.0.1:8021', True))
+
     def test_model_preparation_is_explicit_and_does_not_start_viewer(self):
         with patch.object(self.launcher.sys, 'argv', [str(LAUNCHER), '--prepare-models']), \
                 patch.object(self.launcher.Path, 'is_file', return_value=True), \
                 patch.object(self.launcher, 'ensure_python_environment', return_value=True) as packages, \
+                patch.object(self.launcher, 'ensure_gateway_environment', return_value=True), \
                 patch.object(self.launcher.subprocess, 'call', return_value=0) as prepare, \
                 patch.object(self.launcher.subprocess, 'Popen') as viewer:
             self.assertEqual(self.launcher.main(), 0)
@@ -122,6 +138,7 @@ class MappingLauncherTests(unittest.TestCase):
         with patch.object(self.launcher.sys, 'argv', [str(LAUNCHER), '--no-browser']), \
                 patch.object(self.launcher.Path, 'is_file', return_value=True), \
                 patch.object(self.launcher, 'ensure_python_environment', return_value=True), \
+                patch.object(self.launcher, 'ensure_gateway_environment', return_value=True), \
                 patch('modules.mapping.data.model_assets.require_local_models', side_effect=ModelAssetsMissing('depth')), \
                 patch.object(self.launcher, 'ensure_slam_image') as docker, \
                 patch.object(self.launcher.subprocess, 'Popen') as viewer:

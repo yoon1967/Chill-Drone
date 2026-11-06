@@ -33,6 +33,7 @@ import os
 import sys
 import time
 from contextlib import asynccontextmanager
+from urllib.parse import urlsplit
 
 from fastapi import FastAPI, HTTPException, Request, WebSocket, WebSocketDisconnect
 from fastapi.responses import FileResponse, JSONResponse, Response, StreamingResponse
@@ -43,6 +44,7 @@ sys.path.insert(0, HERE)
 
 from gateway import Gateway  # noqa: E402
 from tello_link import DEFAULT_HOST, TelloLink, now_iso  # noqa: E402
+from tello_video import mjpeg_part  # noqa: E402
 
 REPO_ROOT = os.path.abspath(os.path.join(HERE, "..", "..", ".."))
 DEFAULT_LOG_ROOT = os.path.join(REPO_ROOT, "data", "outputs", "tello")
@@ -80,12 +82,20 @@ def build_gateway(args):
     else:
         host, cmd_port, local_port, state_port, video_port, bind = args.drone_ip, 8889, 8889, 8890, 11111, "0.0.0.0"
     link = TelloLink(host=host, cmd_port=cmd_port, local_cmd_port=local_port, state_port=state_port, bind_ip=bind,
-                     log_root=args.log_root, source="fake" if args.fake else "tello", allow_flight=True).start()
+                     log_root=args.log_root, source="fake" if args.fake else "tello", allow_flight=True)
+    try:
+        link.start()
+    except OSError:
+        link.close()
+        if fake:
+            fake.close()
+        raise
     video = None
     if not args.no_video:
         from tello_video import TelloVideo
         video = TelloVideo(port=video_port, bind_ip=bind)
     return Gateway(link, source="fake" if args.fake else "tello", video=video,
+                   mapping_console_port=getattr(args, "mapping_console_port", None),
                    record_video=not getattr(args, "no_record_video", False)), fake
 
 
@@ -104,13 +114,17 @@ def build_app(args) -> FastAPI:
     @asynccontextmanager
     async def lifespan(_app):
         gw.start()
-        yield
-        gw.close()
-        if gw.video is not None:
-            gw.video.stop()
-        gw.link.close()
-        if fake:
-            fake.close()
+        try:
+            yield
+        finally:
+            try:
+                gw.close()
+            finally:
+                if gw.video is not None:
+                    gw.video.stop()
+                gw.link.close()
+                if fake:
+                    fake.close()
 
     app = FastAPI(title="드론 게이트웨이", lifespan=lifespan)
     app.state.gateway = gw
@@ -121,6 +135,17 @@ def build_app(args) -> FastAPI:
 
     @app.websocket("/ws/drone")
     async def ws_drone(ws: WebSocket):
+        origin = ws.headers.get("origin")
+        host = ws.headers.get("host", "")
+        try:
+            hostname = urlsplit(f"//{host}").hostname
+        except ValueError:
+            hostname = None
+        scheme = "https" if ws.url.scheme == "wss" else "http"
+        if (origin is not None and origin != f"{scheme}://{host}") or (
+                getattr(gw, "mapping_console_port", None) is not None and hostname not in LOCAL_HOSTS):
+            await ws.close(code=1008)
+            return
         await ws.accept()
         key = f"ws-{next(ids)}"
         queue: asyncio.Queue = asyncio.Queue(maxsize=200)
@@ -281,22 +306,27 @@ def build_app(args) -> FastAPI:
         status, out = gw.overlay.put(await request.body(), h.get("x-input-id"), h.get("x-frame-id"))
         return JSONResponse(out, status)
 
-    def mjpeg(request: Request, latest, running):
+    def mjpeg(request: Request, latest, running, *, mapping=False):
         async def gen():  # 최신 프레임만 보낸다. 쌓지 않는다.
             last = None
             while running() and not await request.is_disconnected():
-                data = await asyncio.to_thread(latest)
+                frame = await asyncio.to_thread(latest)
+                data = frame[0] if frame is not None and mapping else frame
                 if data is not None and data is not last:
                     last = data
-                    yield b"--frame\r\nContent-Type: image/jpeg\r\n\r\n" + data + b"\r\n"
+                    pose = gw.link.sensor_pose_at(frame[1]) if mapping else None
+                    yield mjpeg_part(data, pose)
                 await asyncio.sleep(0.04)
-        return StreamingResponse(gen(), media_type="multipart/x-mixed-replace; boundary=frame")
+        return StreamingResponse(gen(), media_type="multipart/x-mixed-replace; boundary=frame",
+                                 headers={"X-Tello-Sensor-Pose": "1"} if mapping else None)
 
     @app.get("/video.mjpg")
-    async def video_mjpg(request: Request):
+    async def video_mjpg(request: Request, mapping: bool = False):
         if gw.video is None:
             raise HTTPException(404, "영상이 꺼져 있습니다")
-        return mjpeg(request, gw.video.jpeg, lambda: gw.video.running)
+        mapping = mapping and hasattr(gw.link, "sensor_pose_at")
+        latest = gw.video.jpeg_snapshot if mapping else gw.video.jpeg
+        return mjpeg(request, latest, lambda: gw.video.running, mapping=mapping)
 
     @app.get("/overlay.mjpg")
     async def overlay_mjpg(request: Request):

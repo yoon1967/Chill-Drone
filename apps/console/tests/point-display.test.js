@@ -65,6 +65,19 @@ test('point buffers reuse allocations and update only changed slots, including d
   buffer.remove(20); assert.equal(geometry.drawRange.count, 0);
 });
 
+test('saved map uses distinct sizes for far vision, standard vision and ToF points', () => {
+  const display = new PointDisplay();
+  const value = scene([row(0), row(1), row(2)]);
+  value.rescue = {render_mode: 'points', point_labels: [0, 0, 0],
+    point_far: [true, false, false], point_tof: [false, false, true]};
+  display.update(value);
+  const sizes = display.raw.geometry.getAttribute('pointScale');
+  assert.deepEqual([...sizes.array.slice(0, 3)], [.65, 1, 1.4].map(Math.fround));
+  display.update({...value, rescue: {...value.rescue, point_far: [false, true, false]}});
+  assert.deepEqual([...sizes.array.slice(0, 3)], [1, .65, 1.4].map(Math.fround));
+  display.dispose();
+});
+
 test('capacity grows geometrically, preserves live data and bounds pending update ranges', () => {
   const buffer = new PointBuffer(), geometry = buffer.geometry;
   let released = 0; geometry.addEventListener('dispose', () => released++);

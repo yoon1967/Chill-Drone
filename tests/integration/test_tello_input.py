@@ -3,6 +3,7 @@ from functools import partial
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from io import BytesIO
 import json
+import math
 import socket
 from pathlib import Path
 import tempfile
@@ -17,6 +18,8 @@ import cv2
 import numpy as np
 
 from apps.console.serve import ObservationCache, Timeline, ViewerHandler, ViewerServer
+from modules.autonomy.tello_link.sensor_pose import SensorPose, TelloOdometry
+from modules.autonomy.tello_link.tello_video import mjpeg_part
 from modules.mapping.localization.orbslam3_live import LiveManager
 from modules.mapping.localization.tello_input import DirectCamera, GatewayCamera, InputError, TelloMapInput, gateway_address, mjpeg_frames
 from test_map_sources import SyntheticSession
@@ -53,6 +56,20 @@ class Frames:
 
 
 class TelloInputTests(unittest.TestCase):
+    def test_odometry_uses_power_on_velocity_axes_and_rejects_stale_pose(self):
+        odometry = TelloOdometry()
+        raw = dict(vgx=-3, vgy=4, vgz=0, yaw=179, pitch=0, roll=0, tof=80)
+        odometry.update(raw, 10.)
+        odometry.update({**raw, 'yaw': -179, 'tof': 40}, 10.1)
+        pose = odometry.at(10.05)
+        np.testing.assert_allclose(pose[1:4], [.015, .02, .8], atol=1e-8)
+        self.assertAlmostEqual(abs(pose.yaw), math.pi)
+        np.testing.assert_allclose(odometry.at(10.2)[1:4], [.06, .08, .8], atol=1e-8)
+        odometry.update({**raw, 'vgx': float('nan')}, 10.25)
+        self.assertIsNone(odometry.at(10.31))
+        odometry.update(raw, 10.5)
+        self.assertEqual(odometry.at(10.5).segment, 1)
+
     def test_direct_sdk_and_h264_with_local_fake_tello(self):
         from modules.autonomy.tello_link.fake_tello import FakeTello
         from modules.autonomy.tello_link.tello_link import TelloLink
@@ -82,6 +99,11 @@ class TelloInputTests(unittest.TestCase):
             self.assertGreater(stamp, 0)
             wait_for(lambda: source.front_tof is not None)
             self.assertAlmostEqual(source.front_tof[0], .481)
+            for _ in range(20):
+                next(frames)
+                if source.sensor_pose is not None:
+                    break
+            self.assertIsInstance(source.sensor_pose, SensorPose)
             fake.send_video = False
             while next(frames)[0] is not None:
                 pass
@@ -146,7 +168,7 @@ class TelloInputTests(unittest.TestCase):
         with self.assertRaisesRegex(InputError, 'too_large'):
             next(mjpeg_frames(BytesIO(b'\xff\xd8' + b'x' * 2097153), lambda: False))
 
-    def gateway(self, *, old=False, age=.01, on=True, redirect=False, front_tof=None):
+    def gateway(self, *, old=False, age=.01, on=True, redirect=False, front_tof=None, pose=None):
         requests = []
         class Handler(BaseHTTPRequestHandler):
             def log_message(self, *args):
@@ -163,8 +185,10 @@ class TelloInputTests(unittest.TestCase):
                     self.send_error(404)
                     return
                 self.send_response(200)
-                if self.path == '/video.mjpg':
-                    body = b'--frame\r\nContent-Type: image/jpeg\r\n\r\n' + JPEG + b'\r\n'
+                if self.path == '/video.mjpg?mapping=1':
+                    body = mjpeg_part(JPEG, pose)
+                    if pose is not None:
+                        self.send_header('X-Tello-Sensor-Pose', '1')
                     self.send_header('Content-Type', 'multipart/x-mixed-replace; boundary=frame')
                 else:
                     body = json.dumps({'run_id': 'fake', 'stream_on': on, 'front_tof': front_tof,
@@ -189,8 +213,22 @@ class TelloInputTests(unittest.TestCase):
             self.assertEqual(next(iterator)[0], JPEG)
             with self.assertRaisesRegex(InputError, 'stream_ended'):
                 next(iterator)
-            self.assertIn('/video.mjpg', requests)
-            self.assertTrue(all(p in {'/api/drone/state', '/api/status', '/video.mjpg'} for p in requests))
+            self.assertIn('/video.mjpg?mapping=1', requests)
+            self.assertTrue(all(p in {'/api/drone/state', '/api/status', '/video.mjpg?mapping=1'} for p in requests))
+            self.assertTrue(source.allow_visual_origin)
+
+    def test_gateway_reads_the_pose_attached_to_its_jpeg(self):
+        pose = SensorPose(2, 1., 2., .8, .1, -.2, .3)
+        address, _ = self.gateway(pose=pose)
+        source = GatewayCamera(address)
+        self.addCleanup(source.close)
+        source.open(lambda: False)
+        self.assertEqual(next(source.frames(lambda: False))[0], JPEG)
+        self.assertEqual(source.sensor_pose, pose)
+        self.assertFalse(source.allow_visual_origin)
+        parts = mjpeg_frames(BytesIO(mjpeg_part(JPEG, pose) + mjpeg_part(JPEG)), lambda: False, with_pose=True)
+        self.assertEqual(next(parts), (JPEG, pose))
+        self.assertEqual(next(parts), (JPEG, None))
 
     def test_stale_off_and_redirected_gateways_never_supply_frames(self):
         for values in [dict(age=4), dict(age=float('nan')), dict(on=False), dict(redirect=True)]:
@@ -198,7 +236,7 @@ class TelloInputTests(unittest.TestCase):
             source = GatewayCamera(address)
             with self.subTest(values=values), self.assertRaises((InputError, HTTPError)):
                 source.open(lambda: False)
-            self.assertNotIn('/video.mjpg', requests)
+            self.assertNotIn('/video.mjpg?mapping=1', requests)
 
     def test_gateway_uses_only_fresh_forward_range(self):
         for age, expected in [(.01, .8), (1, None), (-.01, None)]:

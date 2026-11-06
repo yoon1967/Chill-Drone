@@ -6,6 +6,11 @@ import numpy as np
 from .mapping_limits import DEFAULT_POINT_BUDGET
 
 
+FAR_DEPTH, STANDARD_DEPTH, TOF_DEPTH = range(3)
+# tt-sim's 0.3–4.0 m preview palette reaches the blue stop at 75% of the range.
+BLUE_DEPTH_MIN_M = .3 + .75 * (4. - .3)
+
+
 class SemanticSurface:
     """Confidence-weighted voxel centroids with a fixed point budget.
 
@@ -38,7 +43,11 @@ class SemanticSurface:
 
     @property
     def tof_verified(self):
-        return self.depth_rank == 2
+        return self.depth_rank % 3 == TOF_DEPTH
+
+    @property
+    def far_depth(self):
+        return self.depth_rank % 3 == FAR_DEPTH
 
     def _calibrate_spacing(self, xyz, rows, columns, shape, stride):
         # Compare immediate neighbors on the sampled image grid in map units.
@@ -92,7 +101,7 @@ class SemanticSurface:
         inverse = np.empty(len(keys), np.intp)
         inverse[order] = np.cumsum(starts) - 1
         unique = ordered[starts]
-        # In a shared voxel, native ToF > native vision > predicted pose.
+        # Observed poses outrank predicted poses. Within each, ToF > near vision > far vision.
         strongest = np.maximum.reduceat(depth_rank[order], np.flatnonzero(starts))
         keep = depth_rank == strongest[inverse]
         if not keep.all():
@@ -118,7 +127,7 @@ class SemanticSurface:
 
     def _refine_near_tof(self, depth, pose, params):
         """Nudge visual voxels along rays that see the current measured surface."""
-        indices = np.flatnonzero(~self.tof_verified)
+        indices = np.flatnonzero(self.depth_rank != 3 + TOF_DEPTH)
         fx, fy, cx, cy = params
         rotation, origin = pose[:3, :3], pose[:3, 3]
         local = (self.xyz[indices] - origin) @ rotation
@@ -142,15 +151,21 @@ class SemanticSurface:
         self.xyz[moved] = corrected @ rotation.T + origin
         self.keys[moved] = np.floor(self.xyz[moved] / self.size).astype(np.int64)
 
-    def integrate(self, rgb, depth, pose, params, labels, confidence, *, tof_verified=False, pose_predicted=False):
+    def integrate(self, rgb, depth, pose, params, labels, confidence, *,
+                  tof_verified=False, pose_predicted=False, depth_classes=None):
         from modules.mapping.data.rescue_mapping import unproject, PERSON
         person = cv2.dilate((labels == PERSON).astype(np.uint8), np.ones((3,3), np.uint8)) > 0
         static = np.where(person | ~np.isfinite(depth), 0, depth)
         stride = 3
         xyz, v, u = unproject(static, pose, params, stride=stride)
         if len(xyz):
+            if depth_classes is None:
+                grade = np.full(len(xyz), TOF_DEPTH if tof_verified else STANDARD_DEPTH, np.uint8)
+            else:
+                grade = depth_classes[v, u]
             if tof_verified and not pose_predicted and len(self.keys):
-                self._refine_near_tof(static, pose, params)
+                tof_surface = static if depth_classes is None else np.where(depth_classes == TOF_DEPTH, static, 0)
+                self._refine_near_tof(tof_surface, pose, params)
             if self.spacing_increment is None:
                 self._calibrate_spacing(xyz, v, u, depth.shape, stride)
             low, high = xyz.min(axis=0), xyz.max(axis=0)
@@ -159,10 +174,10 @@ class SemanticSurface:
             weights = np.maximum(.1, confidence[v, u]).astype(np.float64)
             votes = np.zeros((len(xyz), 9), np.float64)
             votes[np.arange(len(xyz)), labels[v, u]] = weights
-            rank = 0 if pose_predicted else 2 if tof_verified else 1
+            rank = grade if pose_predicted else grade + 3
             self._merge(np.concatenate((self.keys, keys)), np.concatenate((self.xyz, xyz)),
                 np.concatenate((self.rgb, rgb[v, u])), np.concatenate((self.weights, weights)),
-                np.concatenate((self.votes, votes)), np.concatenate((self.depth_rank, np.full(len(xyz), rank, np.uint8))),
+                np.concatenate((self.votes, votes)), np.concatenate((self.depth_rank, rank)),
                 budget=self.max_cells)
             self._cached_points = self._cached_labels = None
             self.revision += 1

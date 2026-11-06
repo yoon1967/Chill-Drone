@@ -57,6 +57,9 @@
 - `render_mode`: 새 결과는 `points`. 이때 상위 `points`가 실제 표시 점군이다.
 - `point_revision`: 해당 지도 점군이 갱신될 때 증가한다.
 - `point_labels`: 상위 `points`와 같은 순서·길이의 클래스 인덱스. 최종 scene은 점 ID 순서.
+- `point_far`, `point_tof`: 점 순서의 선택적 불리언 배열. Tello 미터 지도에서 파란 거리대
+  (영상 추정 3.075 m 이상)는 0.65배, 전방 ToF에 대응하는 표면은 1.4배 크기로 표시한다.
+  두 배열이 가리키지 않는 점은 기본 크기다.
 - `point_fusion`: `point_budget`, `static_points`, `voxel_size`, `base_voxel_size`, `spacing_increment`,
   `spacing_policy=fixed_increment`, `coarsenings` (최초 간격에 더한 증가 폭의 단위 수),
   `observations`, `coverage_bounds`, `policy=spatial_voxel_merge_no_age_eviction`.

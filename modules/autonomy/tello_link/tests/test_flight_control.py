@@ -178,6 +178,21 @@ class FlightControlTest(unittest.TestCase):
         self.assertTrue(wait_until(lambda: not self.fake.flying, timeout=1))
         t.join(timeout=5)
 
+    def test_emergency_cancels_a_takeoff_waiting_for_the_command_socket(self):
+        import threading
+        self.ctrl.confirm_operator(True)
+        result = []
+        takeoff = threading.Thread(target=lambda: result.append(self.ctrl.takeoff()))
+        with self.link._cmd_lock:
+            takeoff.start()
+            self.assertTrue(wait_until(lambda: self.ctrl.busy == "takeoff"))
+            self.ctrl.emergency(source="test")
+        takeoff.join(timeout=2)
+        self.assertFalse(takeoff.is_alive())
+        self.assertFalse(result[0]["ok"])
+        self.assertFalse(self.ctrl.flying)
+        self.assertNotIn("takeoff", self.fake.received)
+
     def test_land_requires_reconfirm_for_next_takeoff(self):
         self.takeoff()
         r = self.ctrl.land()

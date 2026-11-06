@@ -17,6 +17,7 @@ from urllib.request import HTTPRedirectHandler, ProxyHandler, Request, build_ope
 from .orbslam3_live import live_camera
 from .orbslam3 import atomic_json, read_json
 from modules.mapping.data.tof_depth import FRONT_TOF_MIN_M, FRONT_TOF_MAX_M
+from modules.autonomy.tello_link.sensor_pose import SensorPose
 
 DEFAULT_CAMERA = Path(__file__).resolve().parents[3] / 'data/mapping/tello/20261028/v1/camera.json'
 FRONT_TOF_MAX_FRAME_GAP_S = .2
@@ -49,9 +50,10 @@ def gateway_address(value):
     return f"http://127.0.0.1:{parsed.port}"
 
 
-def mjpeg_frames(response, cancelled):
+def mjpeg_frames(response, cancelled, *, with_pose=False):
     """Read bounded JPEGs from both existing gateway MJPEG variants (no length header)."""
     buffer = bytearray()
+    pose = None
     while not cancelled():
         chunk = response.read1(16384)
         if not chunk:
@@ -64,6 +66,14 @@ def mjpeg_frames(response, cancelled):
                     raise InputError("tello_gateway_invalid_mjpeg")
                 break
             if start:
+                if with_pose:
+                    for header in buffer[:start].split(b'\r\n'):
+                        if header.lower().startswith(b'x-tello-pose:') and len(header) <= 512:
+                            try:
+                                pose = SensorPose.from_values(json.loads(header.split(b':', 1)[1]))
+                            except (ValueError, RecursionError):
+                                pose = None
+                            break
                 del buffer[:start]
             end = buffer.find(b"\xff\xd9", 2)
             if end < 0:
@@ -74,12 +84,14 @@ def mjpeg_frames(response, cancelled):
                 raise InputError("tello_gateway_frame_too_large")
             jpeg = bytes(buffer[:end + 2])
             del buffer[:end + 2]
-            yield jpeg
+            yield (jpeg, pose) if with_pose else jpeg
+            pose = None
 
 
 class DirectCamera:
     time_basis = "pc_decode_receive_monotonic"
     source_label = "tello_sdk_camera"
+    sensor_capable = True
 
     def __init__(self, link_factory=None, video_factory=None):
         if link_factory is None:
@@ -93,6 +105,7 @@ class DirectCamera:
         self.stream_requested = False
         self.recording = self.recording_sink = None
         self.front_tof = None
+        self.sensor_pose = None
         self.tof_stop = threading.Event()
         self.tof_thread = None
 
@@ -145,6 +158,7 @@ class DirectCamera:
             if snapshot and snapshot[1] != last and time.monotonic() - snapshot[1] < 1:
                 jpeg, last, _ = snapshot
                 last_new = time.monotonic()
+                self.sensor_pose = self.link.sensor_pose_at(last)
                 yield jpeg, last
             elif time.monotonic() - last_new > 5:
                 raise InputError("tello_video_timeout_check_wifi_and_udp")
@@ -160,6 +174,7 @@ class DirectCamera:
             self.tof_thread.join()
             self.tof_thread = None
         self.front_tof = None
+        self.sensor_pose = None
         try:
             if self.link and self.stream_requested:
                 self.link.send("streamoff", timeout=1, source="mapping")
@@ -179,6 +194,7 @@ class DirectCamera:
 
 class GatewayCamera:
     time_basis = "mapping_bridge_receive_monotonic"
+    sensor_capable = True
 
     def __init__(self, address):
         self.address = gateway_address(address)
@@ -190,6 +206,8 @@ class GatewayCamera:
         self.source_label = "gateway_unspecified"
         self.recording = self.recording_sink = None
         self.front_tof = None
+        self.sensor_pose = None
+        self.allow_visual_origin = True
 
     def set_recording(self, recording):
         self.recording = recording
@@ -234,14 +252,15 @@ class GatewayCamera:
         self.check()
         if cancelled():
             return
-        self.response = self.opener.open(Request(self.address + "/video.mjpg"), timeout=2)
+        self.response = self.opener.open(Request(self.address + "/video.mjpg?mapping=1"), timeout=2)
         if "multipart/x-mixed-replace" not in self.response.headers.get("Content-Type", ""):
             raise InputError("tello_gateway_invalid_content_type")
+        self.allow_visual_origin = self.response.headers.get("X-Tello-Sensor-Pose") != "1"
         if self.recording:
             self.recording_sink = self.recording.open_part('received_jpeg', self.time_basis)
 
     def frames(self, cancelled):
-        for jpeg in mjpeg_frames(self.response, cancelled):
+        for jpeg, pose in mjpeg_frames(self.response, cancelled, with_pose=True):
             # Windows monotonic() can have a coarse tick. Several JPEGs may arrive
             # in one socket read, so use the high-resolution monotonic counter.
             stamp = time.perf_counter()
@@ -249,10 +268,12 @@ class GatewayCamera:
                 self.recording_sink.offer(jpeg, stamp)
             if time.monotonic() - self.checked >= .25:
                 self.check()
+            self.sensor_pose = pose
             yield jpeg, stamp
 
     def close(self):
         self.front_tof = None
+        self.sensor_pose = None
         if self.response:
             self.response.close()
             self.response = None
@@ -313,6 +334,7 @@ class TelloMapInput:
                 return True
             return False
         base, sequence, last_stamp, missing_since = None, 0, -math.inf, None
+        connection = 0
         session.input_state = 'connecting'
         try:
             while not cancelled():
@@ -361,11 +383,16 @@ class TelloMapInput:
                             if getattr(session, 'recording', None):
                                 session.recording.set_mapping_origin(base)
                         sample = getattr(source, 'front_tof', None)
+                        sensors = {}
                         if (sample is not None and abs(sample[1] - stamp) <= FRONT_TOF_MAX_FRAME_GAP_S
                                 and FRONT_TOF_MIN_M <= sample[0] < FRONT_TOF_MAX_M):
-                            session.offer(jpeg, stamp - base, sequence, front_tof=(sample[0], sample[1] - base))
-                        else:
-                            session.offer(jpeg, stamp - base, sequence)
+                            sensors['front_tof'] = (sample[0], sample[1] - base)
+                        pose = getattr(source, 'sensor_pose', None)
+                        if isinstance(pose, SensorPose) or getattr(source, 'sensor_capable', False):
+                            epoch = getattr(source, 'run_id', None) or connection
+                            sensors['sensor_pose'] = (epoch, pose if isinstance(pose, SensorPose) else None,
+                                                      getattr(source, 'allow_visual_origin', False))
+                        session.offer(jpeg, stamp - base, sequence, **sensors)
                         sequence += 1
                     if not cancelled():
                         raise InputError('tello_gateway_stream_ended')
@@ -387,6 +414,7 @@ class TelloMapInput:
                 while not cancelled() and time.monotonic() < until:
                     time.sleep(.025)
                 source = self.source_factory()
+                connection += 1
         except Exception as error:
             if not cancelled():
                 session.input_state = 'failed'

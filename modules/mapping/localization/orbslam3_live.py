@@ -156,7 +156,7 @@ class LiveSession:
                     "last_input_sequence": self.last_sequence if self.last_sequence >= 0 else None,
                     "recording": self.recording.stats() if getattr(self, 'recording', None) else None}
 
-    def offer(self, jpeg, pts, sequence, *, front_tof=None):
+    def offer(self, jpeg, pts, sequence, *, front_tof=None, sensor_pose=None):
         if not math.isfinite(pts) or not 0 <= pts <= 86400 or sequence < 0:
             raise ValueError("invalid_frame_timestamp_or_sequence")
         if len(jpeg) > 2097152 or not jpeg.startswith(b"\xff\xd8"):
@@ -393,8 +393,9 @@ class LiveManager:
         with self.lock:
             if self.current and not self.current.done:
                 raise RuntimeError("another_camera_session_is_active")
-            # Fail before changing the viewer's selected result when Docker isn't available.
-            image_id = image_id or require_slam_image()
+            if input_kind != 'tello_camera' or self.imports is None:
+                # Video-only ORB sessions require Docker before changing the selected result.
+                image_id = image_id or require_slam_image()
             if self.imports is not None:
                 with self.imports.lock:
                     if any(job['status'] in {'running', 'cancelling'} for job in self.imports.jobs.values()):

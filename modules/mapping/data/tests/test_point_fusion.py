@@ -4,7 +4,7 @@ from pathlib import Path
 
 import numpy as np
 
-from modules.mapping.data.point_fusion import SemanticSurface
+from modules.mapping.data.point_fusion import STANDARD_DEPTH, SemanticSurface
 from modules.mapping.data.mapping_limits import DEFAULT_POINT_BUDGET
 from modules.mapping.data.mapping_history import HistoryWriter, HistoryReader
 from modules.mapping.data.stream_mapping import write_json
@@ -17,7 +17,7 @@ class PointFusionTests(unittest.TestCase):
         weights = np.ones(len(xyz))
         votes = np.zeros((len(xyz), 9)); votes[:, 2] = 1
         surface._merge(np.floor(xyz / size).astype(np.int64), xyz, np.full_like(xyz, 120), weights, votes,
-                       np.ones(len(xyz), np.uint8))
+                       np.full(len(xyz), 3 + STANDARD_DEPTH, np.uint8))
         return surface
 
     def test_compaction_uses_constant_steps_and_regrids_negative_centroids(self):

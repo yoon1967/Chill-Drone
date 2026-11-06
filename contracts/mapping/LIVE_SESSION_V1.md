@@ -18,13 +18,28 @@
 | `mapping` | 매핑 종료 상태·최초 종료 사유·오류·최신 지도 revision·보존된 지도 구간 |
 | `assets` | 보정값·설정·최종 상태·native 지도·revision·키프레임·추적·진단의 상대 경로 |
 | `asset_sha256` | 정상적으로 닫힌 뒤 읽을 수 있는 camera.json·settings.json·state.json의 SHA-256 |
-| `scale`, `privacy` | `arbitrary`, `local_only` |
+| `scale`, `privacy` | 최종 지도의 `m`(Tello 추정) 또는 `arbitrary`, `local_only` |
 
 `assets`의 지도 관련 경로는 지도 초기화 전 종료 시 존재하지 않을 수 있다.
 세션 정보만 저장된 정상 종료와 지도 생성 성공은 별개다.
 manifest의 파일 경로는 세션 루트 기준이다. 기존 `local_assets.json` 및 state의 로컬 경로 힌트는
 이전 PC의 절대 경로일 수 있으므로 후속 불러오기에서는 manifest의 키프레임 루트로 다시 연결해야 한다.
 다른 map ID는 [ORB 계약](ORB_SLAM3_V1.md)에 따라 독립 좌표계로 유지한다.
+
+## Tello 실시간 자세와 지도
+
+- 직접 연결은 TelloLink의 UDP 상태 수신 시각과 영상 디코딩 시각을 같은 PC 시계에서 연결한다.
+- 게이트웨이는 `GET /video.mjpg?mapping=1` 응답에 `X-Tello-Sensor-Pose: 1`을 제공한다.
+  자세를 붙일 수 있는 JPEG 파트에는 `X-Tello-Pose`가 있고, 값은 JSON 배열
+  `[state_epoch, x, y, z, yaw, pitch, roll]`이다. 위치는 전원 켤 때 방향 기준 앞/왼쪽/위의 m,
+  각도는 라디안이다. 헤더가 없는 구형 게이트웨이는 영상과 깊이로 첫 지도 기준을 잡는다.
+- Tello 지도는 세션당 한 좌표계를 사용한다. 센서 상태가 끊기면 누적 프레임의 영상 특징과 깊이에서
+  자세를 복구하고, 센서 좌표가 초기화되면 복구한 자세에 새 센서 좌표를 정렬한다.
+  위치를 맞출 근거가 부족하면 최근 확인한 두 자세의 위치·회전 속도를 현재 영상 시각까지
+  적용해 같은 지도에 누적한다. 확인된 자세가 하나뿐이면 그 자세를 유지한다.
+- 이력과 저장 카메라는 센서 추정 `tello_sensor_odometry`, 영상 복구 `tello_visual_recovery`,
+  선형 예측 `tello_linear_prediction`을 구분한다. 선형 예측 프레임의 추적 상태는 `pose_predicted`다.
+  `m`은 추정값의 단위이며 기체 경로·지도 치수의 독립 실측 정확도를 나타내지 않는다.
 
 ## 원본과 수신 영상
 

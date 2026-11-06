@@ -94,7 +94,7 @@ def _up_from(rotations) -> list[float] | None:
 
 def compact_preview(preview: dict, state: dict, map_url: str, max_points: int) -> dict:
     """깊이 지도 진행 중 미리보기 → gateway-map/0.1. 점 행은 [x,y,z,r,g,b](이미 지도 쪽에서 약 1.2만 점으로 솎음).
-    좌표는 ORB-SLAM3 세계 좌표(카메라 y 아래)이고 배율은 단안이라 정해지지 않았다."""
+    좌표와 단위는 실시간 지도에서 전달받는다."""
     rows = [p for p in preview.get("points") or [] if isinstance(p, list) and len(p) >= 6 and all(_finite(v) for v in p[:3])]
     if len(rows) > max_points:   # 오차 정보가 없으니 고르게 솎는다
         rows = rows[::math.ceil(len(rows) / max_points)]
@@ -102,14 +102,16 @@ def compact_preview(preview: dict, state: dict, map_url: str, max_points: int) -
     cameras = [[round(v, 4) for v in c] for c in preview.get("cameras") or []
                if isinstance(c, list) and len(c) == 3 and all(_finite(v) for v in c)]
     total = preview.get("map_points")
+    metric = preview.get("map_unit") == "m"
+    pose_source = preview.get("pose_source") or ("tello_sensor_rgbd" if metric else "orb_slam3")
     return {
         "schema_version": SCHEMA, "kind": "snapshot", "upstream": "ok", "source_url": map_url,
         "mapping_state": state.get("mapping_state") or state.get("status"),
         "source": {"kind": "live", "schema_version": "live-depth-preview", "input_run_id": state.get("session_id"),
                    "session_id": state.get("session_id"), "segment_id": preview.get("map_id"),
-                   "revision": preview.get("revision"), "pose_source": "orb_slam3",
+                   "revision": preview.get("revision"), "pose_source": pose_source,
                    "depth_job_id": state.get("depth_job_id"), "tracking": preview.get("tracking")},
-        "scale": {"status": "arbitrary", "unit": "arbitrary"},
+        "scale": {"status": "tello_metric_estimate" if metric else "arbitrary", "unit": "m" if metric else "arbitrary"},
         "points": points, "points_total": total if _finite(total) else len(rows), "cameras": cameras,
         "up": _up_from([preview.get("pose_rotation")]) or [0.0, -1.0, 0.0],
     }

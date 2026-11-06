@@ -32,6 +32,10 @@ const PHASE = { idle: "대기", running: "진행 중", paused: "멈춤", arrived
 const SOURCES = { drone: "드론 상태", autonomy: "자율 비행", detect: "사람 탐지", map: "지도", video: "드론 영상" };
 const REASON = {
   not_allowed_in_mode: "지금 상태에서는 할 수 없습니다", preflight_failed: "이륙 전 점검을 통과하지 못했습니다",
+  invalid_command_args: "잘못된 조종 요청입니다", confirm_area_required: "이 화면에서 주변을 다시 확인하세요",
+  takeoff_video_required: "이륙 전에 카메라 영상을 켜고 확인하세요",
+  video_required_in_flight: "비행 중에는 조종 영상을 유지합니다",
+  drone_io_error: "기체와 통신할 수 없습니다",
   client_not_allowed: "자율 시작은 PC 감독 화면에서만 할 수 있습니다", autonomy_not_connected: "자율 비행이 연결되지 않았습니다",
   autonomy_joined_in_air: "이륙 뒤에 연결된 자율이라 시작할 수 없습니다", replay_source: "기록 재생 중에는 명령을 보내지 않습니다",
   autonomy_rejected: "자율이 시작을 거절했습니다",
@@ -168,7 +172,8 @@ function videoControl(st) {
     : v.ground_s != null ? [`지상 ${Math.round(v.ground_s)}초 · ${Math.round(v.ground_off_s)}초에 꺼짐`, st.warnings.includes("video_on_ground") ? "warning" : "neutral"]
     : ["영상 켜짐", "success"];
   const name = on ? "video_off" : "video_on";
-  const off = v.enabled === false;
+  const off = v.enabled === false || (on && st.mapping_console_url &&
+    (st.flight_busy === "takeoff" || ["manual", "auto", "paused", "landing"].includes(st.mode)));
   // 칩(초 단위로 바뀜)과 버튼을 다른 칸으로 둔다. 버튼이 매초 바뀌면 누르는 중에 사라져 클릭이 빠진다.
   return `<span class="video-ctl"><span data-part="videostate">${chip(text, tone)}</span>
     <span data-part="videobtn"><button data-cmd="${name}" class="${off ? "off" : ""}" ${off ? 'aria-disabled="true"' : ""}>${CMD_LABEL[name]}</button></span></span>`;
@@ -448,7 +453,7 @@ const LOOPBACK = ["127.0.0.1", "localhost", "[::1]"];
 
 function consoleTarget(st) {
   let u;
-  try { u = new URL(st?.map?.source_url || CONSOLE_URL); } catch (e) { return { url: null, note: "지도 콘솔 주소를 읽을 수 없습니다." }; }
+  try { u = new URL(st?.mapping_console_url || st?.map?.source_url || CONSOLE_URL); } catch (e) { return { url: null, note: "지도 콘솔 주소를 읽을 수 없습니다." }; }
   if (LOOPBACK.includes(u.hostname) && !LOOPBACK.includes(location.hostname)) {
     return { url: null, note: "지도 콘솔이 드론 PC 안(127.0.0.1)에서만 열려 있어 이 기기에서는 볼 수 없습니다. 드론 PC의 화면에서 보세요." };
   }
@@ -457,9 +462,10 @@ function consoleTarget(st) {
 }
 
 function consolePanel(st) {
-  const head = `<header><h2>지도 콘솔</h2>${src("map")}<span class="muted src-inline">지도 파트 콘솔(apps/console)의 실시간 지도 화면</span></header>`;
+  const head = `<header><h2>지도 콘솔</h2>${src("map")}<span class="muted src-inline">지도 파트 콘솔(apps/console)의 실시간 지도 화면</span>${videoControl(st)}</header>`;
   const t = consoleTarget(st), m = st.map;
   const info = !t.url ? ["볼 수 없음", "warning"]
+    : st.mapping_console_url ? ["통합 실행", "success"]
     : m?.alive && m.upstream === "unreachable" ? ["지도 콘솔 꺼짐", "danger"]
     : m?.alive && m.upstream && m.upstream !== "unreachable" ? ["지도 콘솔 연결", "success"]
     : [`지도 연결기 꺼짐 · ${m?.source_url ? "마지막 주소" : "기본 주소"}`, "neutral"];   // 연결기가 꺼져도 게이트웨이는 마지막 콘솔 주소를 기억한다
@@ -531,10 +537,10 @@ function preflightLine(st) {
 
 function controlBar(st) {
   const can = (n) => st.allowed.includes(n);
-  const btn = (n, extra = "") => `<button data-cmd="${n}" class="${can(n) ? "" : "off"} ${extra}" ${can(n) ? "" : 'aria-disabled="true"'}>${CMD_LABEL[n]}</button>`;
+  const btn = (n, extra = "") => `<button data-cmd="${n}" class="${can(n) ? "" : "off"} ${extra}" ${can(n) ? "" : 'aria-disabled="true"'}>${n === "takeoff" && takeoffUntil ? "주변 확인 후 한 번 더" : CMD_LABEL[n]}</button>`;
   const manualOn = st.mode === "manual", autoOn = st.mode === "auto";
   const autoCmd = st.mode === "paused" && can("resume") ? "resume" : "auto_start";
-  const grounded = st.mode === "grounded";
+  const grounded = st.mode === "grounded" && st.flight_busy !== "takeoff";
   const confirmed = areaConfirmed(st);
   const confirm = grounded
     ? `<button data-cmd="confirm_area" data-confirmed="${!confirmed}" class="${can("confirm_area") ? "" : "off"}" aria-pressed="${confirmed}">${confirmed ? "✓ 주변 확인됨" : "주변 비움·가드·안전 담당 확인"}</button>` : "";
@@ -550,7 +556,8 @@ function controlBar(st) {
     ${grounded ? btn("takeoff") : btn("land")}
     ${preflightLine(st)}
     <span class="spacer"></span>
-    ${ui.live && st.mode === "manual" ? '<span class="muted keys-hint">WASD 이동 · ↑↓ 높이 · ←→ 회전 · L 착륙 · Esc 길게 비상 정지</span>' : ""}
+    ${ui.live && st.mapping_console_url ? `<button data-keyboard-focus aria-pressed="${keyboardEnabled}">${keyboardEnabled ? "키보드 조종 활성" : "키보드 조종 활성화"}</button>` : ""}
+    ${ui.live ? '<span class="muted keys-hint">WASD 이동 · ↑↓ 높이 · ←→ 회전 · T 이륙 확인 · L 착륙 · Esc 비상 정지</span>' : ""}
     <button class="estop" data-hold="emergency" aria-label="비상 정지, 길게 누르기"><span class="fill"></span>비상 정지 <small>길게</small></button>
   </section>`;
 }
@@ -690,7 +697,11 @@ function render() {
 // ---------- 게이트웨이 연결 ----------
 function send(msg) {
   if (!ui.live) return false;
-  if (!ui.wsOpen) { toast("게이트웨이에 연결되지 않았습니다"); return false; }
+  if (!ui.wsOpen || ui.ws?.readyState !== WebSocket.OPEN) return false;
+  if (msg.type === "rc" && msg.axes.some(Boolean) && ui.ws.bufferedAmount > 0) {
+    ui.ws.close();   // 밀린 조종 입력에 새 이동을 쌓지 않는다.
+    return false;
+  }
   ui.ws.send(JSON.stringify({ schema_version: "0.1.0", client: view() === "control" ? "control" : "monitor", ...msg }));
   return true;
 }
@@ -705,6 +716,9 @@ function sendCmd(name, args = {}) {
 
 function onMessage(msg) {
   if (msg.type === "drone_state") {
+    if (!msg.connected || (ui.state?.mode === "manual" && msg.mode !== "manual") ||
+        (msg.mapping_console_url && ui.state?.video?.available && !msg.video?.available)) resetOperator();
+    if (takeoffUntil && !takeoffReady(msg)) cancelTakeoff();
     ui.state = msg;
     syncAutonomy(msg);
   } else if (msg.type === "result" && !msg.ok) {
@@ -757,7 +771,7 @@ function connect() {
   ui.ws = ws;
   ws.onopen = async () => { ui.wsOpen = ui.everOpen = true; await loadFindings(); render(); };
   ws.onmessage = (ev) => { try { onMessage(JSON.parse(ev.data)); } catch (e) { /* 잘못된 메시지는 무시 */ } };
-  ws.onclose = () => { ui.wsOpen = false; held.clear(); render(); setTimeout(connect, 1000); };
+  ws.onclose = () => { ui.wsOpen = false; resetOperator(); render(); setTimeout(connect, 1000); };
 }
 
 async function detectGateway() {
@@ -774,6 +788,14 @@ async function detectGateway() {
 
 // ---------- 입력 ----------
 document.addEventListener("click", (ev) => {
+  const keyboard = ev.target.closest("[data-keyboard-focus]");
+  if (keyboard) {
+    keyboardEnabled = !keyboardEnabled && ui.wsOpen && ui.state?.connected === true;
+    if (!keyboardEnabled) resetOperator();
+    render();
+    $("[data-keyboard-focus]")?.focus();
+    return;
+  }
   const mm = ev.target.closest("[data-map-mode]");
   if (mm) {
     ui.map3d.mode = mm.dataset.mapMode;
@@ -813,53 +835,142 @@ document.addEventListener("click", (ev) => {
       : name.startsWith("video_") ? REASON.video_disabled : "지금 상태에서는 할 수 없습니다";
     return toast(`${CMD_LABEL[name]}: ${why}`);
   }
-  if (name === "takeoff" && ui.live && !confirm("이륙할까요? 주변을 다시 확인하세요.")) return;
+  if (name === "takeoff" && ui.live) {
+    if (ev.detail > 0) requestTakeoff();
+    return;
+  }
   sendCmd(name, name === "confirm_area" ? { confirmed: b.dataset.confirmed === "true" } : {});
 });
 
-// 비상 정지는 길게 눌러야 한다(0.6초). 실수로 눌러 공중에서 모터가 멈추지 않게.
-// 마우스·터치, 버튼에서 Space·Enter, 화면 어디서나 Esc.
+let takeoffUntil = 0, takeoffTimer = null, keyboardEnabled = false;
+function takeoffReady(st) {
+  return ui.wsOpen && st?.connected && st.allowed?.includes("takeoff") &&
+    st.preflight?.every(check => check.ok || check.blocking === false) &&
+    (!st.mapping_console_url || st.video?.available);
+}
+function cancelTakeoff() {
+  clearTimeout(takeoffTimer);
+  takeoffUntil = 0;
+}
+function requestTakeoff() {
+  if (!takeoffReady(ui.state)) {
+    cancelTakeoff();
+    return toast("이륙 전 영상과 주변 확인, 기체 상태를 확인하세요.");
+  }
+  if (performance.now() < takeoffUntil) {
+    cancelTakeoff();
+    sendCmd("takeoff");
+  } else {
+    takeoffUntil = performance.now() + 4000;
+    takeoffTimer = setTimeout(() => { cancelTakeoff(); render(); }, 4000);
+  }
+  render();
+}
+
+// 길게 누르는 비상 버튼은 포커스·포인터를 놓으면 취소한다.
 const HOLD_MS = 600;
-function startHold(b, endEvents, target = b) {
-  if (b.classList.contains("holding")) return;
+let emergencyHold = null;
+function cancelEmergencyHold() {
+  if (!emergencyHold) return;
+  clearTimeout(emergencyHold.timer);
+  emergencyHold.button.classList.remove("holding");
+  emergencyHold = null;
+}
+function startHold(b, release) {
+  if (emergencyHold || !ui.wsOpen || !document.hasFocus() || document.hidden) return;
   b.classList.add("holding");
-  const t = setTimeout(() => { b.classList.remove("holding"); sendCmd("emergency"); }, HOLD_MS);
-  const cancel = () => { clearTimeout(t); b.classList.remove("holding"); };
-  endEvents.forEach((name) => target.addEventListener(name, cancel, { once: true }));
+  emergencyHold = {button: b, release, timer: setTimeout(() => {
+    cancelEmergencyHold();
+    if (b.isConnected && document.hasFocus() && !document.hidden) {
+      resetOperator();
+      sendCmd("emergency");
+      render();
+    }
+  }, HOLD_MS)};
 }
 document.addEventListener("pointerdown", (ev) => {
   const b = ev.target.closest("[data-hold]");
-  if (b) startHold(b, ["pointerup", "pointerleave", "pointercancel"]);
+  if (b && ev.isPrimary && ev.button === 0) {
+    startHold(b, ev.pointerId);
+    b.addEventListener("pointerleave", cancelEmergencyHold, {once: true});
+  }
+});
+for (const event of ["pointerup", "pointercancel"]) document.addEventListener(event, (ev) => {
+  if (emergencyHold?.release === ev.pointerId) cancelEmergencyHold();
 });
 
-// 키보드 조종(PC): 누르고 있는 동안만 20Hz로 보낸다. 떼거나 창을 벗어나면 0.
+// 허병우 팀원의 키 배치를 사용하고, 새로 누른 키만 조종 입력으로 삼는다.
 const held = new Set();
-const AXES = { a: [0, -1], d: [0, 1], s: [1, -1], w: [1, 1], arrowdown: [2, -1], arrowup: [2, 1], arrowleft: [3, -1], arrowright: [3, 1] };
+const AXES = { KeyA: [0, -1], KeyD: [0, 1], KeyS: [1, -1], KeyW: [1, 1], ArrowDown: [2, -1], ArrowUp: [2, 1], ArrowLeft: [3, -1], ArrowRight: [3, 1] };
 function keyAxes() {
   const v = [0, 0, 0, 0];
   for (const k of held) { const a = AXES[k]; if (a) v[a[0]] += a[1]; }
   return v.map((x) => Math.max(-1, Math.min(1, x)));
 }
-const typing = (t) => t && (t.tagName === "INPUT" || t.tagName === "SELECT" || t.tagName === "TEXTAREA");
-document.addEventListener("keydown", (ev) => {
-  const k = ev.key.toLowerCase();
-  const hold = ev.target.closest && ev.target.closest("[data-hold]");
-  if (hold && (k === " " || k === "enter") && !ev.repeat) { ev.preventDefault(); return startHold(hold, ["keyup", "blur"]); }
-  if (typing(ev.target)) return;
-  if (k === "escape" && !ev.repeat) {
-    const b = $("[data-hold]");
-    if (b) { ev.preventDefault(); startHold(b, ["keyup"], document); }
-    return;
+const typing = (t) => t?.isContentEditable || ["INPUT", "SELECT", "TEXTAREA", "IFRAME"].includes(t?.tagName);
+function controlPageFocused() {
+  return ui.wsOpen && !document.hidden && document.hasFocus() && !typing(document.activeElement) &&
+    (view() === "live" || view() === "map");
+}
+function keysActive() {
+  return controlPageFocused() && (!ui.state?.mapping_console_url || (keyboardEnabled && ui.state.video?.available));
+}
+function resetOperator() {
+  const wasMoving = held.size || Object.values(stickAxes).some(([x, y]) => x || y);
+  held.clear();
+  keyboardEnabled = false;
+  cancelEmergencyHold();
+  cancelTakeoff();
+  for (const key of Object.keys(stickAxes)) stickAxes[key] = [0, 0];
+  for (const stick of document.querySelectorAll(".stick")) {
+    stick.onpointermove = null;
+    $(".knob", stick).style.transform = "";
   }
-  if (!ui.live || view() === "review") return;
-  if (AXES[k]) { ev.preventDefault(); held.add(k); send({ type: "rc", axes: keyAxes() }); return; }
-  if (k === "l" && !ev.repeat) sendCmd("land");
+  if (wasMoving) send({ type: "rc", axes: [0, 0, 0, 0] });
+}
+document.addEventListener("keydown", (ev) => {
+  const k = ev.code;
+  if (ev.repeat || ev.isComposing || ev.ctrlKey || ev.altKey || ev.metaKey || typing(ev.target)) return;
+  const hold = ev.target.closest?.("[data-hold]");
+  if (hold && (k === "Space" || k === "Enter")) {
+    ev.preventDefault();
+    return startHold(hold, k);
+  }
+  if (!controlPageFocused()) return;
+  if (k === "Escape") {
+    ev.preventDefault();
+    resetOperator();
+    if (ui.state?.flight_busy === "takeoff" || ["manual", "auto", "paused", "landing"].includes(ui.state?.mode)) {
+      sendCmd("emergency");
+    }
+    render();
+  } else if (k === "KeyT" && keysActive()) {
+    ev.preventDefault();
+    requestTakeoff();
+  } else if (k === "KeyL" && ui.state?.allowed?.includes("land")) {
+    ev.preventDefault();
+    resetOperator();
+    sendCmd("land");
+    render();
+  } else if (AXES[k] && keysActive() && ui.state?.connected && ui.state.mode === "manual") {
+    ev.preventDefault();
+    held.add(k);
+    send({ type: "rc", axes: keyAxes() });
+  }
 });
 document.addEventListener("keyup", (ev) => {
-  const k = ev.key.toLowerCase();
+  const k = ev.code;
+  if (emergencyHold?.release === k) cancelEmergencyHold();
   if (AXES[k] && held.delete(k)) send({ type: "rc", axes: keyAxes() });
 });
-window.addEventListener("blur", () => { if (held.size) { held.clear(); send({ type: "rc", axes: [0, 0, 0, 0] }); } });
+const leaveControls = () => { resetOperator(); render(); };
+window.addEventListener("blur", leaveControls);
+window.addEventListener("pagehide", resetOperator);
+document.addEventListener("visibilitychange", () => { if (document.hidden) leaveControls(); });
+document.addEventListener("focusin", (ev) => {
+  if (typing(ev.target)) leaveControls();
+  else if (emergencyHold && ev.target !== emergencyHold.button) cancelEmergencyHold();
+});
 
 // 폰 조이스틱: 왼쪽 상하·회전, 오른쪽 좌우·앞뒤. 오른쪽·앞·위·시계 방향이 +.
 const stickAxes = { "ud,yaw": [0, 0], "lr,fb": [0, 0] };   // 각 스틱의 [가로, 세로]
@@ -869,9 +980,14 @@ function joyAxes() {
   return [lr, fb, ud, yaw].map((x) => Math.round(x * 100) / 100);
 }
 setInterval(() => {
-  if (!ui.live || !ui.wsOpen) return;
-  if (held.size) send({ type: "rc", axes: keyAxes() });
-  else if (Object.values(stickAxes).some(([x, y]) => x || y)) send({ type: "rc", axes: joyAxes() });
+  if (held.size) {
+    if (!keysActive() || ui.state?.mode !== "manual" || !ui.state.connected) return leaveControls();
+    send({ type: "rc", axes: keyAxes() });
+  } else if (Object.values(stickAxes).some(([x, y]) => x || y) && ui.live) {
+    if (document.hidden || !ui.wsOpen || !ui.state?.connected ||
+        view() !== "control" || !["manual", "auto", "paused"].includes(ui.state.mode)) return leaveControls();
+    send({ type: "rc", axes: joyAxes() });
+  }
 }, 50);
 
 function bindSticks() {
@@ -888,8 +1004,11 @@ function bindSticks() {
       const [h, v] = STICK_NAMES[key];
       $("#axes").textContent = `${h} ${(dx / lim).toFixed(2)} · ${v} ${(-dy / lim).toFixed(2)}${ui.live ? "" : " (샘플: 보내지 않음)"}`;
     };
-    stick.onpointerdown = (ev) => { stick.setPointerCapture(ev.pointerId); move(ev); stick.onpointermove = move; };
-    stick.onpointerup = stick.onpointercancel = () => {
+    stick.onpointerdown = (ev) => {
+      if (ui.live && (!ui.wsOpen || !ui.state?.connected || !["manual", "auto", "paused"].includes(ui.state.mode))) return;
+      stick.setPointerCapture(ev.pointerId); move(ev); stick.onpointermove = move;
+    };
+    stick.onpointerup = stick.onpointercancel = stick.onlostpointercapture = () => {
       stick.onpointermove = null; knob.style.transform = ""; stickAxes[key] = [0, 0];
       $("#axes").textContent = "입력 없음 · 손 떼면 제자리";
       send({ type: "rc", axes: joyAxes() });
@@ -913,7 +1032,7 @@ function bindSticks() {
     sel.value = ui.scenario;
     sel.onchange = () => { ui.scenario = sel.value; render(); };
   }
-  window.addEventListener("hashchange", render);
+  window.addEventListener("hashchange", leaveControls);
   window.addEventListener("resize", placeConsole);
   render();
 })();
