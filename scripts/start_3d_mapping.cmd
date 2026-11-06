@@ -17,6 +17,7 @@ exit /b %MAPPING_EXIT%
 # === PYTHON ===
 """Double-click for live mapping; drop saved data or input to inspect it in the console."""
 import argparse
+from contextlib import contextmanager, nullcontext
 import hashlib
 import importlib.util
 import json
@@ -25,7 +26,10 @@ from pathlib import Path
 import socket
 import subprocess
 import sys
+from tempfile import TemporaryDirectory
+import threading
 import time
+from types import SimpleNamespace
 from urllib.error import URLError
 from urllib.request import ProxyHandler, build_opener
 import webbrowser
@@ -134,16 +138,70 @@ def saved_result(folder):
     return None
 
 
+def ensure_gateway_environment(allow_install):
+    if all(importlib.util.find_spec(name) is not None for name in ("fastapi", "uvicorn", "websockets")):
+        return True
+    if not allow_install:
+        print('[ERROR] Gateway packages are missing. With internet, run this CMD with --prepare-models first.')
+        return False
+    requirements = ROOT / 'modules/autonomy/tello_link/requirements.txt'
+    return subprocess.call([sys.executable, '-B', '-m', 'pip', 'install', '--no-cache-dir',
+                            '-r', str(requirements)], cwd=ROOT) == 0
+
+
+@contextmanager
+def managed_gateway(console_port, *, fake):
+    import uvicorn
+    from modules.autonomy.tello_link.gateway_server import DEFAULT_HOST, DEFAULT_LOG_ROOT, build_app
+
+    host = '127.0.0.1'
+    with socket.socket() as listener:
+        for port in range(8010, 8030):
+            if port == console_port:
+                continue
+            try:
+                listener.bind((host, port))
+                break
+            except OSError:
+                pass
+        else:
+            raise RuntimeError('No free local gateway port (8010–8029).')
+        app = build_app(SimpleNamespace(fake=fake, no_video=False, no_record_video=True, drone_ip=DEFAULT_HOST,
+            log_root=None if fake else DEFAULT_LOG_ROOT, allow_remote_autonomy=False,
+            allow_remote_detections=False, mapping_console_port=console_port))
+        server = uvicorn.Server(uvicorn.Config(app, host=host, port=port, log_level='warning',
+                                               timeout_graceful_shutdown=3))
+        thread = threading.Thread(target=server.run, kwargs={'sockets': [listener]}, name='mapping-gateway')
+        thread.start()
+        try:
+            deadline = time.monotonic() + 10
+            while not server.started:
+                if not thread.is_alive() or time.monotonic() >= deadline:
+                    raise RuntimeError('Gateway startup failed.')
+                time.sleep(.05)
+            yield f'http://{host}:{port}'
+        finally:
+            print('Closing the local drone gateway. Waiting for flight shutdown if needed.', flush=True)
+            server.should_exit = True
+            thread.join()
+
+
 def main():
     parser = argparse.ArgumentParser(prog='start_3d_mapping.cmd', description=__doc__)
     parser.add_argument('input', nargs='?', type=Path, help='Optional video file or saved result folder')
     parser.add_argument('--port', type=int, default=8790, help='First local port to try (default: 8790)')
-    parser.add_argument('--gateway', help='Share video and any fresh front ToF from a running Tello gateway, e.g. http://127.0.0.1:8010')
+    source_mode = parser.add_mutually_exclusive_group()
+    source_mode.add_argument('--gateway', help='Use a running Tello gateway, e.g. http://127.0.0.1:8010')
+    source_mode.add_argument('--direct', action='store_true', help='Open the camera-only direct Tello input')
+    source_mode.add_argument('--fake', action='store_true', help='Start the combined viewer with a simulated Tello')
     parser.add_argument('--no-browser', action='store_true', help='Print the page URL without opening a browser')
     parser.add_argument('--prepare-models', action='store_true', help='Prepare packages and model weights with internet before connecting to the drone')
     args = parser.parse_args()
     if not 1 <= args.port <= 65535:
         parser.error('--port must be between 1 and 65535')
+    if args.input and (args.gateway or args.direct or args.fake):
+        parser.error('Choose either a saved input or a live drone mode')
+    combined = not (args.input or args.gateway or args.direct)
     source = (Path(os.environ['MAPPING_CALLER']) / args.input).resolve() if args.input else None
     if not (ROOT / 'apps/console/node_modules/three/build/three.module.js').is_file():
         print('[ERROR] Install the local web dependencies first:\n  pnpm --dir apps/console install --frozen-lockfile')
@@ -153,6 +211,8 @@ def main():
         return 1
     print(f'Code folder: {ROOT}', flush=True)
     if not ensure_python_environment(allow_install=args.prepare_models):
+        return 1
+    if combined and not ensure_gateway_environment(args.prepare_models):
         return 1
     sys.path.insert(0, str(ROOT))
     if args.prepare_models:
@@ -166,11 +226,12 @@ def main():
     print('All model files are available locally. Mapping does not download weights.', flush=True)
     result = None
     if not args.input:
-        if not ensure_slam_image():
+        if not combined and not ensure_slam_image():
             return 1
-        candidates = [saved_result(folder) for folder in (ROOT / 'output/phone_mapping').glob('*') if folder.is_dir()]
-        result = max((path for path in candidates if path),
-                     key=lambda path: (path / 'scene.json').stat().st_mtime, default=None)
+        if not args.fake:
+            candidates = [saved_result(folder) for folder in (ROOT / 'output/phone_mapping').glob('*') if folder.is_dir()]
+            result = max((path for path in candidates if path),
+                         key=lambda path: (path / 'scene.json').stat().st_mtime, default=None)
 
     for port in range(args.port, min(args.port + 20, 65536)):
         try:
@@ -184,17 +245,30 @@ def main():
         return 1
     if port != args.port:
         print(f'Port {args.port} is busy. Using {port}; existing servers stay running.')
+    try:
+        with (managed_gateway(port, fake=args.fake) if combined else nullcontext(args.gateway)) as gateway, \
+                (TemporaryDirectory(prefix='mapping-fake-') if args.fake else nullcontext()) as scratch:
+            return run_viewer(args, port, result, source, gateway, combined, scratch)
+    except (OSError, RuntimeError) as error:
+        print(f'[ERROR] Live setup could not start: {error}. If another gateway is running, use --gateway.')
+        return 1
+
+
+def run_viewer(args, port, result, source, gateway, combined, scratch):
     command = [sys.executable, '-B', str(ROOT / 'apps/console/serve.py'), '--enable-camera', '--port', str(port)]
     if args.input:
         command += ['--import-source', str(source)]
     else:
-        command += ['--tello-gateway', args.gateway] if args.gateway else ['--enable-tello-map']
+        command += ['--tello-gateway', gateway] if gateway else ['--enable-tello-map']
     if result:
         command += ['--result', str(result)]
+    if scratch:
+        command += ['--live-root', str(Path(scratch) / 'live'), '--profiles-root', str(Path(scratch) / 'profiles')]
     url = f'http://127.0.0.1:{port}/'
-    page = url + ('#saved' if args.input else '#live')
+    page = gateway + '/#/map' if combined else url + ('#saved' if args.input else '#live')
     print(f'Page: {page}\nKeep this window open. Press Ctrl+C to stop this server.', flush=True)
-    print('Live 3D mapping requires running Docker Desktop and the ssafy-orbslam3:local image.')
+    if combined:
+        print('Turn video on in the map console, then start Tello mapping. Flight requires operator confirmation.')
     if not args.input:
         print('Tello mapping uses fresh front ToF from the selected drone input when available.')
     process = subprocess.Popen(command, cwd=ROOT)

@@ -29,7 +29,7 @@ sys.path.insert(0, HERE)
 
 from flight_control import FlightController  # noqa: E402
 from tello_link import DEFAULT_HOST, TelloLink, classify, now_iso, parse_ext_tof  # noqa: E402
-from tello_video import TelloVideo  # noqa: E402
+from tello_video import TelloVideo, mjpeg_part  # noqa: E402
 
 REPO_ROOT = os.path.abspath(os.path.join(HERE, "..", "..", ".."))
 if REPO_ROOT not in sys.path:
@@ -449,19 +449,23 @@ def build_app(args) -> FastAPI:
         return Response(data, media_type="image/jpeg", headers={"Cache-Control": "no-store"})
 
     @app.get("/video.mjpg")
-    async def video_mjpg(request: Request, mode: str = "ai"):
+    async def video_mjpg(request: Request, mode: str = "ai", mapping: bool = False):
         # 비동기 생성기로 둔다. 동기 생성기는 브라우저가 끊겨도 작업 스레드를 계속 잡고 있어서
         # 연결이 쌓이면 /api/status까지 멈춘다.
         async def gen():
             last = None
             while checker.video.running and not await request.is_disconnected():
-                getter = checker.ai_jpeg_snapshot if mode == "ai" else checker.video.jpeg
-                data = await asyncio.to_thread(getter)
+                getter = checker.video.jpeg_snapshot if mapping else (
+                    checker.ai_jpeg_snapshot if mode == "ai" else checker.video.jpeg)
+                frame = await asyncio.to_thread(getter)
+                data = frame[0] if frame is not None and mapping else frame
                 if data is not None and data is not last:
                     last = data
-                    yield b"--frame\r\nContent-Type: image/jpeg\r\n\r\n" + data + b"\r\n"
+                    pose = checker.link.sensor_pose_at(frame[1]) if mapping else None
+                    yield mjpeg_part(data, pose)
                 await asyncio.sleep(0.04)
-        return StreamingResponse(gen(), media_type="multipart/x-mixed-replace; boundary=frame")
+        return StreamingResponse(gen(), media_type="multipart/x-mixed-replace; boundary=frame",
+                                 headers={"X-Tello-Sensor-Pose": "1"} if mapping else None)
 
     return app
 

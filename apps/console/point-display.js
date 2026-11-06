@@ -5,14 +5,19 @@ import {mappingSettings, rescuePointColor} from './mapping-settings.js';
 const equal = (a, b) => a === b || Boolean(a && b && a.length === b.length && a.every((v, i) => v === b[i]));
 const evidence = scene => scene.point_observations?.schema_version === 'point-observations/1.0' ?
   scene.point_observations.frame_index_by_point : null;
-const pointAttributes = {position: 3, color: 3, tofVerified: 1};
+const pointAttributes = {position: 3, color: 3, pointScale: 1};
 export const TOF_POINT_SIZE_MULTIPLIER = 1.4;
+
+export function depthPointScale(tof, far) {
+  if (tof) return TOF_POINT_SIZE_MULTIPLIER;
+  return far ? .65 : 1;
+}
 
 export function depthPointMaterial(size) {
   const material = new THREE.PointsMaterial({vertexColors: true, sizeAttenuation: false, size});
   material.onBeforeCompile = shader => {
-    shader.vertexShader = shader.vertexShader.replace('uniform float size;', 'uniform float size;\nattribute float tofVerified;')
-      .replace('gl_PointSize = size;', `gl_PointSize = mix(size, size * ${TOF_POINT_SIZE_MULTIPLIER}, tofVerified);`);
+    shader.vertexShader = shader.vertexShader.replace('uniform float size;', 'uniform float size;\nattribute float pointScale;')
+      .replace('gl_PointSize = size;', 'gl_PointSize = size * pointScale;');
   };
   return material;
 }
@@ -47,7 +52,7 @@ export class PointBuffer {
     attribute.needsUpdate = true;
     if (attribute.updateRanges.length > 64) this.compactRanges();
   }
-  upsert(id, position, color, tofVerified = false) {
+  upsert(id, position, color, pointScale = 1) {
     let slot = this.slots.get(id);
     if (slot === undefined) {
       slot = this.ids.length; this.grow(slot + 1);
@@ -55,7 +60,7 @@ export class PointBuffer {
     }
     this.write(this.geometry.getAttribute('position'), slot, position);
     this.write(this.geometry.getAttribute('color'), slot, color);
-    this.write(this.geometry.getAttribute('tofVerified'), slot, [Number(tofVerified)]);
+    this.write(this.geometry.getAttribute('pointScale'), slot, [pointScale]);
     this.geometry.setDrawRange(0, this.ids.length);
   }
   remove(id) {
@@ -233,10 +238,12 @@ export class PointDisplay {
     const recolor = this.colorMode !== colorMode || (scene.rescue?.render_mode === 'points' &&
       previous?.rescue?.point_revision !== scene.rescue.point_revision) || (colorMode === 'height' &&
       JSON.stringify(previous?.quality.bounds) !== JSON.stringify(scene.quality.bounds)) ||
-      !equal(previous?.rescue?.point_tof, scene.rescue?.point_tof);
+      !equal(previous?.rescue?.point_tof, scene.rescue?.point_tof) ||
+      !equal(previous?.rescue?.point_far, scene.rescue?.point_far);
     for (const id of removed) this.raw.remove(id);
     for (const row of recolor ? this.rows.values() : upserts) this.raw.upsert(row[0], row.slice(1, 4),
-      this.color(row, scene, colorMode), scene.rescue?.point_tof?.[row[0]] === true);
+      this.color(row, scene, colorMode), depthPointScale(scene.rescue?.point_tof?.[row[0]] === true,
+        scene.rescue?.point_far?.[row[0]] === true));
     if (this.cells) for (const id of touched) {
       const row = this.rows.get(id);
       if (row) this.cells.upsert(id, row, observe?.[id], scene.cameras.length); else this.cells.remove(id);

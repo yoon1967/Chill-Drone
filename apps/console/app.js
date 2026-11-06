@@ -569,7 +569,8 @@ function setMode(next, toggleControls = false) {
   $('kind').textContent = {objects: 'PLANAR OBJECTS', hologram: 'HOLOGRAM · PLANAR OBJECTS', points: '원본 3D 점군'}[next];
   if (run.rescue) {
     $('kind').textContent = '인명 구조 3D 지도';
-    const depthLegend = run.rescue.point_tof ? ' · 큰 점 ToF · 작은 점 영상 추정' : '';
+    const depthLegend = run.scale.status === 'tello_metric_estimate' ? ' · 작은 점 파란 거리대 · 기본 점 영상 깊이 · 큰 점 ToF' :
+      run.rescue.point_tof ? ' · 큰 점 ToF · 기본 점 영상 깊이' : '';
     $('mode-detail').textContent = `${run.rescue.render_mode === 'points' ? '공간 밀도를 조절한 누적 점군' : '구조물 표면'} · 사람 발견 위치 ${run.rescue.people.length}곳 · 현재 관측과 마지막 발견 구분${depthLegend}`;
   }
   if (run.slam) {
@@ -743,14 +744,16 @@ function applyRun(value) {
   $('scale-badge').textContent = run.scale.unit === 'm' ? '44cm 기준 · m' : '임의 단위 · 크기 미보정';
   $('scale-note').textContent = run.scale.unit === 'm' ? '44cm 기준 스케일을 모든 점·객체·경로에 동일 적용했습니다. 독립 치수 정확도와 중력 방향은 미검증입니다.' :
     '단안 영상의 임의 단위입니다. 좌표와 객체 크기를 cm·m로 해석할 수 없습니다. 실제 거리 센서나 실측 기준으로 스케일을 검증해야 합니다.';
-  if (['predicted_rgbd', 'orb_slam3_depth'].includes(run.pose_source)) {
+  const telloPose = run.scale.status === 'tello_metric_estimate';
+  if (['predicted_rgbd', 'orb_slam3_depth'].includes(run.pose_source) || telloPose) {
     const poseFirst = run.pose_source === 'orb_slam3_depth';
     $('scale-badge').textContent = poseFirst ? '단안 상대 좌표 · 실측 미보정' : 'AI 추정 거리 · 실측 미검증';
     $('scale-note').textContent = poseFirst ? 'ORB-SLAM3가 영상에서 먼저 계산한 위치·방향을 고정하고, 깊이의 배율만 그 좌표계에 맞춰 복원했습니다. 위치·방향은 단안 상대 추정이며 절대 실측값이 아닙니다.' : '단안 AI가 예측한 깊이를 직접 정합해 만든 지도입니다. 미터 단위 출력은 실측 보정이나 치수 정확도를 보장하지 않습니다.';
     $('scale-note').nextElementSibling.textContent = '자세가 확인된 프레임의 깊이를 누적한 점군입니다. 추적 실패 프레임은 합치지 않으며, 서로 다른 지도 구간은 분리 보존합니다.';
     document.querySelector('.notes h2').innerHTML = '영상의 깊이를 더해,<br>공간을 빠르게 살펴봅니다.';
     document.querySelector('.notes .muted').textContent = 'SIFT 일괄 매칭·정밀 재투영 검증·전역 최적화를 생략한 빠른 복원 결과입니다.';
-    document.querySelector('footer > span').textContent = poseFirst ? 'ORB-SLAM3 POSE → DEPTH RECONSTRUCTION' : 'AI DEPTH · PROGRESSIVE RGB-D MAPPING';
+    document.querySelector('footer > span').textContent = telloPose ? 'TELLO POSE → DEPTH RECONSTRUCTION' :
+      poseFirst ? 'ORB-SLAM3 POSE → DEPTH RECONSTRUCTION' : 'AI DEPTH · PROGRESSIVE RGB-D MAPPING';
     $('reprojection').textContent = '미측정';
     $('reprojection').nextElementSibling.textContent = '빠른 복원에서 생략';
     $('points').nextElementSibling.textContent = 'AI 깊이 기반 누적 점군';
@@ -763,6 +766,11 @@ function applyRun(value) {
       $('points').nextElementSibling.textContent = '전체 경로 통합 점군';
       $('scale-note').nextElementSibling.textContent = '촬영 경로 전체의 저장된 깊이와 확정 자세를 통합한 지도입니다. 실시간 화면의 시간·점 수 제한은 최종 지도에 적용하지 않습니다. 촬영하지 않은 공간이나 추적 실패 구간의 형상을 보장하지 않습니다.';
       document.querySelector('.notes h2').innerHTML = '이동하며 모은 관측을,<br>하나의 공간으로 통합합니다.';
+    }
+    if (telloPose) {
+      $('scale-badge').textContent = 'Tello 추정 지도 · m';
+      $('scale-note').textContent = 'Tello 카메라 자세와 깊이를 미터 단위로 합쳤습니다. 위치 누적 오차와 실제 치수 정확도는 별도 확인이 필요합니다.';
+      $('scale-note').nextElementSibling.textContent = '센서 자세, 영상으로 복구한 자세, 이동·회전 속도로 예측한 자세를 한 좌표계에 누적했습니다.';
     }
     $('hologram-confidence').value = $('hologram-confidence-number').value = '1';
   }

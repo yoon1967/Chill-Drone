@@ -32,8 +32,8 @@ class HistoryWriter:
         (self.root / 'frames').mkdir(parents=True)
         self.write_json = write_json
         self.manifest = {'schema_version': SCHEMA, 'status': 'recording', 'frames': 0,
-            'coordinate_system': 'native ORB map; camera x-right/y-down/z-forward',
-            'scale': 'arbitrary; depth converted to fixed monocular pose units',
+            'coordinate_system': 'per-map ORB or Tello sensor frame; camera x-right/y-down/z-forward',
+            'scale': 'meters for Tello sensor odometry; fixed monocular pose units otherwise',
             'render_window_s': render_window_s, 'preview_points_limit': MAX_PREVIEW_POINTS,
             'observation_fields': ['depth', 'rgb', 'world_from_camera', 'intrinsics', 'map_id', 'depth_scale'],
             'integration': 'unproject depth with intrinsics, transform by world_from_camera; integrate only within the same map_id until maps are explicitly aligned'}

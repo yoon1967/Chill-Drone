@@ -27,6 +27,8 @@ def wait_until(pred, timeout=4.0):
 
 
 class GatewayCase(unittest.TestCase):
+    mapping_console_port = None
+
     def make_video(self):
         return None
 
@@ -39,7 +41,8 @@ class GatewayCase(unittest.TestCase):
         self.link = TelloLink(host="127.0.0.1", cmd_port=48889, local_cmd_port=0, state_port=48890,
                               bind_ip="127.0.0.1", default_timeout=1.0, allow_flight=True,
                               log_root=self.tmp.name, run_id="gateway_test", source="fake").start()
-        self.gw = Gateway(self.link, source="fake", video=self.make_video())
+        self.gw = Gateway(self.link, source="fake", video=self.make_video(),
+                          mapping_console_port=self.mapping_console_port)
         self.sent = []
         self.gw.listeners.append(self.sent.append)
         self.gw.start()
@@ -172,7 +175,62 @@ class StubVideo:
         self.running = False
 
     def stats(self):
-        return {"running": self.running, "fps": None, "frame_age_s": None}
+        return {"running": self.running, "fps": None,
+                "frame_age_s": time.monotonic() - self.snap[1] if self.snap else None}
+
+
+class MappingControlTest(GatewayCase):
+    mapping_console_port = 8798
+
+    def make_video(self):
+        self.video = StubVideo()
+        return self.video
+
+    def test_takeoff_needs_same_screen_confirmation_fresh_video_and_cool_aircraft(self):
+        self.assertEqual(self.gw.drone_state()["mapping_console_url"], "http://127.0.0.1:8798/")
+        self.assertEqual(self.cmd("confirm_area", confirmed="true")["reason"], "invalid_command_args")
+        self.assertTrue(self.cmd("confirm_area", confirmed=True)["ok"])
+        other = self.gw.handle_message({"type": "cmd", "name": "takeoff"}, "another-tab")
+        self.assertEqual(other["reason"], "confirm_area_required")
+        self.assertEqual(self.cmd("takeoff")["reason"], "takeoff_video_required")
+        self.assertTrue(self.cmd("video_on")["ok"])
+        self.fake.temp_override = 78
+        self.assertTrue(wait_until(lambda: self.gw.drone_state()["temp_high_c"] == 81))
+        self.video.push()
+        self.assertIn("temp", self.cmd("takeoff")["failed"])
+        self.gw.client_closed("t")
+        self.assertEqual(self.cmd("takeoff")["reason"], "confirm_area_required")
+        self.assertNotIn("takeoff", self.fake.received)
+
+    def test_video_loss_and_invalid_axes_stop_active_manual_input(self):
+        self.assertTrue(self.cmd("video_on")["ok"])
+        self.video.push()
+        self.take_off()
+        self.assertEqual(self.cmd("video_off")["reason"], "video_required_in_flight")
+        self.rc([0, 1, 0, 0])
+        self.assertTrue(wait_until(lambda: self.gw.flight.last_rc[1] > 0))
+        self.gw.handle_message({"type": "rc", "axes": [1, 0, 0, 0]}, "another-tab")
+        self.assertEqual(self.gw._rc_owner, "t")
+        self.rc([0, float("nan"), 0, 0])
+        self.assertTrue(wait_until(lambda: self.gw.flight.last_rc == (0, 0, 0, 0)))
+        self.video.push()
+        self.rc([0, 1, 0, 0])
+        self.assertTrue(wait_until(lambda: self.gw.flight.last_rc[1] > 0))
+        self.video.running = False
+        self.assertTrue(wait_until(lambda: self.gw.flight.last_rc == (0, 0, 0, 0)))
+        self.assertIsNone(self.gw._rc_owner)
+        self.assertTrue(self.cmd("land")["ok"])
+        self.assertTrue(wait_until(lambda: self.gw.arbiter.mode == "grounded"))
+
+    def test_landing_during_takeoff_is_executed_as_soon_as_takeoff_returns(self):
+        self.assertTrue(self.cmd("video_on")["ok"])
+        self.video.push()
+        self.assertTrue(self.cmd("confirm_area", confirmed=True)["ok"])
+        self.assertTrue(self.cmd("takeoff")["ok"])
+        self.assertTrue(wait_until(lambda: "takeoff" in self.fake.received))
+        self.assertTrue(self.cmd("land")["ok"])
+        self.assertTrue(wait_until(lambda: "land" in self.fake.received))
+        self.assertTrue(wait_until(lambda: self.gw.arbiter.mode == "grounded"))
 
 
 class GatewayVideoTest(GatewayCase):

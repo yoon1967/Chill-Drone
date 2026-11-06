@@ -20,6 +20,11 @@ from collections import deque
 from dataclasses import asdict, dataclass, field
 from datetime import datetime, timezone
 
+if __package__:
+    from .sensor_pose import TelloOdometry
+else:
+    from sensor_pose import TelloOdometry
+
 DEFAULT_HOST = "192.168.10.1"
 DEFAULT_CMD_PORT = 8889
 DEFAULT_STATE_PORT = 8890
@@ -155,13 +160,13 @@ def parse_state(packet: str, received: float | None = None, received_mono: float
             raw[key] = _num(value.strip())
 
     required = ("pitch", "roll", "yaw", "h", "bat", "tof", "templ", "temph")
-    missing = [k for k in required if not isinstance(raw.get(k), (int, float))]
-    if missing:
-        reasons.append("missing_or_non_numeric:" + ",".join(missing))
-
     def get(key):
         v = raw.get(key)
-        return v if isinstance(v, (int, float)) else None
+        return v if isinstance(v, (int, float)) and math.isfinite(v) else None
+
+    missing = [k for k in required if get(k) is None]
+    if missing:
+        reasons.append("missing_or_non_numeric:" + ",".join(missing))
 
     si: dict = {
         "roll_rad": None if get("roll") is None else math.radians(get("roll")),
@@ -261,11 +266,13 @@ class TelloLink:
         self._cmd_sock: socket.socket | None = None
         self._state_sock: socket.socket | None = None
         self._cmd_lock = threading.Lock()
+        self._dispatch_lock = threading.Lock()
         self._state_lock = threading.Lock()
         self._stop = threading.Event()
         self._state_thread: threading.Thread | None = None
 
         self._latest_state: StateSample | None = None
+        self._odometry = TelloOdometry()
         self._state_times: deque = deque(maxlen=50)
         self.state_count = 0
         self.state_bad_count = 0
@@ -355,7 +362,7 @@ class TelloLink:
             return False, "config_blocked"
         return True, None
 
-    def send(self, cmd: str, timeout: float | None = None, source: str | None = None) -> CommandResult:
+    def send(self, cmd: str, timeout: float | None = None, source: str | None = None, *, may_send=None) -> CommandResult:
         cmd = cmd.strip()
         category = classify(cmd)
         allowed, reason = self.is_allowed(cmd)
@@ -371,7 +378,13 @@ class TelloLink:
             self._drain()
             sent = time.time()
             t0 = time.perf_counter()  # Windows에서 monotonic은 약 15.6ms 단위라 왕복 시간 측정에 쓰지 않는다
-            self._cmd_sock.sendto(cmd.encode("utf-8"), (self.host, self.cmd_port))
+            with self._dispatch_lock:
+                if may_send is not None and not may_send():
+                    result = CommandResult(cmd, category, None, None, False, False, "cancelled", None,
+                                           blocked=True, source=source)
+                    self._record(result)
+                    return result
+                self._cmd_sock.sendto(cmd.encode("utf-8"), (self.host, self.cmd_port))
             response, reason = self._recv_response(timeout)
             rtt = (time.perf_counter() - t0) * 1000.0
 
@@ -414,8 +427,9 @@ class TelloLink:
         응답은 기다리지 않는다. 늦게 온 `ok`는 다음 명령 전에 버려진다.
         """
         sent = time.time()
-        for _ in range(2):  # UDP 유실에 대비해 두 번 보낸다
-            self._cmd_sock.sendto(b"emergency", (self.host, self.cmd_port))
+        with self._dispatch_lock:
+            for _ in range(2):  # UDP 유실에 대비해 두 번 보낸다
+                self._cmd_sock.sendto(b"emergency", (self.host, self.cmd_port))
         result = CommandResult("emergency", "stop", now_iso(sent), None, True, True, "sent_without_wait", None,
                                source=source)
         self.event("emergency", {"source": source})
@@ -485,6 +499,7 @@ class TelloLink:
             sample = parse_state(text, t, mono)
             with self._state_lock:
                 self._latest_state = sample
+                self._odometry.update(sample.raw, mono)
                 self._state_times.append(mono)
                 self.state_count += 1
                 if not sample.valid:
@@ -496,6 +511,10 @@ class TelloLink:
         with self._state_lock:
             sample = self._latest_state
         return None if sample is None else sample.to_dict(time.monotonic())
+
+    def sensor_pose_at(self, frame_stamp):
+        with self._state_lock:
+            return self._odometry.at(frame_stamp)
 
     def state_rate_hz(self) -> float | None:
         with self._state_lock:

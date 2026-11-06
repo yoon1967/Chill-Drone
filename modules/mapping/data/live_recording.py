@@ -219,6 +219,8 @@ class SessionRecording:
             if self.mapping is None:
                 self.mapping = {key: state.get(key) for key in ('status', 'session_status', 'stop_reason',
                     'last_error', 'revision', 'revision_path', 'map_available', 'segments')}
+                if state.get('map_unit') == 'm':
+                    self.mapping['map_unit'] = 'm'
             self._finish_if_ready()
             if self.finalized:
                 self._manifest()
@@ -246,7 +248,7 @@ class SessionRecording:
                     'tracking_state': 'tracking.json', 'preview': 'preview.jpg',
                     'events': 'events.jsonl', 'backend_log': 'orb.log'},
                 'asset_sha256': dict(self.asset_hashes),
-                'scale': 'arbitrary', 'privacy': 'local_only'}
+                'scale': (self.mapping or {}).get('map_unit', 'arbitrary'), 'privacy': 'local_only'}
             # The portable manifest never depends on the computer's absolute paths.
             value['recording'].pop('session_path', None)
             return value

@@ -32,7 +32,7 @@ from detection_inbox import DetectionInbox
 from frame_store import FrameStore
 from map_inbox import MapInbox
 from overlay_store import OverlayStore
-from mode_arbiter import SCHEMA_VERSION, ModeArbiter
+from mode_arbiter import OPERATOR_DEADMAN_S, SCHEMA_VERSION, ModeArbiter
 from tello_link import TelloLink, now_iso
 
 LOOP_HZ = 20
@@ -49,18 +49,20 @@ VIDEO_CMDS = ("video_on", "video_off")
 AUTONOMY_STATE_S = 0.1       # 자율에 Tello 상태 원문을 보내는 간격(약 10Hz)
 AUTONOMY_STATUS_S = 1.0      # flight_status는 바뀔 때 + 이 간격
 CLIENTS = ("monitor", "control")
+AREA_CONFIRM_S = 30.
 
 
 class Gateway:
     def __init__(self, link: TelloLink, *, source: str = "tello", video=None, clock=time.monotonic,
-                 record_video: bool = True):
+                 mapping_console_port=None, record_video: bool = True):
         if not link.allow_flight:
             raise ValueError("게이트웨이는 allow_flight=True인 TelloLink가 필요하다")
         self.link = link
         self.source = source
         self.video = video                      # TelloVideo 또는 None
+        self.mapping_console_port = mapping_console_port
         self.clock = clock
-        self.flight = FlightController(link)
+        self.flight = FlightController(link, block_on_heat=mapping_console_port is not None)
         self.arbiter = ModeArbiter(source=source, clock=clock)
         self.listeners: list = []               # 화면으로 보낼 메시지를 받는 함수들(서버가 등록)
         self._lock = threading.RLock()
@@ -70,7 +72,11 @@ class Gateway:
         self._emergency_mono: float | None = None
         self._sdk_try_mono = -1e9
         self._link_lost = False                 # 상태 끊김으로 command를 다시 보내는 중(끊김 한 번에 영상 정리 한 번)
-        self._rc_clients: set[str] = set()
+        self._rc_owner: str | None = None
+        self._rc_at = -1e9
+        self._area_confirmation: tuple[str, float] | None = None
+        self._flight_action: threading.Thread | None = None
+        self._land_after_takeoff = False
         self._video_lock = threading.Lock()     # streamon·streamoff를 한 번에 하나씩
         self._video_on = False                  # 기체에 streamon이 받아들여진 상태
         self._video_reason: str | None = None   # 마지막으로 바뀐 이유: operator·takeoff·ground_timeout
@@ -103,9 +109,19 @@ class Gateway:
 
     def close(self) -> None:
         self._stop.set()
+        with self._lock:
+            self._clear_area_confirmation()
+            self._release_rc(self._rc_owner)
         if self._thread:
             self._thread.join(timeout=2)
+        while self._flight_action:
+            action = self._flight_action
+            action.join()
+            if self._flight_action is action:
+                break
         self.flight.close()  # 비행 중이면 착륙부터
+        if self._video_on:
+            self.set_video(False, "shutdown")
         if self.recorder is not None:
             self._record_video(False)
             self.recorder.close()
@@ -116,6 +132,9 @@ class Gateway:
         kind = msg.get("type")
         client = msg.get("client") if msg.get("client") in CLIENTS else "monitor"
         if kind == "cmd" and msg.get("name") in VIDEO_CMDS:  # 판정기 밖: 조종권·모드와 무관하다
+            if (self.mapping_console_port is not None and msg["name"] == "video_off"
+                    and (self.flight.flying or self.arbiter.busy == "takeoff")):
+                return self.arbiter._result(msg.get("id"), False, "video_required_in_flight")
             ok, reason = self.set_video(msg["name"] == "video_on", "operator")
             self.link.event("gateway_cmd", {"name": msg["name"], "client": client, "ok": ok, "reason": reason})
             return {"schema_version": SCHEMA_VERSION, "type": "result", "id": msg.get("id"), "ok": ok,
@@ -123,19 +142,42 @@ class Gateway:
         with self._lock:
             if kind == "cmd":
                 name = str(msg.get("name", ""))
+                args = msg.get("args", {})
+                if not isinstance(args, dict) or (name == "confirm_area" and type(args.get("confirmed")) is not bool):
+                    return self.arbiter._result(msg.get("id"), False, "invalid_command_args")
+                if name == "land" and self.arbiter.busy == "takeoff" and self.arbiter.mode == "grounded":
+                    self._land_after_takeoff = True
+                    self._clear_area_confirmation()
+                    return self.arbiter._result(msg.get("id"), True)
+                if name == "takeoff" and self.mapping_console_port is not None:
+                    if self._area_confirmation is None or self._area_confirmation[0] != client_key:
+                        return self.arbiter._result(msg.get("id"), False, "confirm_area_required")
+                    if self.clock() - self._area_confirmation[1] >= AREA_CONFIRM_S:
+                        self._clear_area_confirmation()
+                        return self.arbiter._result(msg.get("id"), False, "confirm_area_required")
+                    if not self._video_ready():
+                        return self.arbiter._result(msg.get("id"), False, "takeoff_video_required")
                 if name == "takeoff" and self.arbiter.mode == "grounded" and not self.flight.can_takeoff()[0]:
                     failed = [c.key for c in self.flight.preflight() if not c.ok]
                     return {"schema_version": SCHEMA_VERSION, "type": "result", "id": msg.get("id"), "ok": False,
                             "reason": "preflight_failed", "failed": failed, "mode": self.arbiter.mode}
-                result = self.arbiter.handle_cmd(name, msg.get("args") or {}, client=client, cmd_id=msg.get("id"))
+                result = self.arbiter.handle_cmd(name, args, client=client, cmd_id=msg.get("id"))
+                if result["ok"] and name == "confirm_area" and self.mapping_console_port is not None:
+                    self._area_confirmation = (client_key, self.clock()) if args["confirmed"] else None
                 self.link.event("gateway_cmd", {"name": msg.get("name"), "client": client, "ok": result["ok"],
                                                 "reason": result["reason"]})
                 self._run_actions()
                 return result
             if kind == "rc":
                 axes = msg.get("axes")
-                if isinstance(axes, list) and len(axes) == 4:
-                    self._rc_clients.add(client_key)
+                valid = isinstance(axes, list) and len(axes) == 4 and all(
+                    type(value) in (int, float) and -1 <= value <= 1 for value in axes)
+                if not valid or not any(axes):
+                    self._release_rc(client_key)
+                elif (self.arbiter.link_ok and self.arbiter.mode in ("manual", "auto", "paused")
+                        and (self.mapping_console_port is None or self._video_ready())
+                        and (self._rc_owner in (None, client_key) or self.clock() - self._rc_at >= OPERATOR_DEADMAN_S)):
+                    self._rc_owner, self._rc_at = client_key, self.clock()
                     self.arbiter.on_operator_rc(axes, client=client)
                     self._run_actions()
                 return None
@@ -145,9 +187,20 @@ class Gateway:
     def client_closed(self, client_key: str) -> None:
         """화면 연결이 끊기면 그 화면의 rc를 바로 0으로 본다."""
         with self._lock:
-            if client_key in self._rc_clients:
-                self._rc_clients.discard(client_key)
-                self.arbiter.on_operator_disconnected()
+            self._release_rc(client_key)
+            if self._area_confirmation and self._area_confirmation[0] == client_key:
+                self._clear_area_confirmation()
+
+    def _release_rc(self, client_key: str) -> None:
+        if self._rc_owner is not None and client_key == self._rc_owner:
+            self._rc_owner = None
+            self.arbiter.on_operator_disconnected()
+            if self.arbiter.mode == "manual":
+                self.flight.set_input(0, 0, 0, 0, source="gateway:operator_release")
+
+    def _clear_area_confirmation(self) -> None:
+        self._area_confirmation = None
+        self.flight.confirm_operator(False)
 
     # ---------- 자율 비행 (/ws/autonomy) ----------
     def autonomy_open(self, session: str, send) -> bool:
@@ -242,27 +295,43 @@ class Gateway:
     def _run_flight(self, p: dict) -> None:
         name = p["name"]
         if name == "emergency":
+            self._land_after_takeoff = False
+            self._clear_area_confirmation()
             self.flight.emergency(source="gateway")   # 잠금 없이 바로 나간다
             self._emergency_mono = self.clock()
         elif name == "confirm_area":
             self.flight.confirm_operator(bool(p.get("confirmed", True)))
-        elif name == "takeoff":
-            threading.Thread(target=self._takeoff, name="gateway-takeoff", daemon=True).start()
-        elif name == "land":
-            threading.Thread(target=self._land, name="gateway-land", daemon=True).start()
+        elif name in ("takeoff", "land"):
+            target = self._takeoff if name == "takeoff" else self._land
+            self._flight_action = threading.Thread(target=target, name=f"gateway-{name}", daemon=True)
+            self._flight_action.start()
 
     def _takeoff(self) -> None:
-        r = self.flight.takeoff(source="gateway")  # 응답까지 약 9초
+        try:
+            r = self.flight.takeoff(source="gateway")  # 응답까지 약 9초
+        except OSError:
+            r = {"flying": self.flight.flying, "reason": "drone_io_error"}
         with self._lock:
+            if self.arbiter.busy != "takeoff" or self.arbiter.mode == "emergency":
+                return
+            land_requested, self._land_after_takeoff = self._land_after_takeoff, False
+            if self.mapping_console_port is not None:
+                self._clear_area_confirmation()
+            self._release_rc(self._rc_owner)
             self.arbiter.on_takeoff_done(bool(r.get("flying")), None if r.get("flying") else r.get("reason") or "error_response")
+            if land_requested and r.get("flying"):
+                self.arbiter.handle_cmd("land")
             self._run_actions()
-        if r.get("flying") and self.video is not None and not self._video_on:
+        if not land_requested and r.get("flying") and self.video is not None and not self._video_on:
             self.set_video(True, "takeoff")  # 날면 식으므로 이륙 뒤에 켠다
 
     def _land(self) -> None:
-        r = self.flight.land(source="gateway")
+        try:
+            r = self.flight.land(source="gateway")
+        except OSError:
+            r = {"ok": False}
         with self._lock:
-            if r["ok"] or not self.flight.flying:
+            if self.arbiter.mode == "landing" and (r["ok"] or not self.flight.flying):
                 self.arbiter.on_landed("landed")
             self._run_actions()
 
@@ -433,7 +502,13 @@ class Gateway:
 
     def _state_ok(self) -> bool:
         state = self.link.latest_state()
-        return state is not None and state.get("age_s", 99) <= STATE_STALE_S
+        return state is not None and state.get("valid") is True and state.get("age_s", 99) <= STATE_STALE_S
+
+    def _video_ready(self) -> bool:
+        if not self._video_on or self.video is None:
+            return False
+        video = self.video.stats()
+        return bool(video["running"] and video["frame_age_s"] is not None and video["frame_age_s"] < VIDEO_STALE_S)
 
     def _on_ground(self) -> bool:
         si = (self.link.latest_state() or {}).get("si") or {}
@@ -445,6 +520,10 @@ class Gateway:
         with self._lock:
             arb = self.arbiter
             arb.on_link(self._state_ok() and self.link.sdk_mode)
+            if self._area_confirmation and (not arb.link_ok or self.clock() - self._area_confirmation[1] >= AREA_CONFIRM_S):
+                self._clear_area_confirmation()
+            if not arb.link_ok or (self._rc_owner is not None and self.mapping_console_port is not None and not self._video_ready()):
+                self._release_rc(self._rc_owner)
             auto_land = self.flight.last_auto_land
             if auto_land is not None and auto_land is not self._last_auto_land:
                 self._last_auto_land = auto_land
@@ -504,11 +583,14 @@ class Gateway:
             "at": now_iso(),
             "time_source": "gateway_receive",
             "source": self.source,
+            "mapping_console_url": (f"http://127.0.0.1:{self.mapping_console_port}/"
+                                    if self.mapping_console_port is not None else None),
             "connected": self.arbiter.link_ok,
             "state_age_s": None if state.get("age_s") is None else round(state["age_s"], 3),
             "mode": snap["mode"],
+            "flight_busy": self.flight.busy or self.arbiter.busy,
             "authority": snap["authority"],
-            "allowed": snap["allowed"],
+            "allowed": snap["allowed"] + (["land"] if self.arbiter.busy == "takeoff" and snap["mode"] == "grounded" else []),
             "warnings": warnings,
             "battery_pct": bat,
             "height_m": si.get("tof_m") if down_valid else None,   # h는 믿기 어려워 하방 tof를 쓴다

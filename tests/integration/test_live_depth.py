@@ -11,6 +11,9 @@ import cv2
 import numpy as np
 from PIL import Image
 
+from modules.autonomy.tello_link.sensor_pose import SensorPose
+from modules.mapping.data.mapping_history import HistoryReader
+from modules.mapping.data.point_fusion import FAR_DEPTH, STANDARD_DEPTH, TOF_DEPTH
 from modules.mapping.data.session_import import ImportManager
 from modules.mapping.data.stream_mapping import LivePoseFrames, run
 from modules.mapping.localization.live_depth import LiveDepthSession
@@ -35,6 +38,7 @@ class FakeWorker:
         self.pose_overrides = {}
         self.depth_m = 2.
         self.far_strip = False
+        self.far_depth_m = 3.
 
     def run(self, source, output, options, stop_event, on_preview, next_frame):
         owner = self
@@ -48,7 +52,7 @@ class FakeWorker:
                 depth = np.full(rgb.shape[:2], owner.depth_m, np.float32)
                 if owner.far_strip:
                     width = depth.shape[1]
-                    depth[:, int(.54 * width):int(.59 * width)] = 3.
+                    depth[:, int(.54 * width):int(.59 * width)] = owner.far_depth_m
                 return depth
         class Tracker:
             def __init__(self, output, size, original_size, camera, fps):
@@ -396,6 +400,88 @@ class LiveDepthTests(unittest.TestCase):
         scene = json.loads((session.path / 'reconstruction/scene.json').read_text())
         self.assertEqual(scene['depth_mapping']['integrated_frames'], 6)
         self.assertEqual([c['pose_source'] for c in scene['cameras'] if 'pose_source' in c], ['constant_velocity'] * 3)
+
+    def test_tello_prediction_and_recovery_accumulate_in_one_metric_map(self):
+        self.session.stop('test_reconfigure')
+        self.runtime.release.set()
+        self.session.worker.join(5)
+        self.session.recording.wait(5)
+        self.runtime.tracker_fps = None
+        session = self.session = LiveDepthSession(self.root, self.session.camera, 'test-image', self.manager,
+            input_kind='tello_camera', mapping={'live_policy': 'continuous'})
+        wait_for(lambda: session.ready)
+        texture = np.random.default_rng(71).integers(0, 256, (180, 320, 3), dtype=np.uint8)
+        texture = cv2.GaussianBlur(texture, (5, 5), .9)
+        fx = session.camera['fx']
+
+        def jpeg_at(x):
+            if x is None:
+                image = np.zeros_like(texture)
+            else:
+                image = cv2.warpAffine(texture, np.array([[1., 0., -fx * x / 2], [0., 1., 0.]]), (320, 180))
+            return cv2.imencode('.jpg', image)[1].tobytes()
+
+        def odom(segment, right):
+            return SensorPose(segment, 0., -right, .8, 0., 0., 0.)
+
+        frames = [
+            (0., None, None, None, None, None),
+            (.4, 0., odom(0, 0.), None, 'tello_sensor_odometry', 0.),
+            (.8, .10, odom(0, .10), None, 'tello_sensor_odometry', .10),
+            (1.2, None, None, None, 'tello_linear_prediction', .20),
+            (1.6, None, odom(1, 0.), None, 'tello_linear_prediction', .30),
+            (2.4, None, odom(1, 0.), None, 'tello_linear_prediction', .50),
+            (2.8, .30, odom(1, 0.), None, 'tello_sensor_odometry', .30),
+            (3.2, None, None, None, 'tello_linear_prediction', .30),
+            (3.6, .38, None, None, 'tello_visual_recovery', .38),
+            (4., .50, odom(1, .20), (.8, 4.), 'tello_sensor_odometry', .50),
+        ]
+        for sequence, (stamp, x, sample, tof, expected, expected_x) in enumerate(frames):
+            self.runtime.depth_m = 1. if tof is not None else 2.
+            self.runtime.far_strip = tof is not None
+            self.runtime.far_depth_m = 4.
+            session.offer(jpeg_at(x), stamp, sequence, front_tof=tof, sensor_pose=(0, sample, False))
+            wait_for(lambda: session.preview and session.preview['revision'] == sequence + 1)
+            preview = session.preview
+            self.assertEqual(preview.get('pose_source'), expected)
+            if expected:
+                self.assertEqual(preview['map_id'], 0)
+                self.assertEqual(preview['submaps'], 1)
+                self.assertEqual(preview['registered'], sequence)
+                self.assertEqual(preview['tracking'] == 'pose_predicted', expected == 'tello_linear_prediction')
+                np.testing.assert_allclose(preview['pose_position'], [expected_x, 0., 0.], atol=.04)
+                self.assertAlmostEqual(preview['depth_scale'], 1.)
+            else:
+                self.assertEqual(preview['tracking'], 'sensor_wait')
+                self.assertEqual(preview['registered'], 0)
+        self.assertTrue(session.preview['front_tof']['used'])
+        self.assertTrue(any(session.preview['rescue']['point_far']))
+        self.assertTrue(any(session.preview['rescue']['point_tof']))
+        session.stop('user_stop')
+        session.recording.finish_input()
+        session.worker.join(5)
+        self.assertIsNone(session.error)
+        self.assertEqual(self.runtime.tracked, [])
+        self.assertIsNone(self.runtime.tracker_fps)
+        output = session.path / 'reconstruction'
+        scene = json.loads((output / 'scene.json').read_text())
+        self.assertEqual(scene['scale']['unit'], 'm')
+        self.assertEqual(scene['depth_mapping']['integrated_maps'], 1)
+        self.assertEqual(scene['depth_mapping']['integrated_frames'], 9)
+        self.assertEqual(scene['depth_mapping']['submaps'], [])
+        self.assertEqual([c['pose_source'] for c in scene['cameras']], [row[4] for row in frames if row[4]])
+        self.assertEqual(session.recording.snapshot()['scale'], 'm')
+        with np.load(output / 'history/frames/00000010.npz', allow_pickle=False) as frame:
+            depth, classes = frame['depth'], frame['depth_classes']
+            self.assertEqual(set(np.unique(classes)), {FAR_DEPTH, STANDARD_DEPTH, TOF_DEPTH})
+            np.testing.assert_allclose(depth[classes == FAR_DEPTH], 4.)
+            np.testing.assert_allclose(depth[classes == STANDARD_DEPTH], 1.)
+            self.assertLess(depth[classes == TOF_DEPTH].max(), .9)
+        replay = HistoryReader(output).snapshot(10)
+        for key in ('point_tof', 'point_far'):
+            self.assertEqual(replay['rescue'][key], session.preview['rescue'][key])
+            self.assertEqual(len(scene['rescue'][key]), len(scene['points']))
+            self.assertTrue(any(scene['rescue'][key]))
 
     def test_continuous_mapping_preserves_first_prediction_while_depth_is_busy(self):
         frames = iter((self.jpeg, stamp, number) for number, stamp in enumerate((0., .1, .12, .4, .7)))

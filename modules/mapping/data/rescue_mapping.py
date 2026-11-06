@@ -213,7 +213,8 @@ class RescueMap:
         self.chunk = 0
         self.chunk_started = 0.
 
-    def update(self, rgb, depth, pose, params, semantics, scale, map_id, frame_id, stamp, *, tof_verified=False, pose_predicted=False):
+    def update(self, rgb, depth, pose, params, semantics, scale, map_id, frame_id, stamp, *,
+               tof_verified=False, pose_predicted=False, depth_classes=None):
         labels, confidence = validate_semantics(semantics, depth.shape, frame_id, stamp)
         size = max(1e-5, .04 * scale)
         if map_id != self.map_id:
@@ -226,7 +227,7 @@ class RescueMap:
             self.chunk = 0
         started = time.perf_counter()
         self.surface.integrate(rgb, depth, pose, params, labels, confidence,
-            tof_verified=tof_verified, pose_predicted=pose_predicted)
+            tof_verified=tof_verified, pose_predicted=pose_predicted, depth_classes=depth_classes)
         people = self.sightings.snapshot(stamp) if pose_predicted else self.sightings.update(
             semantics['people'], depth, pose, params, stamp, frame_id)
         return dict(schema_version=SCHEMA, classes=list(CLASSES), map_id=map_id,
@@ -269,9 +270,10 @@ def validate_payload(value):
     labels = value.get('point_labels', [])
     if not isinstance(labels, list) or len(labels) > MAX_PREVIEW_POINTS or any(type(v) is not int or not 0 <= v < len(CLASSES) for v in labels):
         raise ValueError('invalid_rescue_point_labels')
-    tof = value.get('point_tof')
-    if tof is not None and (not isinstance(tof, list) or len(tof) != len(labels) or any(type(v) is not bool for v in tof)):
-        raise ValueError('invalid_rescue_point_tof')
+    for key in ('point_tof', 'point_far'):
+        mask = value.get(key)
+        if mask is not None and (not isinstance(mask, list) or len(mask) != len(labels) or any(type(v) is not bool for v in mask)):
+            raise ValueError('invalid_rescue_' + key)
     def vectors(rows, maximum, *, bounds=False):
         array = np.asarray(rows, dtype=float)
         if array.size == 0:

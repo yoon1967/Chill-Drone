@@ -44,7 +44,8 @@ class LiveDepthSession:
         self.job.update(status='running', stage='model', output=self.path / 'reconstruction',
             options={'mode': 'depth_rgbd', 'frame_fps': camera['fps'],
                      'camera': camera, 'run_id': self.id, 'render_window_s': None, **mapping,
-                     'front_tof_enabled': input_kind == 'tello_camera'},
+                     'front_tof_enabled': input_kind == 'tello_camera',
+                     'prefer_sensor_pose': input_kind == 'tello_camera'},
             live_session=self, presentation_sync=not self.continuous)
         self._write_state()
         self.worker = threading.Thread(target=self._run, daemon=True, name=self.id)
@@ -80,6 +81,7 @@ class LiveDepthSession:
             'last_input_timestamp_s': self.last_pts if self.last_pts >= 0 else None,
             'last_input_sequence': self.last_sequence, 'last_error': self.error,
             'stop_reason': self.reason, 'revision': progress.get('revision', 0),
+            'map_unit': progress.get('map_unit'),
             'map_available': bool(self.done and (self.path / 'reconstruction/scene.json').is_file()),
             'revision_path': 'reconstruction' if (self.path / 'reconstruction/scene.json').is_file() else '',
             'depth_job_id': self.depth_job_id, 'depth_job': job, 'recording': self.recording.stats()}
@@ -106,7 +108,7 @@ class LiveDepthSession:
         self.last_input = time.monotonic()
         self.raw_received += 1
 
-    def offer(self, jpeg, pts, sequence, *, front_tof=None):
+    def offer(self, jpeg, pts, sequence, *, front_tof=None, sensor_pose=None):
         if not math.isfinite(pts) or not 0 <= pts <= 86400 or sequence < 0:
             raise ValueError('invalid_frame_timestamp_or_sequence')
         if len(jpeg) > 2097152 or not jpeg.startswith(b'\xff\xd8') or not jpeg.endswith(b'\xff\xd9'):
@@ -140,8 +142,10 @@ class LiveDepthSession:
             if self.pending is not None:
                 self.dropped += 1
             self.pending = (jpeg, pts, sequence)
-            if front_tof is not None:
+            if front_tof is not None or sensor_pose is not None:
                 self.pending += (front_tof,)
+            if sensor_pose is not None:
+                self.pending += (sensor_pose,)
             self.waiting = False
             self.condition.notify_all()
             if self.input_kind == 'browser_camera':

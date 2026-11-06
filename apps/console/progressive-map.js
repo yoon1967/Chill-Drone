@@ -2,7 +2,7 @@ import {ProgressiveReplay} from '/progressive-replay.js';
 import {createRescueLayer} from '/rescue-view.js';
 import {mappingPreparation} from '/map-source.js';
 import {mappingSettings, onMappingSettings, rescuePointColor} from '/mapping-settings.js';
-import {depthPointMaterial, TOF_POINT_SIZE_MULTIPLIER} from '/point-display.js';
+import {depthPointMaterial, depthPointScale, TOF_POINT_SIZE_MULTIPLIER} from '/point-display.js';
 import * as THREE from '/vendor/three.module.js';
 import {OrbitControls} from '/vendor/OrbitControls.js';
 
@@ -75,23 +75,26 @@ export function connectProgressiveMap({prefix = 'progressive'} = {}) {
     if (value.points.length > pointCapacity) {
       pointCapacity = Math.max(1024, 2**Math.ceil(Math.log2(value.points.length)));
       geometry.dispose();
-      for (const [name, size] of [['position', 3], ['color', 3], ['tofVerified', 1]]) {
+      for (const [name, size] of [['position', 3], ['color', 3], ['pointScale', 1]]) {
         geometry.setAttribute(name, new THREE.BufferAttribute(new Float32Array(pointCapacity * size), size).setUsage(THREE.DynamicDrawUsage));
       }
     }
     const prefs = mappingSettings(), low = [Infinity,Infinity,Infinity], high = [-Infinity,-Infinity,-Infinity], linear = new THREE.Color();
-    const positions = geometry.getAttribute('position'), colors = geometry.getAttribute('color'), tof = geometry.getAttribute('tofVerified');
-    let verifiedPoints = 0;
+    const positions = geometry.getAttribute('position'), colors = geometry.getAttribute('color'), sizes = geometry.getAttribute('pointScale');
+    let verifiedPoints = 0, farPoints = 0;
     value.points.forEach((p,i) => {
       positions.setXYZ(i,p[0],p[1],p[2]);
       const color = rescuePointColor(p.slice(3,6),value.rescue?.point_labels?.[i],value.rescue || {},prefs);
       linear.setRGB(color[0]/255,color[1]/255,color[2]/255,THREE.SRGBColorSpace);
       colors.setXYZ(i,linear.r,linear.g,linear.b);
-      const verified = Number(value.rescue?.point_tof?.[i] === true);
-      tof.setX(i, verified); verifiedPoints += verified;
+      const verified = value.rescue?.point_tof?.[i] === true;
+      const far = value.rescue?.point_far?.[i] === true;
+      sizes.setX(i, depthPointScale(verified, far));
+      verifiedPoints += Number(verified);
+      farPoints += Number(far && !verified);
       for(let axis=0;axis<3;axis++){low[axis]=Math.min(low[axis],p[axis]);high[axis]=Math.max(high[axis],p[axis]);}
     });
-    for(const attribute of [positions, colors, tof]) {
+    for(const attribute of [positions, colors, sizes]) {
       if(!attribute) continue;
       attribute.clearUpdateRanges(); attribute.addUpdateRange(0,value.points.length*attribute.itemSize); attribute.needsUpdate=true;
     }
@@ -99,7 +102,7 @@ export function connectProgressiveMap({prefix = 'progressive'} = {}) {
     const center = value.points.length ? new THREE.Vector3(...low.map((n,i)=>(n+high[i])/2)) : new THREE.Vector3();
     geometry.boundingSphere = new THREE.Sphere(center,value.points.length ? Math.hypot(...high.map((n,i)=>n-low[i]))/2 : 0);
     Object.assign(host.dataset,{pointCount:value.points.length,pointBufferCapacity:pointCapacity,
-      verifiedPoints,
+      verifiedPoints, farPoints,
       pointRevision:value.rescue?.point_revision ?? '', pointGeometryId:geometry.id,
       pointAttributeId:geometry.getAttribute('position')?.id ?? ''});
   }
@@ -236,18 +239,21 @@ export function connectProgressiveMap({prefix = 'progressive'} = {}) {
       if (token !== generation || cursor !== replay.version || disposed) return;
       revision = value.revision;
       updateFramePreview(value.frame_preview);
+      const sensorPose = value.pose_source === 'tello_sensor_odometry';
+      const recoveredPose = value.pose_source === 'tello_visual_recovery';
       $('progressive-frame-detail').textContent = frameSpace === 'camera' ? '현재 프레임을 카메라 기준 임시 점군으로 표시합니다.' :
         frameSpace === 'map' ? '확인한 카메라 자세와 최근 배율로 현재 프레임의 점을 임시로 표시합니다.' :
+        value.tracking === 'sensor_wait' ? '지도를 시작할 첫 센서 자세를 기다립니다.' :
         value.tracking === 'pose_predicted' ? '이전 위치·회전 속도와 배율로 예측한 점을 복셀 지도에 바로 합쳤습니다.' :
         value.tracking === 'pose_reused' ? '최근 프레임을 기준으로 현재 자세를 추정하고 이전 배율로 복셀에 합쳤습니다.' :
         value.front_tof?.used === true ? '전방 ToF로 확인된 표면을 큰 점으로 표시합니다.' :
-        value.front_tof?.used === false ? '현재 프레임의 영상 깊이 추정점을 작은 점으로 표시합니다.' :
+        value.front_tof?.used === false ? '현재 프레임의 영상 깊이 추정점을 표시합니다.' :
         {lost: '위치·방향 추적 실패 · 깊이 추정과 지도 반영을 건너뛰고 마지막 지도를 유지합니다.',
         initializing: '영상으로 카메라 위치·방향을 초기화 중입니다. 아직 깊이 추정을 실행하지 않습니다.',
         scale_wait: '위치·방향은 확인했습니다. 깊이 배율의 일관성이 부족해 이번 프레임은 합치지 않고 누적 지도를 유지합니다.',
         tracking: '먼저 확정한 이 프레임의 카메라 자세를 유지한 채 깊이와 지도를 복원했습니다.'}[value.tracking] || '프레임 처리 중';
       const confirmed = Boolean(value.pose_confirmed && value.pose_position && value.pose_rotation);
-      const estimated = ['pose_reused', 'pose_predicted'].includes(value.tracking) && value.pose_position && value.pose_rotation;
+      const estimated = (sensorPose || recoveredPose || ['pose_reused', 'pose_predicted'].includes(value.tracking)) && value.pose_position && value.pose_rotation;
       const guidance = value.tracking === 'lost'
         ? '점을 잡지 못했습니다. 천천히 이동하거나 끊긴 부분을 다시 보여주세요. 마지막 지도를 유지하며 위치를 다시 찾고 있습니다.'
         : value.tracking === 'initializing'
@@ -260,8 +266,10 @@ export function connectProgressiveMap({prefix = 'progressive'} = {}) {
         const r = value.pose_rotation;
         cameraMarker.position.fromArray(value.pose_position);
         cameraMarker.quaternion.setFromRotationMatrix(new THREE.Matrix4().set(r[0][0], r[0][1], r[0][2], 0, r[1][0], r[1][1], r[1][2], 0, r[2][0], r[2][1], r[2][2], 0, 0, 0, 0, 1));
-        const label = {pose_predicted: '선형 이동 기반 자세 예측', pose_reused: '이전 프레임 기준 자세 추정'}[value.tracking] || '위치·방향 확정';
-        $('progressive-pose').textContent = `${label} · 원본 ${value.frame_number}번째 · 위치 (${value.pose_position.map(n => n.toFixed(3)).join(', ')}) · 전방 (${r.map(row => row[2].toFixed(3)).join(', ')}) · 단안 상대 좌표${value.submaps > 1 ? ' · 다른 지도 구간은 분리 보존' : ''}`;
+        const label = sensorPose ? 'Tello 센서 자세 추정' : recoveredPose ? '기존 지도에서 영상 자세 복구' :
+          {pose_predicted: '선형 이동 기반 자세 예측', pose_reused: '이전 프레임 기준 자세 추정'}[value.tracking] || '위치·방향 확정';
+        const units = value.map_unit === 'm' ? '미터 단위 추정' : '단안 상대 좌표';
+        $('progressive-pose').textContent = `${label} · 원본 ${value.frame_number}번째 · 위치 (${value.pose_position.map(n => n.toFixed(3)).join(', ')}) · 전방 (${r.map(row => row[2].toFixed(3)).join(', ')}) · ${units}${value.submaps > 1 ? ' · 다른 지도 구간은 분리 보존' : ''}`;
       } else $('progressive-pose').textContent = frameSpace === 'camera' ? '위치·방향 확정 대기 · 카메라 기준 점군 표시 중' :
         '위치·방향 확정 대기 · 이 프레임은 깊이 복원에 사용하지 않습니다.';
       // A transient empty live result is not an instruction to erase the map.
@@ -293,7 +301,9 @@ export function connectProgressiveMap({prefix = 'progressive'} = {}) {
         frameSpace === 'map' ? '현재 프레임 임시 점군 · 누적 지도에는 확인된 관측을 저장합니다.' :
         !image ? $('progressive-map-empty').textContent : retaining ? '새 점군 대기 · 마지막 유효 지도를 유지합니다.' :
         `${scope} · 드래그 회전 · 휠 확대${value.submaps > 1 ? ` · 현재 구간 ${value.map_id + 1} · 이전 지도는 위 지도 구간에서 다시 열 수 있습니다. 구간 사이 좌표는 아직 연결되지 않았습니다.` : ''}`;
-      $('progressive-map-detail').textContent = value.front_tof ? `${detail} · 큰 점 ToF · 작은 점 영상 추정` : detail;
+      const depthLegend = value.map_unit === 'm' ? ' · 작은 점 파란 거리대 · 기본 점 영상 깊이 · 큰 점 ToF' :
+        value.front_tof ? ' · 큰 점 ToF · 기본 점 영상 깊이' : '';
+      $('progressive-map-detail').textContent = detail + depthLegend;
       if (first && value.points.length) { first = false; fit(); }
       if (image) {
         const frame = $('progressive-frame');
@@ -327,7 +337,7 @@ export function connectProgressiveMap({prefix = 'progressive'} = {}) {
       trackingNote.hidden = true; trackingNote.textContent = '';
       geometry.setDrawRange(0,0); pointKey = pointValue = null; displayedMap = null; segments.clear(); segmentEntries = 0; rescue.update(null); meshRevision = -1;
       route.geometry.dispose(); route.geometry = new THREE.BufferGeometry(); cameraMarker.visible = false;
-      Object.assign(host.dataset, {pointCount: 0, verifiedPoints: 0, displayedMap: '', retainingMap: 'false'});
+      Object.assign(host.dataset, {pointCount: 0, verifiedPoints: 0, farPoints: 0, displayedMap: '', retainingMap: 'false'});
       $('progressive-frame').hidden = true;
       $('progressive-frame-time').textContent = '첫 지도 대기';
       $('progressive-video-empty').hidden = false;

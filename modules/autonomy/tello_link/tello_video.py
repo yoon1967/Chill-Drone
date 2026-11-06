@@ -6,10 +6,18 @@ PyAV(av)로 원시 UDP 바이트를 직접 파싱·디코딩한다. JPEG 변환�
 
 from __future__ import annotations
 
+import json
 import socket
 import threading
 import time
 from collections import deque
+
+
+def mjpeg_part(jpeg, pose=None):
+    headers = b"--frame\r\nContent-Type: image/jpeg\r\n"
+    if pose is not None:
+        headers += b"X-Tello-Pose: " + json.dumps(pose, separators=(',', ':'), allow_nan=False).encode('ascii') + b"\r\n"
+    return headers + b"\r\n" + jpeg + b"\r\n"
 
 
 class TelloVideo:

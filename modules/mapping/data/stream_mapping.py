@@ -23,6 +23,7 @@ from PIL import Image, ImageOps
 
 from .model_assets import DEPTH_MODEL as MODEL, cached_snapshot, ModelAssetsMissing
 from .mapping_limits import MAX_FRAME_PREVIEW_POINTS
+from .point_fusion import BLUE_DEPTH_MIN_M, FAR_DEPTH, STANDARD_DEPTH, TOF_DEPTH
 from .tof_depth import TofDepth, match_front_surface
 
 
@@ -204,7 +205,8 @@ class PoseFrames:
 
 class LivePoseFrames(PoseFrames):
     """Request fresh live input only after the preceding output was presented."""
-    def __init__(self, receive, fps, rate, output, camera, tracker_factory=None, *, continuous=False, predict_pose=False):
+    def __init__(self, receive, fps, rate, output, camera, tracker_factory=None, *, continuous=False,
+                 predict_pose=False, prefer_sensor_pose=False):
         super().__init__('live', fps, rate, output, camera, tracker_factory)
         from modules.mapping.localization.pose_first import ConstantVelocityPose
         self.motion = ConstantVelocityPose() if predict_pose else None
@@ -212,9 +214,11 @@ class LivePoseFrames(PoseFrames):
         width, height = camera['width'], camera['height']
         self.size = scaled_size(width, height, min(640, max(width, height)))
         self.original_size = (width, height)
-        # Known live geometry lets Docker finish loading before admitting the first frame.
-        self.native = self.tracker_factory(output, self.size, self.original_size, camera, fps if continuous else 15)
         self.continuous = continuous
+        self.prefer_sensor_pose = prefer_sensor_pose
+        self.tello_mode = None
+        if not prefer_sensor_pose:
+            self._start_visual_tracker()
         self.condition = threading.Condition()
         self.pending = None
         self.pending_prediction = None
@@ -230,6 +234,25 @@ class LivePoseFrames(PoseFrames):
                 pass
             self.tracking_thread = threading.Thread(target=self._track_live, daemon=True)
             self.tracking_thread.start()
+
+    def _start_visual_tracker(self):
+        self.native = self.tracker_factory(self.output, self.size, self.original_size, self.camera,
+                                           self.fps if self.continuous else 15)
+
+    def _track_pose(self, rgb, stamp, telemetry):
+        if self.tello_mode is None:
+            self.tello_mode = self.prefer_sensor_pose and telemetry is not None
+        if self.tello_mode:
+            # The fusion consumer owns the metric frame and its depth references.
+            return {'tello_telemetry': telemetry or (None, None, False), 'map_id': 0}
+        if self.native is None:
+            self._start_visual_tracker()
+        result = self.native.track(rgb, stamp)
+        if self.motion is not None:
+            prediction, first = self.motion.update(result, stamp)
+            if prediction is not None:
+                result = {**result, 'predicted_pose': prediction, 'prediction_start': first}
+        return result
 
     def _track_live(self):
         try:
@@ -270,11 +293,7 @@ class LivePoseFrames(PoseFrames):
             raise ValueError('frame_dimensions_do_not_match_calibration')
         rgb = cv2.cvtColor(cv2.resize(image, self.size), cv2.COLOR_BGR2RGB)
         received = time.monotonic()
-        result = self.native.track(rgb, stamp)
-        if self.motion is not None:
-            prediction, first = self.motion.update(result, stamp)
-            if prediction is not None:
-                result = {**result, 'predicted_pose': prediction, 'prediction_start': first}
+        result = self._track_pose(rgb, stamp, sensor[1] if len(sensor) > 1 else None)
         self.tracked += 1
         return sequence + 1, stamp, rgb, received, self.original_size, result, *sensor
 
@@ -315,6 +334,17 @@ def camera_intrinsic(shape, original_size, camera):
         sx, sy = w / camera['width'], h / camera['height']
         return camera['fx'] * sx, camera['fy'] * sy, camera['cx'] * sx, camera['cy'] * sy
     return w * .8660254, w * .8660254, w / 2, h / 2
+
+
+def depth_frame(display_rgb, original_size, options):
+    rgb = cv2.resize(display_rgb, scaled_size(*original_size, options['depth_resolution']))
+    camera = options.get('camera')
+    params = camera_intrinsic(rgb.shape, original_size, camera)
+    if camera and any(camera.get('distortion', [])):
+        fx, fy, cx, cy = params
+        matrix = np.array([[fx, 0, cx], [0, fy, cy], [0, 0, 1.]])
+        rgb = cv2.undistort(rgb, matrix, np.asarray(camera['distortion']))
+    return rgb, params
 
 
 def add_points(cells, rgb, depth, pose, params, max_points=40000, voxel_size=.06, seen=None, stamp=0.):
@@ -392,6 +422,7 @@ def run(source, output, options, estimator_factory=DepthEstimator, tracker_facto
     rescue = semantics_estimator = None
     cameras = []
     tof_calibrations = {} if options.get('front_tof_enabled') else None
+    tello_pose = None
     last_nonempty_points = []
     render_window_s = None  # Spatial compaction retains all ages within the point budget.
     def check_cancelled():
@@ -434,12 +465,13 @@ def run(source, output, options, estimator_factory=DepthEstimator, tracker_facto
         if live_receive is not None:
             producer = LivePoseFrames(live_receive, options['frame_fps'], options['sample_fps'],
                 output, options['camera'], tracker_factory, continuous=options['live_policy'] == 'continuous',
-                predict_pose=tof_calibrations is not None)
+                predict_pose=tof_calibrations is not None, prefer_sensor_pose=options.get('prefer_sensor_pose', False))
         else:
             producer = PoseFrames(source, options['frame_fps'], options['sample_fps'],
                 output, options.get('camera'), tracker_factory)
         producer.cancel_event = stop_event
         from modules.mapping.localization.pose_first import fixed_camera_pose, depth_in_pose_units
+        from modules.mapping.localization.tello_pose import LINEAR_PREDICTION, TelloMapPose
         active_map = None
         active_visual_scale = active_tof_scale = None
         submaps = []
@@ -456,14 +488,26 @@ def run(source, output, options, estimator_factory=DepthEstimator, tracker_facto
             publish(stage='tracking', frame_number=number, timestamp_s=stamp, dropped=producer.dropped)
             status.update(tracked_frames=getattr(producer, 'tracked', number),
                           mapping_sampled_out=getattr(producer, 'sampled_out', 0))
-            pose = fixed_camera_pose(native_pose, stamp)
+            telemetry = native_pose.get('tello_telemetry')
+            pose_source = None
+            pose_predicted = False
+            if telemetry is not None:
+                if tello_pose is None:
+                    tello_pose = TelloMapPose()
+                rgb, params = depth_frame(display_rgb, original_size, options)
+                pose, pose_source = tello_pose.resolve(telemetry, rgb, params, stamp)
+                pose_predicted = pose_source == LINEAR_PREDICTION
+            else:
+                pose = fixed_camera_pose(native_pose, stamp)
+            metric_pose = telemetry is not None and pose is not None
+            sensor_wait = telemetry is not None and pose is None
             h, w = display_rgb.shape[:2]
             map_id = native_pose.get('map_id')
-            native_confirmed = pose is not None
+            native_confirmed = pose is not None and not metric_pose
             prediction = native_pose.get('predicted_pose')
-            if not native_confirmed and active_visual_scale is not None and active_map == map_id:
+            if pose is None and active_visual_scale is not None and active_map == map_id:
                 pose = prediction
-            pose_predicted = pose is not None and not native_confirmed
+                pose_predicted = pose is not None
             status['processed'] += 1
             name = f'frame_{number:07d}.jpg'
             Image.fromarray(display_rgb).save(output / 'frames' / name, quality=80)
@@ -471,25 +515,26 @@ def run(source, output, options, estimator_factory=DepthEstimator, tracker_facto
             observation = None
             evicted = 0
             state = 'initializing' if native_pose.get('tracking_state', 0) <= 1 else 'lost'
+            if sensor_wait:
+                state = 'sensor_wait'
             depth_scale = None
             rescue_snapshot = None
             frame_preview = None
             tof_verified = False
             tof = None if tof_calibrations is None else dict(distance_m=tof_sample[0] if tof_sample else None,
                 meters_per_slam_unit=None, corrected=False, surface_supported=False, used=False)
-            if native_confirmed:
+            if native_confirmed or metric_pose:
                 state = 'scale_wait'
-            if pose is not None or tof is not None:
+            if pose is not None or (tof is not None and not sensor_wait):
                 publish(stage='depth', pose_confirmed=native_confirmed)
-                rgb = cv2.resize(display_rgb, scaled_size(*original_size, options['depth_resolution']))
-                params = camera_intrinsic(rgb.shape, original_size, options.get('camera'))
-                if options.get('camera') and any(options['camera'].get('distortion', [])):
-                    fx, fy, cx, cy = params
-                    matrix = np.array([[fx, 0, cx], [0, fy, cy], [0, 0, 1.]])
-                    rgb = cv2.undistort(rgb, matrix, np.asarray(options['camera']['distortion']))
-                # Estimated meters are converted into the already fixed SLAM coordinate scale.
+                if telemetry is None:
+                    rgb, params = depth_frame(display_rgb, original_size, options)
+                # Metric model estimates are converted only for the legacy SLAM path.
                 depth = estimator.estimate(rgb)
                 depth[~np.isfinite(depth) | (depth < .2) | (depth > 8.)] = 0
+                depth_classes = None
+                if metric_pose:
+                    depth_classes = np.where(depth >= BLUE_DEPTH_MIN_M, FAR_DEPTH, STANDARD_DEPTH).astype(np.uint8)
                 semantics = None
                 if semantics_estimator and pose is not None:
                     publish(stage='semantics')
@@ -498,7 +543,9 @@ def run(source, output, options, estimator_factory=DepthEstimator, tracker_facto
                     labels, confidence = validate_semantics(semantics, depth.shape, name, stamp)
                 aligned = None
                 excluded = (labels == PERSON) if semantics is not None else None
-                if native_confirmed:
+                if metric_pose:
+                    aligned = (depth, 1.)  # The pose and the metric depth model both use meters.
+                elif native_confirmed:
                     aligned = depth_in_pose_units(depth, native_pose.get('depth_anchors', []), (w, h), excluded=excluded)
                 elif pose_predicted:
                     aligned = (depth * active_visual_scale, active_visual_scale)
@@ -509,7 +556,14 @@ def run(source, output, options, estimator_factory=DepthEstimator, tracker_facto
                 if tof is not None and tof_sample is not None:
                     supported = match_front_surface(depth, params, tof_sample[0], excluded)
                     tof['surface_supported'] = supported is not None
-                if aligned is not None and supported is not None and native_confirmed:
+                if aligned is not None and supported is not None and metric_pose:
+                    supported_depth, model_range = supported
+                    measured = supported_depth > 0
+                    depth_classes[measured] = TOF_DEPTH
+                    aligned = (np.where(measured, supported_depth, depth), 1.)
+                    tof['corrected'] = abs(tof_sample[0] / model_range - 1.) >= .01
+                    tof_verified = True
+                elif aligned is not None and supported is not None and native_confirmed:
                     supported_depth, model_range = supported
                     if map_id not in tof_calibrations:
                         tof_calibrations[map_id] = TofDepth()
@@ -520,6 +574,8 @@ def run(source, output, options, estimator_factory=DepthEstimator, tracker_facto
                         aligned = (supported_depth * scale, scale)
                         tof_verified = True
                 if aligned is not None:
+                    if metric_pose and not pose_predicted:
+                        tello_pose.remember(stamp, rgb, aligned[0], params, pose, excluded)
                     depth, depth_scale = aligned
                     if active_map is not None and active_map != map_id:
                         # The append-only history already durably holds this
@@ -539,13 +595,16 @@ def run(source, output, options, estimator_factory=DepthEstimator, tracker_facto
                         labels=np.zeros(depth.shape, np.uint8), confidence=np.ones(depth.shape, np.float32),
                         people=[], inference_ms=0.)
                     rescue_snapshot = rescue.update(rgb, depth, pose, params, mapping_semantics,
-                        depth_scale, map_id, name, stamp, tof_verified=tof_verified, pose_predicted=pose_predicted)
+                        depth_scale, map_id, name, stamp, tof_verified=tof_verified, pose_predicted=pose_predicted,
+                        depth_classes=depth_classes)
                     # Keep source observations for replay; spatial fusion bounds display size.
                     observation = {'depth': depth, 'rgb': rgb, 'world_from_camera': pose,
                         'intrinsics': np.asarray(params), 'map_id': np.asarray(map_id),
                         'depth_scale': np.asarray(depth_scale), 'timestamp_s': np.asarray(stamp)}
                     if tof_verified:
                         observation['tof_verified'] = np.asarray(True)
+                    if depth_classes is not None:
+                        observation['depth_classes'] = depth_classes
                     if semantics is not None:
                         observation.update(semantic_labels=labels, semantic_confidence=confidence,
                             person_instances=np.stack([p['mask'] for p in semantics['people']]).astype(np.uint8)
@@ -558,7 +617,8 @@ def run(source, output, options, estimator_factory=DepthEstimator, tracker_facto
                     status['registered'] += 1
                     if pose_predicted:
                         status['pose_predicted_frames'] = status.get('pose_predicted_frames', 0) + 1
-                    mapped, state = True, 'pose_predicted' if pose_predicted else 'tracking'
+                    mapped = True
+                    state = 'pose_predicted' if pose_predicted else 'sensor_pose' if metric_pose else 'tracking'
                 elif tof is not None:
                     # A temporary projection can use the last scale of this map.
                     # Keep it outside the accumulated cloud and observation history.
@@ -598,6 +658,10 @@ def run(source, output, options, estimator_factory=DepthEstimator, tracker_facto
                 'processed': status['processed'], 'registered': status['registered'],
                 'dropped': producer.dropped, 'processing_ms': round((time.monotonic() - tick) * 1000),
                 'latency_ms': round((time.monotonic() - received) * 1000)}
+            if metric_pose:
+                snapshot['pose_source'] = pose_source
+            if telemetry is not None and active_map is not None:
+                snapshot['map_unit'] = 'm'
             if frame_preview is not None:
                 snapshot['frame_preview'] = frame_preview
             if tof is not None:
@@ -608,8 +672,9 @@ def run(source, output, options, estimator_factory=DepthEstimator, tracker_facto
                 people_points = person_points(rescue_snapshot)
                 snapshot['points'] = snapshot['points'] + people_points
                 rescue_snapshot['point_labels'] = rescue_snapshot['point_labels'] + [1]*len(people_points)
-                if rescue.surface.tof_verified.any():
-                    rescue_snapshot['point_tof'] = rescue.surface.tof_verified.tolist() + [False]*len(people_points)
+                for key, mask in (('point_tof', rescue.surface.tof_verified), ('point_far', rescue.surface.far_depth)):
+                    if mask.any():
+                        rescue_snapshot[key] = mask.tolist() + [False]*len(people_points)
                 if snapshot['points']:
                     last_nonempty_points = snapshot['points']
             history.append(snapshot, observation)
@@ -630,8 +695,8 @@ def run(source, output, options, estimator_factory=DepthEstimator, tracker_facto
         producer = None
         history.close('complete')
         publish(stage='integration', integrated_frames=0, integration_total=status['registered'])
-        finalize_history(output, status, run_id, started, publish)
-        publish(status='complete', stage='finished')
+        scale = finalize_history(output, status, run_id, started, publish)
+        publish(status='complete', stage='finished', map_unit=scale['unit'])
         return status
     except BaseException as error:
         publish(status='cancelled' if isinstance(error, (KeyboardInterrupt, InterruptedError)) else 'failed', error=str(error)[:400])
@@ -649,6 +714,7 @@ def run(source, output, options, estimator_factory=DepthEstimator, tracker_facto
 
 def finalize_history(output, status, run_id, started, publish=lambda **fields: None):
     from modules.mapping.data.history_fusion import integrate_history
+    from modules.mapping.localization.tello_pose import METRIC_POSE_SOURCES
     output = Path(output)
     groups, entries = integrate_history(output, lambda **fields: publish(stage='integration', **fields))
     primary = max(groups.values(), key=lambda group: len(group['cameras']))
@@ -667,8 +733,9 @@ def finalize_history(output, status, run_id, started, publish=lambda **fields: N
             group['rescue']['points_include_people'] = True
             if group['rescue'].get('render_mode') == 'points':
                 group['rescue']['point_labels'] += [1]*(len(group['rows'])-offset)
-            if 'point_tof' in group['rescue']:
-                group['rescue']['point_tof'] += [False]*(len(group['rows'])-offset)
+            for key in ('point_tof', 'point_far'):
+                if key in group['rescue']:
+                    group['rescue'][key] += [False]*(len(group['rows'])-offset)
         del group['cells']
         for camera in group['cameras']:
             camera['position'] = (display_rotation @ camera['position']).tolist()
@@ -693,12 +760,18 @@ def finalize_history(output, status, run_id, started, publish=lambda **fields: N
             'initialization_frames': sum(e['tracking'] == 'initializing' for e in entries),
             'unmapped_frames': sum(not e['observation'] for e in entries), 'map_count': len(groups),
             'spatial_completeness_verified': False}}
+    sensor_origin = primary['pose_source'] == 'tello_sensor_odometry'
+    tello_metric = primary['pose_source'] in METRIC_POSE_SOURCES
+    scale = {'unit': 'm' if tello_metric else 'arbitrary',
+             'status': 'tello_metric_estimate' if tello_metric else 'monocular_pose_scale', 'factor': 1.}
+    coordinate_system = ({'name': 'tello_sensor_display', 'y': 'up from Tello attitude'} if sensor_origin else
+                         {'name': 'first_camera_display', 'y': 'view-derived up, not measured gravity'})
     scene = {'schema_version': 'phone-sfm-result/1.2', 'input_run_id': run_id,
-        'created_utc': datetime.now(timezone.utc).isoformat(), 'pose_source': 'orb_slam3_depth',
+        'created_utc': datetime.now(timezone.utc).isoformat(), 'pose_source': primary['pose_source'],
         'points': rows, 'point_fields': ['point_id', 'x', 'y', 'z', 'r', 'g', 'b', 'error_px', 'track_length'],
-        'cameras': cameras, 'quality': quality, 'coordinate_system': {'name': 'first_camera_display', 'y': 'view-derived up, not measured gravity'},
-        'segment_id': primary['map_id'], 'scale': {'unit': 'arbitrary', 'status': 'monocular_pose_scale', 'factor': 1.},
-        'depth_mapping': {'model': MODEL, 'pose_first': True, 'tracker': 'orb_slam3_monocular',
+        'cameras': cameras, 'quality': quality, 'coordinate_system': coordinate_system,
+        'segment_id': primary['map_id'], 'scale': scale,
+        'depth_mapping': {'model': MODEL, 'pose_first': True, 'tracker': 'tello_sensor_rgbd' if tello_metric else 'orb_slam3_monocular',
             'submaps': submaps, 'dropped': status.get('dropped', 0), 'metric_accuracy_verified': False,
             'history': 'history/manifest.json', 'integration_scope': 'all_recorded_observations',
             'integrated_frames': all_registered, 'integrated_maps': len(groups),
@@ -732,8 +805,9 @@ def finalize_history(output, status, run_id, started, publish=lambda **fields: N
         writer = csv.writer(stream)
         writer.writerow(['frame_id', 'timestamp_s', 'x', 'y', 'z', 'pose_source', 'unit'])
         writer.writerows([c['frame_id'], c['timestamp_s'], *c['position'],
-            c.get('pose_source', 'orb_slam3_depth'), 'arbitrary'] for c in cameras)
+            c.get('pose_source', primary['pose_source']), scale['unit']] for c in cameras)
     write_json(output / 'status.json', {'status': quality['result_status']})
+    return scale
 
 
 def main():

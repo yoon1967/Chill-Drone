@@ -1,5 +1,6 @@
 """A pose must precede depth, and depth may never change the native pose."""
 import json
+import math
 from pathlib import Path
 import tempfile
 import threading
@@ -7,11 +8,31 @@ import unittest
 from unittest.mock import patch
 
 import numpy as np
+from modules.autonomy.tello_link.sensor_pose import SensorPose
 from modules.mapping.localization.pose_first import fixed_camera_pose, depth_in_pose_units
+from modules.mapping.localization.tello_pose import LINEAR_PREDICTION, TelloMapPose
 from modules.mapping.data.stream_mapping import run
 
 
 class PoseFirstTests(unittest.TestCase):
+    def test_tello_predicts_camera_rotation_at_frame_time(self):
+        tracker = TelloMapPose()
+
+        def resolve(stamp, yaw=None):
+            sample = None if yaw is None else SensorPose(0, 0., 0., .8, yaw, 0., 0.)
+            return tracker.resolve((0, sample, False), None, None, stamp)
+
+        self.assertIsNone(resolve(0.)[0])
+        first, _ = resolve(.4, 0.)
+        held, source = resolve(.8)
+        self.assertEqual(source, LINEAR_PREDICTION)
+        np.testing.assert_allclose(held, first, atol=1e-8)
+        resolve(.9, .1)
+        resolve(1.3, .3)
+        predicted, source = resolve(2.5)
+        self.assertEqual(source, LINEAR_PREDICTION)
+        np.testing.assert_allclose(predicted[:3, 2], [-math.sin(.9), 0., math.cos(.9)], atol=1e-8)
+
     def test_only_successful_exact_frame_rigid_pose_is_admitted(self):
         native = {'timestamp_s': 1., 'tracking_state': 2, 'T_cw': np.eye(4).tolist()}
         np.testing.assert_equal(fixed_camera_pose(native, 1.), np.eye(4))

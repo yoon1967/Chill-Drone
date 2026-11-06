@@ -118,18 +118,15 @@ class ProfileAPITests(unittest.TestCase):
         self.assertEqual(status, 400)
         self.tello.start.assert_not_called()
 
-    def test_docker_failure_keeps_the_drone_connection_available(self):
+    def test_tello_mapping_starts_without_checking_docker(self):
         with patch('modules.mapping.localization.orbslam3_live.require_slam_image',
-                   side_effect=RuntimeError('slam_docker_unavailable')):
+                   side_effect=RuntimeError('slam_docker_unavailable')) as docker:
             status, data, _ = self.request('/api/live/tello/start', {'width': 960, 'height': 720, 'fps': 24})
-        self.assertEqual((status, data['error']), (409, 'slam_docker_unavailable'))
-        self.drones.release.assert_not_called()
-        self.tello.start.assert_not_called()
-        with patch('modules.mapping.localization.orbslam3_live.require_slam_image', return_value='sha256:ready'):
-            status, data, _ = self.request('/api/live/tello/start', {'width': 960, 'height': 720, 'fps': 24})
+            docker.assert_not_called()
         self.assertEqual(status, 201)
+        self.assertEqual(data['session_id'], 'test_tello')
         self.drones.release.assert_called_once_with()
-        self.assertEqual(self.tello.start.call_args.kwargs['image_id'], 'sha256:ready')
+        self.tello.start.assert_called_once()
 
     def test_mutations_keep_existing_origin_header_requirement(self):
         status, _, _ = self.request('/api/camera-profiles', self.body, headers={})

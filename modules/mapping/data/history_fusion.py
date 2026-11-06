@@ -9,6 +9,7 @@ from modules.mapping.data.mapping_history import HistoryReader
 def integrate_history(output, progress=lambda **fields: None):
     from modules.mapping.data.stream_mapping import add_points
     from modules.mapping.data.rescue_mapping import SemanticSurface, PersonSightings, SCHEMA
+    from modules.mapping.localization.tello_pose import METRIC_POSE_SOURCES
     reader = HistoryReader(output)
     entries = list(reader.refresh())
     groups = {}
@@ -22,7 +23,8 @@ def integrate_history(output, progress=lambda **fields: None):
         with np.load(path, allow_pickle=False) as frame:
             map_id = int(frame['map_id'])
             group = groups.setdefault(map_id, {'map_id': map_id, 'cells': {}, 'cameras': [],
-                'voxel_size': max(.0001, .06 * float(frame['depth_scale']))})
+                'voxel_size': max(.0001, .06 * float(frame['depth_scale'])),
+                'pose_source': entry.get('pose_source', 'orb_slam3_depth')})
             depth = frame['depth']
             recorded = json.loads(frame['rescue_json'].tobytes()) if 'rescue_json' in frame else {}
             if 'semantic_labels' in frame or recorded.get('render_mode') == 'points':
@@ -41,7 +43,7 @@ def integrate_history(output, progress=lambda **fields: None):
                 confidence = frame['semantic_confidence'] if 'semantic_confidence' in frame else np.ones(depth.shape, np.float32)
                 group['surface'].integrate(frame['rgb'], depth, frame['world_from_camera'],
                     frame['intrinsics'], labels, confidence, tof_verified=bool(frame['tof_verified']) if 'tof_verified' in frame else False,
-                    pose_predicted=predicted)
+                    pose_predicted=predicted, depth_classes=frame['depth_classes'] if 'depth_classes' in frame else None)
                 detections = [{'mask': mask, 'confidence': float(confidence)} for mask, confidence in
                     zip(frame['person_instances'], frame['person_confidences'])] if 'person_instances' in frame else []
                 people = group['sightings'].snapshot(entry['timestamp_s']) if predicted else group['sightings'].update(
@@ -62,7 +64,9 @@ def integrate_history(output, progress=lambda **fields: None):
                 'position': pose[:3, 3].tolist(), 'world_from_camera_rotation': pose[:3, :3].tolist(),
                 'model': 'PINHOLE', 'width': frame['rgb'].shape[1], 'height': frame['rgb'].shape[0],
                 'params': frame['intrinsics'].tolist()})
-            if predicted:
+            if entry.get('pose_source') in METRIC_POSE_SOURCES:
+                group['cameras'][-1]['pose_source'] = entry['pose_source']
+            elif predicted:
                 group['cameras'][-1]['pose_source'] = 'constant_velocity'
             elif entry['tracking'] == 'pose_reused':
                 group['cameras'][-1]['pose_source'] = 'previous_frame_pnp'
@@ -74,8 +78,9 @@ def integrate_history(output, progress=lambda **fields: None):
     for group in groups.values():
         if 'surface' in group:
             group['cells'] = dict(enumerate(group['surface'].points()))
-            if group['surface'].tof_verified.any():
-                group['rescue']['point_tof'] = group['surface'].tof_verified.tolist()
+            for key, mask in (('point_tof', group['surface'].tof_verified), ('point_far', group['surface'].far_depth)):
+                if mask.any():
+                    group['rescue'][key] = mask.tolist()
             group['surface'].close()
             del group['surface'], group['sightings']
     return groups, entries

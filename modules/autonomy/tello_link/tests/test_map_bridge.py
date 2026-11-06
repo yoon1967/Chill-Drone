@@ -13,7 +13,7 @@ from http.server import ThreadingHTTPServer
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
 from fake_map_server import BOXES, FakeMap, make_handler  # noqa: E402
-from gateway_map_bridge import MapBridge  # noqa: E402
+from gateway_map_bridge import MapBridge, compact_preview  # noqa: E402
 from map_inbox import MapInbox  # noqa: E402
 
 
@@ -73,6 +73,14 @@ class MapBridgeTest(unittest.TestCase):
         snap = self.inbox.latest()
         self.assertEqual(len(snap["points"]), 50)
         self.assertGreater(snap["points_total"], 50)
+
+    def test_metric_units_survive_a_tello_pose_gap(self):
+        preview = {"map_id": 0, "map_unit": "m", "tracking": "sensor_wait",
+                   "points": [[0, 0, 1, 80, 90, 100]]}
+        message = compact_preview(preview, {}, self.url, 50)
+        self.assertEqual(message["scale"]["unit"], "m")
+        self.assertEqual(message["source"]["pose_source"], "tello_sensor_rgbd")
+        self.assertEqual(message["points"], preview["points"])
 
     def test_unreachable_is_reported(self):
         self.server.shutdown()
