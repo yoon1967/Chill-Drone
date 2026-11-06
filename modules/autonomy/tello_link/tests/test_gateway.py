@@ -50,6 +50,8 @@ class GatewayCase(unittest.TestCase):
         self.gw._thread.join(timeout=2)
         self.gw.flight._stop.set()
         self.gw.flight._thread.join(timeout=20)
+        if self.gw.recorder is not None:   # 영상 녹화 파일을 닫아야 Windows에서 임시 폴더를 지울 수 있다
+            self.gw.recorder.close()
         self.link.close()
         self.fake.close()
         self.tmp.cleanup()

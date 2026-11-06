@@ -18,6 +18,7 @@
 - WS  /ws/autonomy        자율 비행 하나(AUTONOMY_BRIDGE_V0_1). 게이트웨이 → hello·tello_state·flight_status·control,
                           자율 → hello·cmd_vel·mission_state·ack·request·pose·path·people. 기본은 같은 PC만, 두 번째는 busy
 - GET  /api/autonomy      자율 위치·경로·찾은 사람 전체 (시험용 가짜 자율: fake_autonomy.py)
+--replay <회차 폴더>: 기체 대신 회차 기록(상태·모드·영상·탐지·지도·자율)을 시간에 맞춰 내보낸다(replay.py). 화면은 그대로, 명령은 거절.
 이륙·rc가 허용된 상태로 뜨므로, 실제 기체에서는 주변을 비우고 실행한다. 이륙은 화면에서 주변 확인 뒤에만 된다.
 check_server.py(연결 점검·첫 조작 화면)와 같은 포트를 쓰므로 동시에 켜지 않는다. Tello는 처음 command를 보낸 쪽에만 답한다.
 """
@@ -66,6 +67,10 @@ class ControllerFiles(StaticFiles):
 
 def build_gateway(args):
     fake = None
+    if getattr(args, "replay", None):   # 기록 재생: 기체 없이 회차 폴더를 시간에 맞춰 내보낸다(명령은 모두 거절)
+        from replay import ReplayGateway
+        return ReplayGateway(args.replay, speed=args.replay_speed, loop=args.replay_loop, start_s=args.replay_start,
+                             video=not args.no_video), None
     if args.fake:
         from fake_tello import FakeTello
         fake = FakeTello(cmd_port=18889, state_port=18890, video_port=11112, send_video=not args.no_video)
@@ -80,7 +85,8 @@ def build_gateway(args):
     if not args.no_video:
         from tello_video import TelloVideo
         video = TelloVideo(port=video_port, bind_ip=bind)
-    return Gateway(link, source="fake" if args.fake else "tello", video=video), fake
+    return Gateway(link, source="fake" if args.fake else "tello", video=video,
+                   record_video=not getattr(args, "no_record_video", False)), fake
 
 
 def build_app(args) -> FastAPI:
@@ -305,7 +311,14 @@ def build_app(args) -> FastAPI:
 def main():
     ap = argparse.ArgumentParser(description="드론 게이트웨이 (관제 화면 ↔ Tello)")
     ap.add_argument("--fake", action="store_true", help="드론 없이 가짜 Tello로 실행")
+    ap.add_argument("--replay", metavar="RUN_DIR",
+                    help="기록 재생: 게이트웨이 회차 폴더(data/outputs/tello/<회차>)를 시간에 맞춰 다시 내보낸다. 기체에 붙지 않는다")
+    ap.add_argument("--replay-speed", type=float, default=1.0, help="재생 속도 배율(기본 1)")
+    ap.add_argument("--replay-loop", action="store_true", help="끝나면 처음부터 다시")
+    ap.add_argument("--replay-start", type=float, default=0.0, help="재생 시작 위치(초)")
     ap.add_argument("--no-video", action="store_true", help="영상 수신 끄기")
+    ap.add_argument("--no-record-video", action="store_true",
+                    help="영상 원본을 회차 폴더(video/)에 남기지 않는다. 기본은 영상을 켤 때마다 남긴다(분당 약 10 MB)")
     ap.add_argument("--drone-ip", default=DEFAULT_HOST)
     ap.add_argument("--log-root", default=DEFAULT_LOG_ROOT, help="회차 로그 폴더 (기본: data/outputs/tello)")
     ap.add_argument("--host", default="127.0.0.1", help="폰에서 열려면 0.0.0.0 (같은 망 안에서만)")
@@ -318,8 +331,13 @@ def main():
 
     import uvicorn
     app = build_app(args)
-    print(f"드론 게이트웨이: http://{args.host}:{args.port}  (모드: {'가짜' if args.fake else '실제'})")
-    print(f"회차 로그: {app.state.gateway.link.log.dir}")
+    mode = "기록 재생" if args.replay else "가짜" if args.fake else "실제"
+    print(f"드론 게이트웨이: http://{args.host}:{args.port}  (모드: {mode})")
+    if args.replay:
+        rec = app.state.gateway.rec
+        print(f"재생: {rec.dir} · {rec.t1 - rec.t0:.0f}초 · 영상 조각 {len(rec.parts)}개 · 탐지 {len(rec.dets)}개 (원래 폴더에는 쓰지 않음)")
+    else:
+        print(f"회차 로그: {app.state.gateway.link.log.dir}")
     uvicorn.run(app, host=args.host, port=args.port, log_level="warning")
 
 

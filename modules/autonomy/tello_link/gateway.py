@@ -14,6 +14,8 @@
 - 자율 비행: `autonomy`(autonomy_link.py)가 `/ws/autonomy`로 붙은 자율 하나와 주고받는다(AUTONOMY_BRIDGE_V0_1).
   속도 명령·임무 상태·ack·request는 판정기에 넘기고, 판정기가 내준 `control`을 자율에 보낸다.
   자율에는 Tello 상태 원문(10Hz)과 `flight_status`(바뀔 때 + 1Hz)를 보낸다. 위치·경로·찾은 사람은 화면용으로 들고 있다.
+- 영상 원본 녹화: 영상을 켤 때마다 회차 폴더 video/에 받은 H.264 그대로 한 조각씩 남긴다(video_recorder.py).
+  기록 재생·화면 시험용. `record_video=False`(서버 `--no-record-video`)면 남기지 않는다.
 실행(이륙·착륙·비상 정지, rc 전송, 안전 착륙, 높이 상한, 데드맨)은 실기체로 검증한 FlightController가 그대로 맡는다.
 웹 서버는 gateway_server.py에 있다.
 """
@@ -24,6 +26,7 @@ import threading
 import time
 
 from autonomy_link import AutonomyLink
+from video_recorder import VideoRecorder
 from flight_control import HEIGHT_LIMIT_M, STATE_STALE_S, FlightController
 from detection_inbox import DetectionInbox
 from frame_store import FrameStore
@@ -49,7 +52,8 @@ CLIENTS = ("monitor", "control")
 
 
 class Gateway:
-    def __init__(self, link: TelloLink, *, source: str = "tello", video=None, clock=time.monotonic):
+    def __init__(self, link: TelloLink, *, source: str = "tello", video=None, clock=time.monotonic,
+                 record_video: bool = True):
         if not link.allow_flight:
             raise ValueError("게이트웨이는 allow_flight=True인 TelloLink가 필요하다")
         self.link = link
@@ -86,6 +90,8 @@ class Gateway:
         self._autonomy_state_mono = -1e9
         self._autonomy_status = None            # 마지막으로 보낸 flight_status(시각 뺀 것)
         self._autonomy_status_mono = -1e9
+        # 영상 원본 녹화(회차 폴더 video/). 영상 수신기와 회차 폴더가 있을 때만
+        self.recorder = VideoRecorder(link.log.dir) if record_video and video is not None and link.log else None
 
     # ---------- 수명 ----------
     def start(self) -> "Gateway":
@@ -100,6 +106,9 @@ class Gateway:
         if self._thread:
             self._thread.join(timeout=2)
         self.flight.close()  # 비행 중이면 착륙부터
+        if self.recorder is not None:
+            self._record_video(False)
+            self.recorder.close()
 
     # ---------- 화면 메시지 ----------
     def handle_message(self, msg: dict, client_key: str = "") -> dict | None:
@@ -278,6 +287,9 @@ class Gateway:
                 changed = self._video_on != on
                 if on and changed:
                     self.frames.new_session()
+                    self._record_video(True, reason)
+                elif not on:
+                    self._record_video(False)
                 self._video_on, self._video_reason = on, reason
                 self._video_on_mono = self.clock() if on else None
                 self._video_ground_mono = None
@@ -286,6 +298,18 @@ class Gateway:
                 self._emit({"schema_version": SCHEMA_VERSION, "type": "event", "at": now_iso(), "kind": "video_changed",
                             "detail": {"on": on, "reason": reason}})
             return True, None
+
+    def _record_video(self, on: bool, reason: str | None = None) -> None:
+        """영상을 켜면 새 녹화 조각을 열어 수신기에 붙이고, 끄면 닫는다."""
+        if self.recorder is None or self.video is None:
+            return
+        if on:
+            sink = self.recorder.start_part(self.frames.input_id, reason)
+            self.video.packet_sink = sink
+            self.link.event("gateway_video_record", {"on": sink is not None, "input_id": self.frames.input_id})
+        else:
+            self.video.packet_sink = None
+            self.recorder.end_part()
 
     def video_frame(self) -> tuple[dict | None, str | None]:
         """최신 프레임(JPEG·영상 세션·프레임 번호·수신 시각). 없으면 (None, 이유).
@@ -401,6 +425,7 @@ class Gateway:
             if was_on:
                 self._video_reason = "link_lost"
             self._video_synced = False
+            self._record_video(False)
         if was_on:
             self.link.event("gateway_video", {"on": False, "ok": True, "reason": "link_lost"})
             self._emit({"schema_version": SCHEMA_VERSION, "type": "event", "at": now_iso(), "kind": "video_changed",
