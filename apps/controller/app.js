@@ -14,6 +14,7 @@ const ui = {
   feed: loadPref("controller.feed", "raw") === "ai" ? "ai" : "raw",   // 영상 칸: raw(원본) / ai(사람 탐지 합성 영상). 합성이 끊기면 원본을 보여 준다
   map3d: { mode: loadPref("map-mode", "3d"), host: null, view: null, revision: undefined, loading: false, has: false },  // 3D 점군(지도 연결기)
   mapBig: loadPref("map-big", "0") === "1",   // 지도 칸을 가장 큰 칸(기본 프리셋은 영상)과 바꿔 크게 본다
+  preset: new URLSearchParams(location.search).get("preset") || loadPref("controller.preset", ""),   // 실시간 감독 칸 배치(presets.js)
   console: { frame: null, url: null, slot: null, ro: null, loadedUp: null },   // 지도 콘솔 iframe(placeConsole). loadedUp: 열 때 콘솔 상태
   autonomy: { connected: false, path: null, people: null, pathRev: 0, peopleRev: 0, loading: false, track: [] },  // 자율 지도(/api/autonomy)
 };
@@ -286,7 +287,7 @@ function mapPanel(st, events, track, tall = false) {
   const seg = ui.live && !tall ? `<div class="seg map-mode" role="group" aria-label="지도 보기">
       ${Object.entries(MAP_MODES).map(([m, label]) => `<button data-map-mode="${m}" class="${mode === m ? "on" : ""}" aria-pressed="${mode === m}">${label}</button>`).join("")}</div>
       <a class="map-open" href="#/map" title="지도 파트 콘솔의 진행 상황 화면을 크게 봅니다">지도 콘솔 ↗</a>
-      <button class="map-big" data-map-big aria-pressed="${ui.mapBig}" title="${ui.mapBig ? "지도를 원래 칸으로 되돌립니다" : "지도와 가장 큰 칸의 자리를 바꿔 지도를 크게 봅니다"}">${ui.mapBig ? "⤡ 원래대로" : "⤢ 크게"}</button>` : "";
+      ${!ui.mapCanBig ? "" : `<button class="map-big" data-map-big aria-pressed="${ui.mapBig}" title="${ui.mapBig ? "지도를 원래 칸으로 되돌립니다" : "지도와 가장 큰 칸의 자리를 바꿔 지도를 크게 봅니다"}">${ui.mapBig ? "⤡ 원래대로" : "⤢ 크게"}</button>`}` : "";
   const head = `<header><h2>지도</h2>${src("map")}${mode === "2d" ? chip("경로: 자율 비행", "neutral", "src-inline") : ""}
       <span class="spacer"></span>${seg || `<a class="link" href="${CONSOLE_URL}" target="_blank" rel="noopener">3D 지도 열기 (apps/console)</a>`}</header>`;
   if (mode === "3d") return map3dPanel(st, head);
@@ -587,11 +588,24 @@ const PANELS = {
   video: { name: "영상", render: (c) => videoPanel(c.st, c.events) },
   findings: { name: "발견 목록", render: (c) => detectionList(c.events) },
   map: { name: "지도", render: (c) => mapPanel(c.st, c.events, c.track) },
+  timeline: { name: "비행 기록", render: (c) => timelinePanel(c.track) },
 };
 const PRESETS = window.PRESETS || [];
 
 function livePreset() {
-  return PRESETS[0] || { grid: [12, 6], panels: Object.keys(PANELS).map((id, i) => ({ id, x: 0, y: i * 2, w: 12, h: 2 })) };
+  return PRESETS.find((p) => p.id === ui.preset) || PRESETS[0]
+    || { id: "all", name: "모든 칸", grid: [12, 6], panels: Object.keys(PANELS).map((id, i) => ({ id, x: 0, y: i * 2, w: 12, h: 2 })) };
+}
+
+// 프리셋 바꾸기: 크게 보기는 풀고, 프리셋이 지도 보기(2D/3D)를 정해 두었으면 그것으로 시작한다(그 뒤 바꾸는 건 자유).
+function choosePreset(id) {
+  ui.preset = id;
+  savePref("controller.preset", id);
+  ui.mapBig = false;
+  savePref("map-big", "0");
+  const mode = livePreset().panels.find((c) => c.id === "map")?.mode;
+  if (MAP_MODES[mode]) { ui.map3d.mode = mode; savePref("map-mode", mode); }
+  render();
 }
 
 // 프리셋을 그릴 칸 목록으로: 모르는 칸은 빼고, 격자 밖으로 나간 칸은 안으로 넣는다. o는 좁은 화면에서 쌓는 순서.
@@ -614,7 +628,9 @@ function swapBiggest(cells, id) {
 
 function board(ctx, p) {
   let cells = presetCells(p);
-  if (ui.live && ui.mapBig) cells = swapBiggest(cells, "map");   // 크게 보기 버튼은 게이트웨이 연결 화면에만 있다
+  const m = cells.find((c) => c.id === "map");
+  ui.mapCanBig = !!m && cells.some((c) => c.w * c.h > m.w * m.h);   // 지도가 이미 가장 큰 칸이면 크게 보기 버튼을 숨긴다
+  if (ui.live && ui.mapBig && ui.mapCanBig) cells = swapBiggest(cells, "map");   // 크게 보기 버튼은 게이트웨이 연결 화면에만 있다
   const [cols, rows] = p.grid;
   const layout = cells.map((c) => `${c.id}:${c.x},${c.y},${c.w},${c.h},${c.o}`).join(";");   // 배치가 바뀌면 다시 그린다(render)
   return `<div class="live-main board" data-layout="${esc(layout)}" style="--cols:${cols};--rows:${rows}">${cells.map((c) =>
@@ -650,10 +666,6 @@ function renderReview() {
     ["자율 판정", !st.autonomy_used ? "자율 안 씀" : autonomyOk ? "개입 없음" : `개입 ${st.operator_interventions}회`,
       st.autonomy_used && !autonomyOk ? "자율 성공으로 세지 않음" : ""],
   ];
-  const tl = ui.live
-    ? ui.timeline.map((x) => `<li class="${x.kind}"><time>${esc(x.time)}</time>${esc(x.text)}</li>`).join("")
-    : S.timeline.filter((x) => x.t_s <= (track[track.length - 1]?.t_s ?? 0))
-      .map((x) => `<li class="${x.kind}"><time>${clock(x.t_s)}</time>${esc(x.text)}</li>`).join("");
   return `<section class="summary" data-part="summary" aria-label="임무 요약">${cards.map(([k, v, sub]) => `<div class="metric"><span>${k}</span><b>${v}</b>${sub ? `<small>${sub}</small>` : ""}</div>`).join("")}</section>
     <p class="note">임무 후 보고용 화면입니다. 발견마다 확인·오탐을 정하면 요약에 바로 반영됩니다.</p>
     <div class="review-grid">${detectionList(all, true)}${mapPanel(st, all, track, true)}</div>
@@ -662,9 +674,18 @@ function renderReview() {
         <div class="map3d"><p>팀 지도 화면(<code>apps/console</code>)의 점군·카메라 경로를 여기에 띄울 자리입니다.</p>
         <p class="muted">게이트웨이에 연결하고 지도 연결기를 켜면 여기에 점군이 그려집니다. 단위·좌표계는 지도 쪽 표시를 따릅니다.</p>
         <a class="link" href="http://127.0.0.1:8790/" target="_blank" rel="noopener">3D 지도 열기</a></div></section>`}
-      <section class="panel" data-part="timeline" aria-label="비행 기록"><header><h2>비행 기록</h2>${src("drone")}</header>
-        <ol class="timeline">${tl || '<li class="empty">기록 없음</li>'}</ol></section>
+      ${timelinePanel(track)}
     </div>`;
+}
+
+// 비행 기록: 모드 바뀜·자율 연결·발견·거절 등. 실시간은 게이트웨이 이벤트를 모은 것(최근 200개), 샘플은 지금 시각까지.
+function timelinePanel(track) {
+  const tl = ui.live
+    ? ui.timeline.map((x) => `<li class="${x.kind}"><time>${esc(x.time)}</time>${esc(x.text)}</li>`).join("")
+    : S.timeline.filter((x) => x.t_s <= (track[track.length - 1]?.t_s ?? 0))
+      .map((x) => `<li class="${x.kind}"><time>${clock(x.t_s)}</time>${esc(x.text)}</li>`).join("");
+  return `<section class="panel timeline-panel" data-part="timeline" aria-label="비행 기록"><header><h2>비행 기록</h2>${src("drone")}</header>
+    <ol class="timeline">${tl || '<li class="empty">기록 없음</li>'}</ol></section>`;
 }
 
 function renderControl() {
@@ -715,6 +736,7 @@ function render() {
     ui.view = v;
     document.body.dataset.view = v;
     document.querySelectorAll(".views a").forEach((a) => a.setAttribute("aria-current", a.dataset.view === v ? "page" : "false"));
+    $("#preset-wrap").hidden = v !== "live" || PRESETS.length < 2;   // 프리셋은 실시간 감독 화면만
     app.innerHTML = html;
     ui.cache = { __keys: keys };
     parts.forEach((p) => { ui.cache[p.dataset.part] = p.outerHTML; });
@@ -1071,6 +1093,11 @@ function bindSticks() {
     sel.value = ui.scenario;
     sel.onchange = () => { ui.scenario = sel.value; render(); };
   }
+  // 프리셋 고르기. 고른 뒤 선택 상자에서 포커스를 빼야 WASD 조종 키가 다시 먹는다(선택 상자에 포커스가 가면 조종 입력은 멈춘다).
+  const pick = $("#preset");
+  pick.innerHTML = PRESETS.map((p) => `<option value="${esc(p.id)}" title="${esc(p.note || "")}">${esc(p.name)}</option>`).join("");
+  pick.value = livePreset().id;
+  pick.onchange = () => { choosePreset(pick.value); pick.blur(); };
   window.addEventListener("hashchange", leaveControls);
   window.addEventListener("resize", placeConsole);
   render();
