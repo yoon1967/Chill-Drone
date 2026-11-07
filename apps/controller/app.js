@@ -2,6 +2,7 @@
 // - 게이트웨이(gateway_server.py)가 이 화면을 내주면 /ws/drone으로 실제 상태를 받고 명령을 보낸다(실시간).
 // - 정적 서버로 열거나 주소에 ?sample을 붙이면 계약 형식의 샘플을 그리기만 한다(명령 안 보냄).
 // 화면 3개: #/live(PC 실시간 감독), #/review(임무 후 탐색 결과), #/control(폰 현장 조작).
+// 실시간 감독의 칸 배치는 프리셋(presets.js)을 따른다(PANELS).
 "use strict";
 
 const S = window.SAMPLE;
@@ -12,7 +13,7 @@ const ui = {
   findings: new Map(), lastDet: null, newFindingAt: 0,   // 실시간 사람 탐지: finding_id → 발견, 영상 위 윤곽선용 최근 탐지
   feed: loadPref("controller.feed", "raw") === "ai" ? "ai" : "raw",   // 영상 칸: raw(원본) / ai(사람 탐지 합성 영상). 합성이 끊기면 원본을 보여 준다
   map3d: { mode: loadPref("map-mode", "3d"), host: null, view: null, revision: undefined, loading: false, has: false },  // 3D 점군(지도 연결기)
-  mapBig: loadPref("map-big", "0") === "1",   // 지도 칸을 영상 자리(왼쪽 큰 칸)로 바꿔 크게 본다
+  mapBig: loadPref("map-big", "0") === "1",   // 지도 칸을 가장 큰 칸(기본 프리셋은 영상)과 바꿔 크게 본다
   console: { frame: null, url: null, slot: null, ro: null, loadedUp: null },   // 지도 콘솔 iframe(placeConsole). loadedUp: 열 때 콘솔 상태
   autonomy: { connected: false, path: null, people: null, pathRev: 0, peopleRev: 0, loading: false, track: [] },  // 자율 지도(/api/autonomy)
 };
@@ -85,7 +86,7 @@ function current() {
   const sc = S.scenarios[ui.scenario];
   const events = S.events.slice(0, sc.detections).map((e) => ({ ...e, review: ui.reviews[e.event_id] || "unreviewed" }));
   const tNow = sc.state.mode === "grounded" ? 0 : S.track[S.track.length - 1].t_s;
-  return { sc, st: sc.state, events: events.reverse(), track: S.track.filter((p) => p.t_s <= tNow) };
+  return { sc, st: adapt(sc.state), events: events.reverse(), track: S.track.filter((p) => p.t_s <= tNow) };   // 샘플에 없는 값(overlay 등)도 "없음"으로
 }
 
 // 게이트웨이 발견(finding)을 카드 모양으로. 실시간은 발견 하나가 카드 하나다(같은 사람이 보이는 동안 묶임).
@@ -285,7 +286,7 @@ function mapPanel(st, events, track, tall = false) {
   const seg = ui.live && !tall ? `<div class="seg map-mode" role="group" aria-label="지도 보기">
       ${Object.entries(MAP_MODES).map(([m, label]) => `<button data-map-mode="${m}" class="${mode === m ? "on" : ""}" aria-pressed="${mode === m}">${label}</button>`).join("")}</div>
       <a class="map-open" href="#/map" title="지도 파트 콘솔의 진행 상황 화면을 크게 봅니다">지도 콘솔 ↗</a>
-      <button class="map-big" data-map-big aria-pressed="${ui.mapBig}" title="${ui.mapBig ? "지도를 오른쪽 칸으로 되돌립니다" : "지도와 영상 자리를 바꿔 지도를 크게 봅니다"}">${ui.mapBig ? "⤡ 원래대로" : "⤢ 크게"}</button>` : "";
+      <button class="map-big" data-map-big aria-pressed="${ui.mapBig}" title="${ui.mapBig ? "지도를 원래 칸으로 되돌립니다" : "지도와 가장 큰 칸의 자리를 바꿔 지도를 크게 봅니다"}">${ui.mapBig ? "⤡ 원래대로" : "⤢ 크게"}</button>` : "";
   const head = `<header><h2>지도</h2>${src("map")}${mode === "2d" ? chip("경로: 자율 비행", "neutral", "src-inline") : ""}
       <span class="spacer"></span>${seg || `<a class="link" href="${CONSOLE_URL}" target="_blank" rel="noopener">3D 지도 열기 (apps/console)</a>`}</header>`;
   if (mode === "3d") return map3dPanel(st, head);
@@ -579,14 +580,51 @@ function detailLine(st) {
   return `<p class="detail-line" data-part="detail" title="${esc(SOURCES.drone)}">${detailItems(st).map(([k, v]) => `<span>${k} <b>${esc(v)}</b></span>`).join("")}</p>`;
 }
 
+// ---------- 실시간 감독 칸(패널)과 배치(프리셋) ----------
+// 칸마다 그리는 함수 하나. 어느 칸을 격자 어디에 둘지는 프리셋(presets.js)이 정한다.
+// 상태 줄·알림·조종 줄(착륙·비상 정지)은 칸이 아니다. 어떤 프리셋에서도 격자 밖에 그대로 있다.
+const PANELS = {
+  video: { name: "영상", render: (c) => videoPanel(c.st, c.events) },
+  findings: { name: "발견 목록", render: (c) => detectionList(c.events) },
+  map: { name: "지도", render: (c) => mapPanel(c.st, c.events, c.track) },
+};
+const PRESETS = window.PRESETS || [];
+
+function livePreset() {
+  return PRESETS[0] || { grid: [12, 6], panels: Object.keys(PANELS).map((id, i) => ({ id, x: 0, y: i * 2, w: 12, h: 2 })) };
+}
+
+// 프리셋을 그릴 칸 목록으로: 모르는 칸은 빼고, 격자 밖으로 나간 칸은 안으로 넣는다. o는 좁은 화면에서 쌓는 순서.
+function presetCells(p) {
+  const [cols, rows] = p.grid;
+  const fit = (v, lo, hi) => Math.max(lo, Math.min(hi, Math.round(Number(v) || 0)));
+  return p.panels.filter((c) => PANELS[c.id]).map((c, o) => {
+    const w = fit(c.w, 1, cols), h = fit(c.h, 1, rows);
+    return { id: c.id, x: fit(c.x, 0, cols - w), y: fit(c.y, 0, rows - h), w, h, o };
+  });
+}
+
+// 지도 크게 보기: 지도 칸과 가장 큰 칸의 자리(위치·크기·쌓는 순서)를 바꾼다.
+function swapBiggest(cells, id) {
+  const a = cells.find((c) => c.id === id);
+  const b = cells.filter((c) => c !== a).sort((x, y) => y.w * y.h - x.w * x.h)[0];
+  if (!a || !b || b.w * b.h <= a.w * a.h) return cells;
+  return cells.map((c) => (c === a ? { ...b, id: a.id } : c === b ? { ...a, id: b.id } : c));
+}
+
+function board(ctx, p) {
+  let cells = presetCells(p);
+  if (ui.live && ui.mapBig) cells = swapBiggest(cells, "map");   // 크게 보기 버튼은 게이트웨이 연결 화면에만 있다
+  const [cols, rows] = p.grid;
+  const layout = cells.map((c) => `${c.id}:${c.x},${c.y},${c.w},${c.h},${c.o}`).join(";");   // 배치가 바뀌면 다시 그린다(render)
+  return `<div class="live-main board" data-layout="${esc(layout)}" style="--cols:${cols};--rows:${rows}">${cells.map((c) =>
+    `<div class="cell" data-panel="${c.id}" style="--x:${c.x + 1};--y:${c.y + 1};--w:${c.w};--h:${c.h};--o:${c.o}">${PANELS[c.id].render(ctx)}</div>`).join("")}</div>`;
+}
+
 // ---------- 화면 ----------
 function renderLive() {  // 모니터 한 화면(1366×768 이상)에 스크롤 없이 들어가게 배치한다.
-  const { sc, st, events, track } = current(), big = ui.live && ui.mapBig;   // 크게 보기 버튼은 게이트웨이 연결 화면에만 있다
-  return `${statusStrip(st, events)}${alertBox(sc, events)}
-    <div class="live-main ${big ? "map-big" : ""}">${big   // 크게: 지도가 왼쪽 큰 칸, 영상이 오른쪽 아래 칸
-      ? `${mapPanel(st, events, track)}<div class="side">${detectionList(events)}${videoPanel(st, events)}</div>`
-      : `${videoPanel(st, events)}<div class="side">${detectionList(events)}${mapPanel(st, events, track)}</div>`}</div>
-    ${controlBar(st)}`;
+  const ctx = current();
+  return `${statusStrip(ctx.st, ctx.events)}${alertBox(ctx.sc, ctx.events)}${board(ctx, livePreset())}${controlBar(ctx.st)}`;
 }
 
 // 지도 콘솔 화면: 콘솔을 크게 보되, 상태 줄과 조작 줄(착륙·비상 정지)은 실시간 감독과 같이 둔다.
@@ -671,7 +709,8 @@ function render() {
   const tpl = document.createElement("template");
   tpl.innerHTML = html;
   const parts = [...tpl.content.querySelectorAll("[data-part]")];
-  const keys = parts.map((p) => p.dataset.part).join(",");
+  const layout = tpl.content.querySelector("[data-layout]")?.dataset.layout ?? "";
+  const keys = `${parts.map((p) => p.dataset.part).join(",")}|${layout}`;
   if (ui.view !== v || ui.cache.__keys !== keys) {
     ui.view = v;
     document.body.dataset.view = v;
