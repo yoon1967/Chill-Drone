@@ -122,9 +122,11 @@ body[data-view=control] main{padding-bottom:24px}body[data-view=review] main{pad
 /* 실시간 감독 칸 배치(presets.js 격자). 좁은 화면에서는 프리셋에 적힌 순서(중요한 칸부터)대로 쌓는다 */
 .board>.cell{order:var(--o);display:flex;flex-direction:column;min-width:0;min-height:0}
 .board>.cell>.panel{flex:1}
+.board .timeline{max-height:320px;overflow-y:auto;align-content:start;overscroll-behavior:contain}
 @media (min-width:1100px) and (min-height:700px){
   .live-main.board{grid-template-columns:repeat(var(--cols),minmax(0,1fr));grid-template-rows:repeat(var(--rows),minmax(0,1fr))}
   .board>.cell{grid-column:var(--x)/span var(--w);grid-row:var(--y)/span var(--h)}
+  .board .timeline{flex:1;min-height:0;max-height:none}
 }
 @media (max-width:900px){.review-grid,.review-grid.two{grid-template-columns:1fr}.top{gap:8px;padding:8px 16px}main{padding:12px 16px 120px}}
 @media (max-width:520px){.views a{padding:5px 8px;font-size:13px}.scenario{order:5}.controls{padding:8px 16px}}
