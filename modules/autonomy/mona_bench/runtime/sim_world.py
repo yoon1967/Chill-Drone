@@ -244,7 +244,7 @@ def ros_main():
                               math.degrees(drone.yaw) - DriftMonitor.TELLO_HEADING_DEG)
         if scan is None and elapsed > 2.0:   # route start: look around first (same Scan as the bridge)
             mission.control("start", True, 0.0)
-            scan = Scan(0.0, scan_deg, rate=0.24)   # develop gateway rc limit 30: about 0.24 rad/s (bridge rc compensation)
+            scan = Scan(0.0, scan_deg, rate=0.29)   # develop gateway rc limit 30: about 0.29 rad/s (bridge rc compensation)
         scanning = scan is not None and not scan.done and mission.phase == "running"
         yaw_cmd = scan.yaw_rate(drone.yaw) if scanning else 0.0
         if scan is not None and scan.done and not goal_sent:
