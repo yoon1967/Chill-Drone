@@ -400,15 +400,33 @@ function autonomyMapPanel(st, head, tall) {
 
 // 3D 점군: 캔버스(ui.map3d.host)는 한 번만 만들고 다시 그릴 때마다 이 자리(.map3d-slot)로 옮긴다(attachMap3d).
 // 화면 전체를 0.1초마다 다시 그리므로, 캔버스를 HTML로 다시 만들면 점군을 매번 처음부터 올리게 된다.
+// 지도 칸 상태 [이름, 색, 설명]: 연결기 → 지도 서버 → 지도 세션 → 영상 입력 순으로 본다.
+// 세션이 끝나거나 영상이 끊겨도 받은 점군은 그대로 보여 주고(has) 상태만 바꾼다.
+// 지도 콘솔은 영상이 오래 끊겨 세션을 끝낸 뒤에도 입력 상태를 reconnecting으로 두므로, 세션이 끝났는지를 먼저 본다.
+function mapInfo(m, has) {
+  const ms = m?.mapping_state, lost = ["reconnecting", "failed"].includes(m?.input_state);
+  const videoLost = ["영상 끊겨 지도 끝남", "warning", "영상이 오래 끊겨 지도 콘솔이 지도를 끝냄"];
+  if (!m || !m.alive) return ["지도 연결기 꺼짐", "warning", "지도 서버를 켜고 gateway_map_bridge.py를 실행하면 점군이 들어옵니다."];
+  if (m.upstream === "unreachable") return ["지도 서버 꺼짐", "danger", `${m.source_url || "지도 서버"}에 연결할 수 없습니다.`];
+  if (m.upstream === "error") return ["지도 읽기 오류", "danger", ""];
+  if (ms === "failed") return lost ? videoLost : ["지도 오류로 끝남", "danger", "이유는 지도 콘솔에서 확인"];
+  if (ms === "stopping") return ["지도 마무리 중", "neutral", "지도 콘솔이 마지막 지도를 정리하는 중"];
+  if (["complete", "completed", "stopped", "cancelled"].includes(ms)) return lost ? videoLost : ["지도 끝남", "neutral", "끝난 지도"];
+  if (m.input_state === "reconnecting") {   // 지도 콘솔이 드론 영상을 다시 기다리는 중(곧 돌아오면 같은 세션)
+    return ["영상 기다리는 중", "warning", `영상${m.input_age_s != null ? ` ${Math.round(m.input_age_s)}초째` : ""} 없음 · 곧 돌아오면 같은 지도로 이어짐`];
+  }
+  if (m.upstream === "no_map") {
+    if (ms && !["idle", "offline"].includes(ms)) return ["지도 시작 중", "neutral", "첫 점군을 기다리는 중"];
+    return has ? ["지도 멈춤", "neutral", "진행 중인 지도 없음"] : ["지도 아직 없음", "neutral", `지도 서버 상태: ${ms || "알 수 없음"}`];
+  }
+  return ["지도 수신 중", "success", ""];
+}
+
 function map3dPanel(st, head, cls = "map") {   // cls: 실시간 감독은 지도 칸(map), 탐색 결과는 3D 칸
   const m = st.map, has = ui.map3d.has;
   const unit = m?.unit === "m" ? "m" : "임의 단위(m 아님)";
-  const info = !m || !m.alive ? ["지도 연결기 꺼짐", "warning", "지도 서버를 켜고 gateway_map_bridge.py를 실행하면 점군이 들어옵니다."]
-    : m.upstream === "unreachable" ? ["지도 서버 꺼짐", "danger", `${m.source_url || "지도 서버"}에 연결할 수 없습니다.`]
-    : m.upstream === "no_map" && !has ? ["지도 아직 없음", "neutral", `지도 서버 상태: ${m.mapping_state || "알 수 없음"}`]
-    : m.upstream === "error" ? ["지도 읽기 오류", "danger", ""]
-    : ["지도 수신 중", "success", ""];
-  const detail = has && m ? `버전 ${m.revision ?? "?"} · 점 ${m.points}${m.points_total > m.points ? `/${m.points_total}` : ""} · ${unit}` : info[2];
+  const info = mapInfo(m, has);
+  const detail = has && m ? `버전 ${m.revision ?? "?"} · 점 ${m.points}${m.points_total > m.points ? `/${m.points_total}` : ""} · ${unit}${info[2] ? ` · ${info[2]}` : ""}` : info[2];
   const target = cls === "map" && ui.map3d.editable && m?.points > 0 ? consoleTarget(st) : null;
   const editor = target?.url && new URL("/editor.html?source=supervisor", target.url).href;
   return `<section class="panel ${cls}" data-part="map3d" aria-label="3D 지도">${head}
@@ -482,7 +500,7 @@ function consolePanel(st) {
     : m?.alive && m.upstream === "unreachable" ? ["지도 콘솔 꺼짐", "danger"]
     : m?.alive && m.upstream && m.upstream !== "unreachable" ? ["지도 콘솔 연결", "success"]
     : ["로컬 영상 복원", "neutral"];
-  const state = m?.alive && m.mapping_state ? ` · 지도 상태 ${m.mapping_state}` : "";
+  const state = m?.alive ? ` · ${mapInfo(m, ui.map3d.has)[0]}` : "";   // 지도 칸과 같은 상태 이름(영상 기다리는 중 등)
   return `<section class="panel console-view" aria-label="지도 콘솔">${head}
     <div class="console-slot">${t.url ? "" : `<div class="map-empty">${esc(t.note)}</div>`}</div>
     <div class="map3d-info" data-part="console-info">${chip(info[0], info[1])}

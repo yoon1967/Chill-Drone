@@ -73,6 +73,7 @@ class FakeMap:
         self.path = [(0.0, 9.0 - t * 0.25) for t in range(37)] + [(-0.2 * t, -0.1 * t) for t in range(1, 15)]
         self.lock = threading.Lock()
         self.session = None   # {id, started, lease, revision_at_stop}
+        self.input_state, self.input_age_s = "receiving", 0.0   # 세션 중 영상 입력(시험에서 reconnecting 등으로 바꿈)
 
     def start(self) -> dict:
         with self.lock:
@@ -116,6 +117,8 @@ class FakeMap:
             value = {"schema_version": "mapping-source-state/1.0", "source": "live", "status": status,
                      "mapping_state": status, "session_id": s["id"] if s else None, "segment_id": 0 if s else None,
                      "revision": r, "map_available": r > 0}
+            if s and not s["stopped"]:   # 지도 서버 세션 통계의 영상 입력 상태(input_state·input_age_s)
+                value.update(input_state=self.input_state, input_age_s=self.input_age_s)
             if self.depth and s:   # 깊이 지도: 끝나야 결과가 생긴다
                 value.update(backend="orb_slam3_depth", depth_job_id=f"job_{s['id']}", map_available=bool(s["stopped"]))
             return value

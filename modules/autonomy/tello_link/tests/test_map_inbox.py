@@ -70,6 +70,20 @@ class MapInboxTest(unittest.TestCase):
         self.clock.t += 6
         self.assertFalse(self.inbox.status()["alive"])
 
+    def test_input_state_is_kept_and_odd_values_dropped(self):   # 지도 서버 영상 입력: 화면의 "영상 기다리는 중"
+        self.inbox.receive({**snapshot(), "input_state": "receiving", "input_age_s": 0.04})
+        st = self.inbox.status()
+        self.assertEqual((st["input_state"], st["input_age_s"]), ("receiving", 0.0))
+        status, _ = self.inbox.receive({"schema_version": SCHEMA, "kind": "status", "upstream": "ok",
+                                        "mapping_state": "receiving", "input_state": "reconnecting", "input_age_s": 12.34})
+        st = self.inbox.status()
+        self.assertEqual((status, st["input_state"], st["input_age_s"], st["points"]), (200, "reconnecting", 12.3, 3))
+        status, _ = self.inbox.receive({**snapshot(revision=2), "input_state": ["x"], "input_age_s": -1})
+        st = self.inbox.status()
+        self.assertEqual((status, st["input_state"], st["input_age_s"], st["revision"]), (201, None, None, 2))   # 지도는 받고 이상한 값만 버림
+        self.inbox.receive({"schema_version": SCHEMA, "kind": "status", "upstream": "ok"})   # 예전 연결기(입력 상태 없음)
+        self.assertIsNone(self.inbox.status()["input_state"])
+
     def test_invalid(self):
         bad = snapshot()
         bad["points"][0] = [0, 0, float("nan"), 1, 2, 3]
