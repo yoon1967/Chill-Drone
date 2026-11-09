@@ -13,7 +13,7 @@ from urllib.parse import urlsplit, parse_qs
 
 import numpy as np
 
-ROOT = Path(__file__).resolve().parents[1]
+ROOT = Path(__file__).resolve().parents[3]
 sys.path.insert(0, str(ROOT))
 from modules.mapping.data.point_fusion import SemanticSurface
 from modules.mapping.data.rescue_mapping import unproject, person_points
@@ -125,7 +125,7 @@ def main():
     try:
         with tempfile.TemporaryDirectory(prefix='point-budget-profile-') as temporary:
             report_path = Path(temporary)/'browser.json'
-            subprocess.run(['node',str(ROOT/'scripts/measure_point_budget.mjs'),f'http://127.0.0.1:{server.server_port}',
+            subprocess.run(['node',str(Path(__file__).with_suffix('.mjs')),f'http://127.0.0.1:{server.server_port}',
                             args.playwright_module,str(report_path),','.join(map(str,budgets))],check=True,cwd=ROOT)
             browser = json.loads(report_path.read_text(encoding='utf-8'))
     finally:

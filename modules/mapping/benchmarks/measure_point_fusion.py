@@ -14,7 +14,7 @@ import types
 
 import numpy as np
 
-ROOT = Path(__file__).resolve().parents[1]
+ROOT = Path(__file__).resolve().parents[3]
 sys.path.insert(0, str(ROOT))
 from modules.mapping.data.rescue_mapping import RescueMap, mapping_options, SemanticSurface
 
@@ -80,6 +80,7 @@ def main():
     commit = subprocess.check_output(['git', 'rev-parse', '--verify', args.baseline_ref+'^{commit}'], cwd=ROOT, text=True).strip()
     source = subprocess.check_output(['git', 'show', commit+':modules/mapping/data/rescue_mapping.py'], cwd=ROOT, text=True, encoding='utf-8')
     baseline = types.ModuleType('recorded_fusion_baseline')
+    baseline.__package__ = 'modules.mapping.data'
     exec(compile(source, '<git-fusion-baseline>', 'exec'), baseline.__dict__)
     rows = observations(args.history)
     report = dict(schema_version='point-fusion-profile/1.0', baseline_commit=commit,

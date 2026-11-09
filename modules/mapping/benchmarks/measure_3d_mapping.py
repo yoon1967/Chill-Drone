@@ -243,7 +243,7 @@ def display_history(args, root):
 
 def main():
     parser = argparse.ArgumentParser(description=__doc__)
-    parser.add_argument('--implementation-root', type=Path, default=Path(__file__).resolve().parents[1])
+    parser.add_argument('--implementation-root', type=Path, default=Path(__file__).resolve().parents[3])
     parser.add_argument('--recording', type=Path, help='Original .h264; sibling .jsonl contains UDP packet offsets/times')
     parser.add_argument('--camera', type=Path)
     parser.add_argument('--display-history-root', type=Path, help='Display-only comparison using a real reconstruction/history snapshot')
