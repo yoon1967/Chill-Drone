@@ -10,6 +10,10 @@
 - 깊이 지도(`backend=orb_slam3_depth`, -365): 복원이 끝나야 `map_available`이 켜진다. 그 전에는 상태의 `depth_job_id`로
   지도 화면이 쓰는 진행 중 미리보기 `GET /api/import/preview?id=..&revision=..`을 읽는다(점 행 [x,y,z,r,g,b], 최대 약 1.2만 점).
   읽기만 한다. 화면 표시 확인(`presented`)은 지도 화면 몫이라 보내지 않는다(그래서 지도 화면이 열려 있어야 복원이 다음 프레임으로 간다).
+  복원 중에는 상태를 STATE_EVERY_S(2초)마다만 다시 읽는다. 지도 서버는 상태를 줄 때마다 복원 진행 파일(progress.json)을 읽는데,
+  Windows에서는 읽는 중에 복원 쪽이 그 파일을 바꾸지 못해 세션이 끝난 적이 있다(WinError 5). 미리보기는 그 파일을 읽지 않아 매번 본다.
+- 지도 서버의 영상 입력 상태(`input_state`: receiving·reconnecting·failed 등, `input_age_s`)를 같이 보낸다.
+  관제 화면이 "영상 기다리는 중"을 보이게 하려고.
 
     python modules/autonomy/tello_link/gateway_map_bridge.py                                   # 지도 http://127.0.0.1:8790, 실시간
     python modules/autonomy/tello_link/gateway_map_bridge.py --source saved                    # 저장된 지도 결과
@@ -30,6 +34,7 @@ import urllib.request
 
 SCHEMA = "gateway-map/0.1"
 STATUS_EVERY_S = 2.0
+STATE_EVERY_S = 2.0   # 깊이 지도 복원 중 상태(/state)를 다시 읽는 간격. 미리보기는 매번 본다
 
 
 def get_json(req, timeout: float) -> tuple[int, dict | None]:
@@ -64,7 +69,7 @@ def compact_scene(run: dict, state: dict, map_url: str, source: str, max_points:
     scale = run.get("scale") or {}
     return {
         "schema_version": SCHEMA, "kind": "snapshot", "upstream": "ok", "source_url": map_url,
-        "mapping_state": state.get("mapping_state") or state.get("status"),
+        "mapping_state": state.get("mapping_state") or state.get("status"), **input_of(state),
         "source": {"kind": source, "schema_version": run.get("schema_version"), "input_run_id": run.get("input_run_id"),
                    "session_id": state.get("session_id") or (run.get("stream") or {}).get("session_id"),
                    "segment_id": run.get("segment_id"), "revision": run.get("revision", state.get("revision")),
@@ -106,7 +111,7 @@ def compact_preview(preview: dict, state: dict, map_url: str, max_points: int) -
     pose_source = preview.get("pose_source") or ("tello_sensor_rgbd" if metric else "orb_slam3")
     return {
         "schema_version": SCHEMA, "kind": "snapshot", "upstream": "ok", "source_url": map_url,
-        "mapping_state": state.get("mapping_state") or state.get("status"),
+        "mapping_state": state.get("mapping_state") or state.get("status"), **input_of(state),
         "source": {"kind": "live", "schema_version": "live-depth-preview", "input_run_id": state.get("session_id"),
                    "session_id": state.get("session_id"), "segment_id": preview.get("map_id"),
                    "revision": preview.get("revision"), "pose_source": pose_source,
@@ -115,6 +120,14 @@ def compact_preview(preview: dict, state: dict, map_url: str, max_points: int) -
         "points": points, "points_total": total if _finite(total) else len(rows), "cameras": cameras,
         "up": _up_from([preview.get("pose_rotation")]) or [0.0, -1.0, 0.0],
     }
+
+
+def input_of(state: dict | None) -> dict:
+    """지도 서버 상태의 영상 입력(Tello 입력이 받는 중인지, 다시 연결을 기다리는지). 없으면 None."""
+    state = state or {}
+    kind, age = state.get("input_state"), state.get("input_age_s")
+    return {"input_state": kind if isinstance(kind, str) and len(kind) <= 32 else None,
+            "input_age_s": round(age, 1) if _finite(age) and age >= 0 else None}
 
 
 def _finite(v) -> bool:
@@ -135,67 +148,85 @@ class MapBridge:
         self.deliver, self.source, self.max_points, self.log, self.clock = deliver, source, max_points, log, clock
         self.last_key = None
         self._preview = (None, 0)   # (깊이 작업 번호, 마지막으로 보낸 미리보기 버전)
+        self._depth = (None, -1e9)  # 깊이 지도 복원 중 마지막 상태와 읽은 시각(STATE_EVERY_S 안에는 상태를 다시 읽지 않음)
         self._last_status, self._last_said = -1e9, None
 
-    def _tell(self, upstream: str, detail=None, mapping_state=None) -> None:
-        if self.clock() - self._last_status < STATUS_EVERY_S and upstream == self._last_said:
+    @staticmethod
+    def _said(upstream: str, state: dict | None) -> tuple:
+        state = state or {}
+        return upstream, state.get("mapping_state") or state.get("status"), input_of(state)["input_state"]
+
+    def _tell(self, upstream: str, detail=None, state: dict | None = None) -> None:
+        """지도 서버 상태를 알린다. 같은 내용은 STATUS_EVERY_S마다, 지도·영상 입력 상태가 바뀌면 바로."""
+        said = self._said(upstream, state)
+        if self.clock() - self._last_status < STATUS_EVERY_S and said == self._last_said:
             return
-        self._last_status, self._last_said = self.clock(), upstream
-        self.deliver({"schema_version": SCHEMA, "kind": "status", "upstream": upstream,
-                      "source_url": self.base, "mapping_state": mapping_state, "detail": detail})
+        self._last_status, self._last_said = self.clock(), said
+        self.deliver({"schema_version": SCHEMA, "kind": "status", "upstream": upstream, "source_url": self.base,
+                      "mapping_state": said[1], **input_of(state), "detail": detail})
 
     def poll_once(self) -> None:
+        state, read_at = self._depth
+        if state is not None and self.clock() - read_at < STATE_EVERY_S and not self._poll_preview(state):
+            return   # 복원 중: 상태는 STATE_EVERY_S마다만 다시 읽는다(복원이 끝났거나 작업이 바뀌면 바로 읽음)
+        self._depth = (None, -1e9)
         try:
             code, state = get_json(self.api + "/state", timeout=3)
         except OSError as e:
             return self._tell("unreachable", str(e))
         state = state or {}
-        mstate = state.get("mapping_state") or state.get("status")
         if code == 200 and not state.get("map_available") and self.source == "live" and state.get("depth_job_id"):
-            return self._poll_preview(state, mstate)
+            self._depth = (state, self.clock())
+            self._poll_preview(state)
+            return
         if code != 200 or not state.get("map_available"):
-            return self._tell("no_map", f"HTTP {code}" if code != 200 else None, mstate)
+            return self._tell("no_map", f"HTTP {code}" if code != 200 else None, state)
         key = (state.get("session_id"), state.get("segment_id"), state.get("revision"))   # 저장 결과는 늘 버전 0 → 한 번만 읽음
         if key == self.last_key:
-            return self._tell("ok", None, mstate)
+            return self._tell("ok", None, state)
         try:
             code, scene = get_json(self.api + "/run", timeout=15)
         except OSError as e:
-            return self._tell("unreachable", str(e), mstate)
+            return self._tell("unreachable", str(e), state)
         if code != 200 or not scene or scene.get("points") is None:
-            return self._tell("no_map", f"run HTTP {code}", mstate)
+            return self._tell("no_map", f"run HTTP {code}", state)
         msg = compact_scene(scene, state, self.base, self.source, self.max_points)
         code, out = self.deliver(msg)
         if code in (200, 201):
             self.last_key = key
-            self._last_status, self._last_said = self.clock(), "ok"
+            self._last_status, self._last_said = self.clock(), self._said("ok", state)
             self.log(f"버전 {msg['source']['revision']} · 점 {len(msg['points'])}/{msg['points_total']} · "
                      f"카메라 {len(msg['cameras'])} · {msg['scale']['unit']} → {code}")
         else:
             self.log(f"게이트웨이 거절 {code}: {out}")
 
-    def _poll_preview(self, state: dict, mstate) -> None:
-        """깊이 지도 복원 중: 지도 화면과 같은 미리보기를 읽어 새 버전이면 보낸다."""
+    def _poll_preview(self, state: dict) -> bool:
+        """깊이 지도 복원 중: 지도 화면과 같은 미리보기를 읽어 새 버전이면 보낸다.
+        복원이 끝났거나(done) 작업을 못 찾으면 True(상태를 바로 다시 읽어 최종 지도·새 세션으로 넘어가게)."""
         job = str(state["depth_job_id"])
         since = self._preview[1] if self._preview[0] == job else 0
         url = f"{self.base}/api/import/preview?" + urllib.parse.urlencode({"id": job, "revision": since})
         try:
             code, prev = get_json(url, timeout=10)
         except OSError as e:
-            return self._tell("unreachable", str(e), mstate)
+            self._tell("unreachable", str(e), state)
+            return False
         if code != 200 or not prev:
-            return self._tell("no_map", f"preview HTTP {code}", mstate)
+            self._tell("no_map", f"preview HTTP {code}", state)
+            return True
         if prev.get("unchanged") or prev.get("waiting") or not prev.get("points"):
-            return self._tell("ok" if self._preview[0] == job else "no_map", None, mstate)
+            self._tell("ok" if self._preview[0] == job else "no_map", None, state)
+            return bool(prev.get("done"))
         msg = compact_preview(prev, state, self.base, self.max_points)
         code, out = self.deliver(msg)
         if code in (200, 201):
             self._preview = (job, int(prev.get("revision") or 0))
-            self._last_status, self._last_said = self.clock(), "ok"
+            self._last_status, self._last_said = self.clock(), self._said("ok", state)
             self.log(f"복원 중 버전 {msg['source']['revision']} · 점 {len(msg['points'])}/{msg['points_total']} · "
                      f"카메라 {len(msg['cameras'])} · 추적 {prev.get('tracking')} → {code}")
         else:
             self.log(f"게이트웨이 거절 {code}: {out}")
+        return bool(prev.get("done"))
 
     def run_forever(self, interval: float, stop=None) -> None:
         """stop: threading.Event 또는 None(Ctrl+C까지)."""

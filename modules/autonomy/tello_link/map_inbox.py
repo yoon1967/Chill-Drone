@@ -5,6 +5,8 @@
 (지도 표시 좌표 그대로, 단위는 `scale.unit`. 온라인 지도는 보통 `arbitrary` = m가 아님).
 - kind `snapshot`: 새 지도 버전. 최신 하나만 메모리에 든다. 화면에는 WS로 알림(`map`)만 보내고 점군은 GET /api/map으로 읽게 한다.
 - kind `status`: 연결기가 본 지도 서버 상태(꺼짐·지도 없음·동작 중). 버전이 안 바뀌어도 연결기가 살아 있다는 근거.
+- 두 kind 모두 지도 서버의 영상 입력 상태(`input_state`·`input_age_s`, 없어도 됨)를 실을 수 있다. 화면의 "영상 기다리는 중" 표시용.
+  모르는 값은 버리고(None) 지도는 그대로 받는다.
 회차 폴더: map/latest.json(덮어씀), map_updates.jsonl(버전마다 한 줄: 시각·버전·점 수·출처·저장 파일),
 map/snapshots/NNNN_rev<버전>.json.gz(지도가 자라는 과정. 5초에 한 번 + 형식·세션·구간이 바뀔 때. 기록 재생용).
 """
@@ -58,7 +60,8 @@ class MapInbox:
         now = self.clock()
         with self._lock:
             self._last_mono = now
-            self._upstream = {k: msg.get(k) for k in ("upstream", "source_url", "mapping_state", "detail")}
+            self._upstream = {**{k: msg.get(k) for k in ("upstream", "source_url", "mapping_state", "detail")},
+                              **_input(msg)}
             if kind == "status":
                 return 200, {"ok": True}
             src = msg["source"]
@@ -95,6 +98,8 @@ class MapInbox:
                 "last_message_age_s": None if last is None else round(now - last, 2),
                 "upstream": up.get("upstream"),
                 "mapping_state": up.get("mapping_state"),
+                "input_state": up.get("input_state"),     # 지도 서버의 영상 입력: receiving·reconnecting·failed 등(모르면 None)
+                "input_age_s": up.get("input_age_s"),     # 마지막 영상 뒤 지난 초(연결기가 읽은 때 기준)
                 "source_url": up.get("source_url"),
                 "revision": src.get("revision"),
                 "segment_id": src.get("segment_id"),
@@ -154,6 +159,13 @@ def _check(msg) -> str:
     if up is not None and (not isinstance(up, list) or len(up) != 3 or not all(_num(v) for v in up)):
         raise ValueError("invalid_up")
     return kind
+
+
+def _input(msg: dict) -> dict:
+    """영상 입력 상태는 표시용이라 이상한 값은 버린다(지도는 그대로 받음)."""
+    kind, age = msg.get("input_state"), msg.get("input_age_s")
+    return {"input_state": kind if isinstance(kind, str) and 0 < len(kind) <= 32 else None,
+            "input_age_s": round(age, 1) if _num(age) and age >= 0 else None}
 
 
 def _num(v) -> bool:
