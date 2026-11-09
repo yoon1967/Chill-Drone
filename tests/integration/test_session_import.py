@@ -379,7 +379,7 @@ class SessionImportTests(unittest.TestCase):
         def run(_source, output, options, stop_event, on_preview):
             self.assertTrue(options['causal_video'])
             self.assertFalse(options['all_video_frames'])
-            self.assertEqual(options['sample_fps'], 3)
+            self.assertEqual(options['sample_fps'], 5)
             for revision in (1, 2):
                 on_preview({'revision': revision, 'points': [], 'cameras': []})
             make_reconstruction(output)
@@ -535,7 +535,7 @@ class SessionImportTests(unittest.TestCase):
         summary = {'kind': 'video', 'source_fps': 29.97}
         options = {'confirmed': True, 'mode': 'depth_rgbd', 'causal_video': True}
         default = validate_options(options, summary)
-        self.assertEqual((default['sample_fps'], default['frame_fps']), (3, 29.97))
+        self.assertEqual((default['sample_fps'], default['frame_fps']), (5, 29.97))
         self.assertEqual(validate_options({**options, 'sample_fps': 4.5}, summary)['sample_fps'], 4.5)
 
     def test_default_depth_import_preserves_cumulative_preview_option(self):
