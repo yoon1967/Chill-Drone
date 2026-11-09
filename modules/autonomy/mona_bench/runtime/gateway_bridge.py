@@ -154,7 +154,10 @@ class Mission:
     def path_ok(self, points):
         """Plans that must not be flown; the caller hovers until a replan that is fine.
         - leaving the flight height (over or under an obstacle): the PID has no vertical speed, so it would fly
-          the plan level and hit what the plan went around;
+          the plan level and hit what the plan went around. Measured from the plan's own start, not the goal:
+          SLAM height drifts with distance (hand-held 11/09: 4 m level walk, ToF 0.97-1.00 m, SLAM z +0.6 m). Replans
+          start on the previous trajectory and keep its height, but a new plan from the drone's (drifted) pose would
+          count as leaving the goal height (sim with height drift: same result either way, only replans);
         - swinging more than side_limit off the route line: unseen space counts as free for the planner,
           and replays swung up to 6 m sideways, through where side walls would be indoors;
         - ending more than GOAL_MOVED_MAX_M to the side of the route line or past the goal: the planner moved the
@@ -162,7 +165,7 @@ class Mission:
           short of a blocked goal (sim: (2.0, -1.2) for (3, 0)) is fine; the planner moves the goal and replans."""
         if self.goal is None or not points:
             return True
-        if max(abs(p[2] - self.goal[2]) for p in points) > PATH_HEIGHT_LIMIT_M:
+        if max(abs(p[2] - points[0][2]) for p in points) > PATH_HEIGHT_LIMIT_M:
             return False
         end = points[-1]
         if self.side_offset(end) > GOAL_MOVED_MAX_M or self.along(end) > self.along(self.goal) + GOAL_MOVED_MAX_M:
@@ -353,6 +356,33 @@ class RcCompensation:
                     vx_mps=self._axis(cmd["vx_mps"], TELLO_RC_MIN_LIN, TELLO_K_LIN, MIN_CMD_MPS, self.k_lin),
                     vy_mps=self._axis(cmd["vy_mps"], TELLO_RC_MIN_LIN, TELLO_K_LIN, MIN_CMD_MPS, self.k_lin),
                     yaw_rate_rps=self._axis(cmd["yaw_rate_rps"], TELLO_RC_MIN_YAW, TELLO_K_YAW, MIN_CMD_RPS, self.k_yaw))
+
+
+ROUTE_FORWARD_RANGE_M = (0.5, 6.0)
+
+
+def route_forward_m(goal, default):
+    """Forward distance for this route: the gateway's control start carries the operator's auto_start goal unchanged
+    (develop gateway); {"forward_m": 2} picks the distance per start. Anything else keeps ~goal_forward_m."""
+    value = goal.get("forward_m") if isinstance(goal, dict) else None
+    if isinstance(value, (int, float)) and not isinstance(value, bool) and math.isfinite(value)             and ROUTE_FORWARD_RANGE_M[0] <= value <= ROUTE_FORWARD_RANGE_M[1]:
+        return float(value)
+    return default
+
+
+def tello_yaw_ccw(yaw_deg):
+    """Tello state yaw (deg, clockwise +; rc calibration 11/09: yaw rc + -> yaw up) -> rad, counter-clockwise +."""
+    return wrap_angle(-math.radians(yaw_deg))
+
+
+def scan_yaw(source, tello_yaw, tello_age_s, slam_yaw, slam_age_s):
+    """Yaw to steer the look-around with, from the source chosen at its start, or None while that source is stale.
+    The Tello's yaw (IMU) keeps the turn going when SLAM loses tracking: hand-held 11/09 the camera saw only a plain
+    wooden wall at about +40 deg (ORB features 1000 -> 2-23) and SLAM gave no pose for about 7 s; on SLAM yaw the
+    turn stopped there until the 45 s limit failed the route."""
+    if source == "tello":
+        return tello_yaw if tello_yaw is not None and tello_age_s <= POSE_FRESH_S else None
+    return slam_yaw if slam_yaw is not None and slam_age_s <= POSE_FRESH_S else None
 
 
 def body_command(candidate, candidate_age_s, pose_age_s, yaw, limit):
@@ -562,7 +592,8 @@ def ros_main():
     max_speed = float(rospy.get_param("~max_speed", MAX_SPEED_MPS))
     shared = dict(ws=None, limit=max_speed, mode=None, odom=None, odom_t=None, cmd=None, cmd_t=None, path=None, path_sent=None,
                   frame_t=None, gateway_state=None, video_seen=False, path_bad_since=None, scan=None,
-                  route_start=None, scan_t=0.0, rc=RcCompensation(), scan_rate=0.35, land_sent=False)
+                  route_start=None, scan_t=0.0, rc=RcCompensation(), scan_rate=0.35, land_sent=False,
+                  tello_yaw=None, tello_yaw_t=None, scan_source=None, route_forward_m=forward_m)
     image_pub = rospy.Publisher("/tello/image_raw", Image, queue_size=1)
     tof_pub = rospy.Publisher("/tello/tof_btm", Range, queue_size=5)
     goal_pub = rospy.Publisher("/waypoint_generator/waypoints", PathMsg, queue_size=1, latch=True)
@@ -589,16 +620,20 @@ def ros_main():
         q = odom.pose.pose.orientation
         shared["route_start"], shared["scan_t"] = odom, time.monotonic()
         shared["land_sent"] = False
-        shared["scan"] = Scan(yaw_of(q.x, q.y, q.z, q.w), scan_deg, rate=shared["scan_rate"])
+        now = time.monotonic()
+        tello_fresh = shared["tello_yaw"] is not None and now - shared["tello_yaw_t"] <= POSE_FRESH_S
+        shared["scan_source"] = "tello" if tello_fresh else "slam"
+        start_yaw = shared["tello_yaw"] if tello_fresh else yaw_of(q.x, q.y, q.z, q.w)
+        shared["scan"] = Scan(start_yaw, scan_deg, rate=shared["scan_rate"])
         mission.state = "SCAN" if not shared["scan"].done else "FOLLOW"
         if shared["scan"].done:
             publish_goal(odom)
         else:
-            rospy.loginfo("looking around +-%.0f deg before the route", scan_deg)
+            rospy.loginfo("looking around +-%.0f deg before the route (yaw from %s)", scan_deg, shared["scan_source"])
 
     def publish_goal(odom):
         p, q = odom.pose.pose.position, odom.pose.pose.orientation
-        goal, _ = forward_goal((p.x, p.y, p.z), (q.x, q.y, q.z, q.w), forward_m)
+        goal, _ = forward_goal((p.x, p.y, p.z), (q.x, q.y, q.z, q.w), shared["route_forward_m"])
         message = PathMsg()
         message.header.stamp = rospy.Time.now()
         message.header.frame_id = "map"
@@ -610,7 +645,7 @@ def ros_main():
         goal_pub.publish(message)
         mission.goal = [round(v, 3) for v in goal]
         mission.start = [round(p.x, 3), round(p.y, 3), round(p.z, 3)]
-        rospy.loginfo("route goal %.2f m ahead at %s (map)", forward_m, mission.goal)
+        rospy.loginfo("route goal %.2f m ahead at %s (map)", shared["route_forward_m"], mission.goal)
 
     def on_gateway(msg):
         kind = msg.get("type")
@@ -633,6 +668,8 @@ def ros_main():
             if isinstance(fields.get("vgx"), float) and isinstance(fields.get("vgy"), float):
                 yaw = fields.get("yaw")
                 drift.add_vps(time.monotonic(), fields["vgx"], fields["vgy"], yaw if isinstance(yaw, float) else None)
+            if isinstance(fields.get("yaw"), float):
+                shared["tello_yaw"], shared["tello_yaw_t"] = tello_yaw_ccw(fields["yaw"]), time.monotonic()
             height = bottom_tof_m(fields)
             if height is None:
                 stats.count("tof_invalid")
@@ -656,6 +693,7 @@ def ros_main():
             ok, reason = mission.control(msg.get("cmd"), pose_ready(),
                                          None if odom is None else odom.pose.pose.position.z)
             if ok and msg.get("cmd") == "start" and not was_running:
+                shared["route_forward_m"] = route_forward_m(msg.get("goal"), forward_m)
                 begin_route()
             rospy.loginfo("control %s -> %s", msg.get("cmd"), "ok" if ok else reason)
             send({"type": "ack", "id": msg.get("id"), "ok": ok, "reason": reason})
@@ -810,8 +848,10 @@ def ros_main():
             rospy.logwarn("look-around did not finish in %.0f s; route failed", SCAN_LIMIT_S)
             scanning = False
         if scanning:
-            fresh = yaw is not None and now - (shared["odom_t"] or -1e9) <= POSE_FRESH_S
-            rate_cmd = scan.yaw_rate(yaw) if fresh else 0.0
+            steer = scan_yaw(shared["scan_source"], shared["tello_yaw"], now - (shared["tello_yaw_t"] or -1e9),
+                             yaw, now - (shared["odom_t"] or -1e9))
+            fresh = steer is not None
+            rate_cmd = scan.yaw_rate(steer) if fresh else 0.0
             if scan.done:   # back facing the start direction: the map has the sides now, plan the route
                 mission.state = "FOLLOW"
                 publish_goal(shared["route_start"])

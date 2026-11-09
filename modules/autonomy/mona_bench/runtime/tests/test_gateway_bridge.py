@@ -4,7 +4,8 @@ import sys
 import unittest
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
-from gateway_bridge import (DriftMonitor, Mission, RcCompensation, Scan, body_command, bottom_tof_m, clamp_xy, classify_gateway, map_to_body,
+from gateway_bridge import (DriftMonitor, Mission, RcCompensation, Scan, route_forward_m, scan_yaw,
+                            tello_yaw_ccw, body_command, bottom_tof_m, clamp_xy, classify_gateway, map_to_body,
                             parse_tello_raw, screen_url, status_line, video_action, yaw_of)
 
 RAW = ("mid:-1;x:-100;y:-100;z:-100;mpry:0,0,0;pitch:-8;roll:1;yaw:54;vgx:0;vgy:0;vgz:0;templ:62;temph:65;"
@@ -182,6 +183,30 @@ class RcCompensationTests(unittest.TestCase):
         self.assertIsNone(comp.max_speed())
 
 
+class RouteForwardTests(unittest.TestCase):
+    def test_start_goal_picks_the_distance(self):
+        self.assertEqual(route_forward_m({"forward_m": 2}, 5.0), 2.0)
+        self.assertEqual(route_forward_m({"forward_m": 4.0}, 5.0), 4.0)
+
+    def test_anything_else_keeps_the_default(self):
+        for goal in (None, {}, {"forward_m": 0.2}, {"forward_m": 9}, {"forward_m": "4"}, {"forward_m": True},
+                     {"x_m": 1.0}, [4]):
+            self.assertEqual(route_forward_m(goal, 5.0), 5.0, goal)
+
+
+class ScanYawTests(unittest.TestCase):
+    def test_tello_yaw_is_clockwise_positive(self):
+        self.assertAlmostEqual(tello_yaw_ccw(90.0), -math.pi / 2)    # turned right 90 deg = -90 deg CCW
+        self.assertAlmostEqual(tello_yaw_ccw(-30.0), math.radians(30))
+
+    def test_source_chosen_at_start_is_kept(self):
+        # SLAM lost on a plain wall: the Tello yaw still steers
+        self.assertEqual(scan_yaw("tello", 0.7, 0.1, None, 5.0), 0.7)
+        self.assertIsNone(scan_yaw("tello", 0.7, 2.0, 0.3, 0.1))      # Tello state stale: stop, do not switch frames
+        self.assertEqual(scan_yaw("slam", 0.7, 0.1, 0.3, 0.1), 0.3)
+        self.assertIsNone(scan_yaw("slam", 0.7, 0.1, 0.3, 2.0))
+
+
 class ScanTests(unittest.TestCase):
     def run_scan(self, start, dt=0.1, steps=600):
         scan, yaw, seen = Scan(start, 60.0), start, []
@@ -255,6 +280,14 @@ class MissionTests(unittest.TestCase):
         msg = mission.message()
         self.assertEqual((msg["phase"], msg["reason"]), ("failed", "path_leaves_flight_height"))
         self.assertTrue(Mission().path_ok([[0.0, 0.0, 9.0]]))   # no goal yet
+
+    def test_slam_height_drift_does_not_block_level_plans(self):
+        # hand-held 11/09: 4 m level walk, ToF constant, SLAM z +0.6 m by the end; plans start at the drifted height
+        mission = Mission()
+        mission.control("start", True)
+        mission.goal = [4.0, 0.0, 0.0]
+        self.assertTrue(mission.path_ok([[3.0, 0.0, 0.62], [3.5, 0.0, 0.62], [4.0, 0.0, 0.62]]))
+        self.assertFalse(mission.path_ok([[3.0, 0.0, 0.62], [3.5, 0.0, 1.3], [4.0, 0.0, 0.62]]))   # over, from there
 
     def test_plan_swinging_far_off_the_route_line_is_not_flown(self):
         mission = Mission()
