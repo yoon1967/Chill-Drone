@@ -234,14 +234,14 @@ class MappingControlTest(GatewayCase):
 
 
 class GatewayVideoTest(GatewayCase):
-    """영상은 자동으로 켜지 않는다: 화면 요청·이륙 시 켜고, 지상에서 오래 켜져 있으면 경고 후 끈다."""
+    """영상은 자동으로 켜지 않는다: 화면 요청·이륙 시 켜고, 지상에서 오래 켜져 있으면 경고한다(끄지는 않음)."""
     def make_video(self):
         self.video = StubVideo()
         return self.video
 
     def setUp(self):
         self._saved = (gateway.VIDEO_GROUND_WARN_S, gateway.VIDEO_GROUND_OFF_S)
-        gateway.VIDEO_GROUND_WARN_S, gateway.VIDEO_GROUND_OFF_S = 0.5, 1.0
+        gateway.VIDEO_GROUND_WARN_S = 0.5   # 자동 끄기는 기본값(None, 끄지 않음) 그대로
         super().setUp()
 
     def tearDown(self):
@@ -283,7 +283,20 @@ class GatewayVideoTest(GatewayCase):
         self.assertTrue(st["video"]["on"])
         self.assertIsNone(st["video"]["ground_s"])
 
-    def test_ground_timeout_turns_video_off(self):
+    def test_ground_video_only_warns_and_stays_on(self):
+        self.assertTrue(self.cmd("video_on")["ok"])
+        self.assertTrue(wait_until(lambda: "video_on_ground" in self.gw.drone_state()["warnings"], timeout=2))
+        time.sleep(1.5)   # 예전 자동 끄기(시험에서 1초)보다 오래
+        st = self.gw.drone_state()
+        self.assertTrue(st["video"]["on"])
+        self.assertIsNone(st["video"]["ground_off_s"])
+        self.assertIn("video_on_ground", st["warnings"])
+        self.assertEqual(self.video_cmds()[-1], "streamon")
+        self.assertNotIn({"on": False, "reason": "ground_timeout"},
+                         [m["detail"] for m in self.sent if m.get("kind") == "video_changed"])
+
+    def test_ground_timeout_turns_video_off_when_configured(self):
+        gateway.VIDEO_GROUND_OFF_S = 1.0   # 값을 정하면 예전처럼 끈다(tearDown이 되돌림)
         self.assertTrue(self.cmd("video_on")["ok"])
         self.assertTrue(wait_until(lambda: "video_on_ground" in self.gw.drone_state()["warnings"], timeout=2))
         self.assertTrue(self.gw.drone_state()["video"]["on"])

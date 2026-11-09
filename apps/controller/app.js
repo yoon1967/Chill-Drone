@@ -172,7 +172,9 @@ function videoControl(st) {
   const on = v.on ?? !!v.available;  // 샘플에는 on이 없다
   const [text, tone] = v.enabled === false ? ["영상 수신 안 함", "neutral"]
     : !on ? ["영상 꺼짐", "neutral"]
-    : v.ground_s != null ? [`지상 ${Math.round(v.ground_s)}초 · ${Math.round(v.ground_off_s)}초에 꺼짐`, st.warnings.includes("video_on_ground") ? "warning" : "neutral"]
+    : v.ground_s != null ? [v.ground_off_s != null ? `지상 ${Math.round(v.ground_s)}초 · ${Math.round(v.ground_off_s)}초에 꺼짐`
+        : `지상 ${Math.round(v.ground_s)}초 켜짐${st.warnings.includes("video_on_ground") ? " · 발열 주의" : ""}`,
+      st.warnings.includes("video_on_ground") ? "warning" : "neutral"]
     : ["영상 켜짐", "success"];
   const name = on ? "video_off" : "video_on";
   const off = v.enabled === false || (on && st.mapping_console_url &&
