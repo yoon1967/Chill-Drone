@@ -5,7 +5,7 @@ import unittest
 import numpy as np
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
-from floor_filter import remove_floor
+from floor_filter import HoldBuffer, remove_floor
 
 FX = FY = 630.0
 CX, CY = 320.0, 240.0
@@ -63,6 +63,26 @@ class FloorFilterTests(unittest.TestCase):
         out, _ = remove_floor(depth, FX, FY, CX, CY, np.random.default_rng(4))
         self.assertEqual(out[0, 0], 0)
         self.assertTrue(np.all(np.isfinite(out)))
+
+
+class HoldBufferTests(unittest.TestCase):
+    def test_frames_go_out_after_the_delay(self):
+        buf = HoldBuffer(0.3)
+        buf.push(0.0, 100.0, "a")
+        self.assertEqual(buf.ready(0.2), [])
+        self.assertEqual(buf.ready(0.31), ["a"])
+
+    def test_jump_drops_buffered_and_new_frames_from_its_stamp(self):
+        buf = HoldBuffer(0.3)
+        for i in range(4):                         # stamps 100.0 .. 100.3, received 0.0 .. 0.3
+            buf.push(0.1 * i, 100.0 + 0.1 * i, i)
+        buf.set_hold(100.2)                         # bridge saw the jump on the frame stamped 100.2
+        buf.push(0.4, 100.4, 4)
+        self.assertEqual(buf.ready(1.0), [0, 1])
+        self.assertEqual(buf.dropped, 3)
+        buf.set_hold(0.0)                           # hold over: new frames go to the map again
+        buf.push(2.0, 102.0, 5)
+        self.assertEqual(buf.ready(2.4), [5])
 
 
 if __name__ == "__main__":

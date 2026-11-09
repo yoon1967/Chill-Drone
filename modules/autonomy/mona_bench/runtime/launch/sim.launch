@@ -6,7 +6,7 @@
   <arg name="scenario_file"/>
   <arg name="result"/>
   <arg name="ctrl_pt_dist" default="0.1"/>
-  <arg name="plan_max_vel" default="0.2"/>
+  <arg name="plan_max_vel" default="0.25"/>
   <include file="$(find mona_integration)/launch/planner.launch">
     <arg name="ctrl_pt_dist" value="$(arg ctrl_pt_dist)"/>
     <arg name="plan_max_vel" value="$(arg plan_max_vel)"/>

@@ -55,6 +55,9 @@ indoor4m = [   # MONA_SIM_SET=indoor4m: 4 m forward in a 6 x 4 m room (goal 1 m 
     dict(name="room6x4_person_1m_fast_x1.3", boxes=room(front=5.0) + [person(1.0)], speed_gain=1.3),
     # SLAM height drift (hand-held 11/09: +0.6 m over a 4 m level walk; about 0.035 m/s at 0.2 m/s)
     dict(name="room6x4_person_1m_slam_z_drift", boxes=room(front=5.0) + [person(1.0)], pose_drift_mps=[0.0, 0.0, 0.035]),
+    # SLAM jump like flight 11/09 (0.55 m sideways for 1.1 s): during the look-around and on the way
+    dict(name="room6x4_person_1m_jump_scan", boxes=room(front=5.0) + [person(1.0)], pose_jump=[20.0, 1.1, -0.55, -0.1]),
+    dict(name="room6x4_person_1m_jump_route", boxes=room(front=5.0) + [person(1.0)], pose_jump=[38.0, 1.1, -0.55, -0.1]),
 ]
 sets = {"person": people, "indoor": indoor, "indoor4m": indoor4m}
 scenarios = sets[os.environ["MONA_SIM_SET"]] if os.environ.get("MONA_SIM_SET") in sets else [
@@ -80,7 +83,7 @@ export OPENBLAS_NUM_THREADS=1
 for scenario in "$run_dir"/*.scenario.json; do
     name="$(basename "$scenario" .scenario.json)"
     roslaunch mona_integration sim.launch scenario_file:="$scenario" result:="$run_dir/$name.json" \
-        ctrl_pt_dist:="${MONA_CTRL_PT_DIST:-0.1}" plan_max_vel:="${MONA_PLAN_MAX_VEL:-0.2}" \
+        ctrl_pt_dist:="${MONA_CTRL_PT_DIST:-0.1}" plan_max_vel:="${MONA_PLAN_MAX_VEL:-0.25}" \
         > "$run_dir/$name.log" 2>&1 || true
     if [ -s "$run_dir/$name.json" ]; then
         python3 -c "import json,sys; r=json.load(open(sys.argv[1])); print('%-24s %-8s %-18s %5ss  clearance drone %-6s plan %-6s collision %-5s off-plan max %-5s mean %-5s side %-5s plans %s (not flown %s) loop %sHz' % (r['scenario'], r['phase'], r['reason'], r['time_s'], r['min_clearance_m'], r['plan_min_clearance_m'], r['collision'], r['cross_track_max_m'], r['cross_track_mean_m'], r['max_side_m'], r['plans'], r['plans_not_flown'], r['loop_hz']))" "$run_dir/$name.json"

@@ -78,29 +78,79 @@ def remove_floor(depth, fx, fy, cx, cy, rng, band=0.15, min_inlier_ratio=0.15, s
                      removed_ratio=float(floor.sum() / max(valid.sum(), 1)))
 
 
+class HoldBuffer:
+    """Keeps planner depth back for delay_s so frames taken while SLAM jumped can still be dropped.
+
+    The bridge sees a jump only when SLAM's pose for that frame arrives, after the depth went on; the planner map would
+    already hold the frame at the wrong pose (sim 11/09: a 0.55 m jump while looking around left no free start cell,
+    "open set empty" until no_progress). While a hold is set (/mona/slam_hold > 0: ROS stamp from which SLAM is not
+    trusted) frames stamped at or after it are dropped, buffered or new; the map simply does not update until the hold
+    ends. A hold set later than delay_s after the bad frame (drift) only stops what follows."""
+
+    def __init__(self, delay_s=0.3):
+        self.delay_s = delay_s
+        self.items = []          # (receive time, stamp s, item)
+        self.hold_since = None
+        self.dropped = 0
+
+    def set_hold(self, since_stamp):
+        self.hold_since = since_stamp if since_stamp and since_stamp > 0 else None
+        if self.hold_since is not None:
+            keep = [i for i in self.items if i[1] < self.hold_since]
+            self.dropped += len(self.items) - len(keep)
+            self.items = keep
+
+    def push(self, t, stamp, item):
+        if self.hold_since is not None and stamp >= self.hold_since:
+            self.dropped += 1
+            return
+        self.items.append((t, stamp, item))
+
+    def ready(self, t):
+        out = [i[2] for i in self.items if t - i[0] >= self.delay_s]
+        self.items = [i for i in self.items if t - i[0] < self.delay_s]
+        return out
+
+
 def ros_main():
+    import time
+
     import rospy
     from cv_bridge import CvBridge
     from sensor_msgs.msg import Image
+    from std_msgs.msg import Float64
     rospy.init_node("floor_filter")
     bridge = CvBridge()
     fx, fy = rospy.get_param("~fx"), rospy.get_param("~fy")
     cx, cy = rospy.get_param("~cx"), rospy.get_param("~cy")
     band = rospy.get_param("~band_m", 0.15)
     rng = np.random.default_rng(0)
-    publisher = rospy.Publisher("~depth_out", Image, queue_size=2)
+    publisher = rospy.Publisher("~depth_out", Image, queue_size=5)
+    held = HoldBuffer(float(rospy.get_param("~hold_delay_s", 0.3)))
+
+    def on_hold(msg):
+        held.set_hold(msg.data)
+        rospy.loginfo("SLAM hold %s: planner depth %s (dropped so far %d)",
+                      "from %.2f" % msg.data if msg.data > 0 else "off",
+                      "paused" if msg.data > 0 else "resumed", held.dropped)
+
+    def flush(_event):
+        for out in held.ready(time.monotonic()):
+            publisher.publish(out)
 
     def callback(msg):
         depth, stats = remove_floor(bridge.imgmsg_to_cv2(msg, "32FC1"), fx, fy, cx, cy, rng, band=band)
         out = bridge.cv2_to_imgmsg(depth, "32FC1")
         out.header = msg.header
-        publisher.publish(out)
+        held.push(time.monotonic(), msg.header.stamp.to_sec(), out)
         if stats["floor"]:
             rospy.loginfo_throttle(5, "floor %.2fm below, tilt %.1f deg, removed %.0f%% of pixels",
                                    stats["height_m"], stats["tilt_deg"], 100 * stats["removed_ratio"])
         else:
             rospy.logwarn_throttle(5, "no floor plane found; depth passed through unchanged")
     rospy.Subscriber("~depth_in", Image, callback, queue_size=2, buff_size=4 * 1024 * 1024)
+    rospy.Subscriber("/mona/slam_hold", Float64, on_hold, queue_size=5)
+    rospy.Timer(rospy.Duration(0.02), flush)
     rospy.spin()
 
 

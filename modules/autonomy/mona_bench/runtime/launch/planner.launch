@@ -10,8 +10,10 @@
        into flight height a few metres ahead. Remove floor pixels from the planner's depth only. -->
   <arg name="floor_filter" default="true"/>
   <!-- Planner speed limit per axis (m/s), also the PID horizontal limit (~max_speed). The develop gateway's rc limit
-       30 lets the Tello reach about 0.22 m/s per axis (bridge rc compensation), so 0.2 m/s stays. -->
-  <arg name="plan_max_vel" default="0.2"/>
+       30 is about 0.25 m/s on the Tello (rc step flight 11/09: rc 30 -> 0.26 m/s; bridge rc compensation 11 + 75 v).
+       0.2 until 11/09 flight 2; 0.25 is that top speed (the PID has no headroom left there; the trajectory hold in
+       traj_server waits when the drone lags). -->
+  <arg name="plan_max_vel" default="0.25"/>
   <node if="$(arg floor_filter)" pkg="mona_integration" type="floor_filter.py" name="floor_filter" output="screen" required="true">
     <remap from="~depth_in" to="/sync/depth_metric"/>
     <remap from="~depth_out" to="/mona/depth_planning"/>
