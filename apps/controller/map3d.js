@@ -1,5 +1,5 @@
 // 3D 점군 보기(외부 라이브러리 없이 WebGL). 게이트웨이 GET /api/map(gateway-map/0.1)을 그린다.
-// 점(색), 카메라 경로(선), 마지막 카메라 위치(빨간 점). 끌어서 돌리기, 휠·두 손가락으로 확대, 두 번 눌러 처음 시점.
+// 점(색), 카메라 경로(선), 마지막 카메라 위치(빨간 점). 왼쪽 드래그 회전, 오른쪽 드래그 이동, 휠·두 손가락 확대.
 // 사용자가 시점을 건드리기 전까지는 지도가 커질 때마다 전체가 보이게 다시 맞춘다.
 // 좌표는 지도 표시 좌표 그대로(단위는 지도 쪽 scale.unit). up은 카메라 화면 위쪽 평균이며 중력 방향이 아니다.
 (function () {
@@ -11,11 +11,18 @@
       gl_FragColor = u.a > 0.0 ? u : vec4(v, 1.0);
     }`;
   const PATH = [0.36, 0.78, 0.66, 1], LAST = [1, 0.42, 0.42, 1];
+  const FOV = 0.9;
 
   const sub = (a, b) => [a[0] - b[0], a[1] - b[1], a[2] - b[2]];
   const dotv = (a, b) => a[0] * b[0] + a[1] * b[1] + a[2] * b[2];
   const cross = (a, b) => [a[1] * b[2] - a[2] * b[1], a[2] * b[0] - a[0] * b[2], a[0] * b[1] - a[1] * b[0]];
   const norm = (a) => { const n = Math.hypot(...a) || 1; return [a[0] / n, a[1] / n, a[2] / n]; };
+
+  function viewDirection({yaw, pitch}, {u, a, b}) {
+    const horizontal = Math.cos(pitch), vertical = Math.sin(pitch);
+    const alongA = horizontal * Math.cos(yaw), alongB = horizontal * Math.sin(yaw);
+    return u.map((value, axis) => alongA * a[axis] + alongB * b[axis] + vertical * value);
+  }
 
   function perspective(fovy, aspect, near, far) {
     const f = 1 / Math.tan(fovy / 2), nf = 1 / (near - far);
@@ -107,10 +114,10 @@
       gl.clearColor(0, 0, 0, 0);
       gl.clear(gl.COLOR_BUFFER_BIT | gl.DEPTH_BUFFER_BIT);
       if (!this.n && !this.pathN) return;
-      const { yaw, pitch, dist, target } = this.view, { u, a, b } = this.basis;
-      const dir = [0, 1, 2].map((i) => Math.cos(pitch) * (Math.cos(yaw) * a[i] + Math.sin(yaw) * b[i]) + Math.sin(pitch) * u[i]);
+      const { dist, target } = this.view, { u } = this.basis;
+      const dir = viewDirection(this.view, this.basis);
       const eye = [0, 1, 2].map((i) => target[i] + dist * dir[i]);
-      const m = mul(perspective(0.9, w / h, dist * 0.01, dist * 50), lookAt(eye, target, u));
+      const m = mul(perspective(FOV, w / h, dist * 0.01, dist * 50), lookAt(eye, target, u));
       gl.useProgram(this.prog);
       gl.enable(gl.DEPTH_TEST);
       gl.uniformMatrix4fv(this.loc.m, false, m);
@@ -134,19 +141,36 @@
       if (this.pathN) draw(this.buf.last, gl.POINTS, 1, 11, LAST, true);
     }
 
+    _pan(dx, dy) {
+      const backward = viewDirection(this.view, this.basis);
+      const right = norm(cross(this.basis.u, backward)), up = cross(backward, right);
+      const scale = 2 * this.view.dist * Math.tan(FOV / 2) / Math.max(1, this.canvas.clientHeight);
+      this.view.target = this.view.target.map((value, i) => value + scale * (dy * up[i] - dx * right[i]));
+    }
+
     _input() {
       const c = this.canvas, ptrs = new Map();
       let pinch = 0;
-      c.addEventListener("pointerdown", (e) => { c.setPointerCapture(e.pointerId); ptrs.set(e.pointerId, [e.clientX, e.clientY]); pinch = 0; this.touched = true; });
+      c.addEventListener("contextmenu", (e) => e.preventDefault());
+      c.addEventListener("pointerdown", (e) => {
+        c.setPointerCapture(e.pointerId);
+        ptrs.set(e.pointerId, {x: e.clientX, y: e.clientY, pan: e.button === 2});
+        pinch = 0;
+        this.touched = true;
+      });
       c.addEventListener("pointermove", (e) => {
         const prev = ptrs.get(e.pointerId);
         if (!prev) return;
-        ptrs.set(e.pointerId, [e.clientX, e.clientY]);
+        const dx = e.clientX - prev.x, dy = e.clientY - prev.y;
+        prev.x = e.clientX; prev.y = e.clientY;
         if (ptrs.size === 1) {
-          this.view.yaw -= (e.clientX - prev[0]) * 0.008;
-          this.view.pitch = Math.max(-1.5, Math.min(1.5, this.view.pitch + (e.clientY - prev[1]) * 0.008));
+          if (prev.pan) this._pan(dx, dy);
+          else {
+            this.view.yaw -= dx * 0.008;
+            this.view.pitch = Math.max(-1.5, Math.min(1.5, this.view.pitch + dy * 0.008));
+          }
         } else if (ptrs.size === 2) {
-          const [p, q] = [...ptrs.values()], d = Math.hypot(p[0] - q[0], p[1] - q[1]);
+          const [p, q] = [...ptrs.values()], d = Math.hypot(p.x - q.x, p.y - q.y);
           if (pinch) this.view.dist = Math.max(0.05, this.view.dist * (pinch / d));
           pinch = d;
         }
@@ -155,6 +179,7 @@
       const up = (e) => { ptrs.delete(e.pointerId); pinch = 0; };
       c.addEventListener("pointerup", up);
       c.addEventListener("pointercancel", up);
+      c.addEventListener("lostpointercapture", up);
       c.addEventListener("wheel", (e) => { e.preventDefault(); this.touched = true; this.view.dist = Math.max(0.05, this.view.dist * Math.exp(e.deltaY * 0.001)); this.draw(); }, { passive: false });
       c.addEventListener("dblclick", () => this.reset());
     }

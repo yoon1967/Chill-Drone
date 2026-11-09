@@ -110,7 +110,6 @@
             <span class="saved-drop-icon" aria-hidden="true">↥</span><strong>촬영 영상이나 복원 기록 ZIP을 여기에 놓으세요</strong><p>MP4 · MOV · AVI · MKV · ZIP<br>복원 기록 ZIP은 결과 지도와 복원 과정을 바로 엽니다.</p>
             <label class="saved-file-button">영상·ZIP 선택<input id="import-file" type="file" accept=".mp4,.mov,.avi,.mkv,.zip"></label>
           </div>
-          <label class="saved-folder-button">프레임 이미지로 복원하기<input id="import-folder" type="file" webkitdirectory multiple></label>
         </div>
         <div id="saved-inspection" class="saved-inspection" hidden>
           <div id="saved-preview-wrap" hidden><video id="saved-preview" controls playsinline preload="metadata" aria-label="선택한 촬영 영상 미리보기"></video><p id="saved-preview-note">원본 영상 미리보기 · 지도와 자동 동기화하지 않습니다.</p></div>
@@ -187,7 +186,7 @@
             </div>
             <div class="progressive-stats"><span id="progressive-count">처리 0프레임</span><span id="progressive-latency">지도 반영 지연 측정 대기</span><span>위치 추적 → 자세 고정 → 깊이 복원 · 단안 상대 좌표</span></div>
           </section>
-          <div class="import-actions"><button id="import-start" class="saved-primary" hidden>3D 지도 만들기</button><a id="import-open" hidden>저장 지도 열기 ↗</a><button id="import-cancel" hidden>복원 취소</button></div>
+          <div class="import-actions"><button id="import-start" class="saved-primary" hidden>3D 지도 만들기</button><a id="import-open" hidden>저장 지도 열기 ↗</a><a id="import-editor" target="_blank" rel="noopener" hidden>3D 지도 편집 ↗</a><button id="import-cancel" hidden>복원 취소</button></div>
         </div>
         <p id="import-status" role="status" aria-live="polite">먼저 촬영 영상을 선택하세요.</p>
         <progress id="import-progress" hidden max="100" aria-label="자료 전송 및 처리 진행"></progress>
@@ -195,6 +194,13 @@
       </details>
       <section id="saved-library-section" class="saved-library-section" aria-label="최근 복원 기록"><div class="saved-library-heading"><h2>최근 복원</h2><div><button id="saved-current" type="button" hidden>이미 연결된 지도 보기</button><button id="saved-existing" type="button">기존 지도 열기</button><button id="saved-open-zip" type="button">&#51648;&#46020; ZIP &#50676;&#44592;</button><button id="import-refresh" type="button">새로고침</button></div></div>
         <p id="saved-library-empty">저장 기록을 읽고 있습니다.</p><div id="saved-library" class="saved-library"></div>
+        <section class="video-folder" aria-labelledby="video-folder-title">
+          <div><h3 id="video-folder-title">촬영 영상 폴더</h3><p id="video-folder-path">폴더 위치 확인 중…</p></div>
+          <div class="video-folder-actions"><button id="video-folder-open" type="button" disabled>영상 폴더 열기</button><button id="video-folder-change" type="button" aria-expanded="false" aria-controls="video-folder-form" disabled>폴더 변경</button></div>
+          <form id="video-folder-form" hidden><label for="video-folder-input">이 PC에 있는 폴더의 전체 경로</label><div><input id="video-folder-input" required maxlength="4096" spellcheck="false"><button type="submit">저장</button><button id="video-folder-reset" type="button">기본 위치로</button></div><small>기본 위치는 지도 작업의 녹화 폴더입니다. 이 설정은 폴더 바로가기의 위치를 바꿉니다.</small></form>
+          <p id="video-folder-status" role="status" hidden></p>
+        </section>
+        <div class="saved-library-tools"><label class="saved-folder-button">프레임 이미지로 복원하기<input id="import-folder" type="file" webkitdirectory multiple></label><button id="landing-live" type="button">실시간 지도</button><a class="saved-editor-link" href="/editor.html" target="_blank" rel="noopener">3D 지도 편집 ↗</a></div>
         <div id="saved-existing-tools" hidden><p>세션 ZIP 또는 결과 폴더를 선택하세요. 프레임 폴더도 불러올 수 있습니다.</p><div class="import-actions"><label>지도 ZIP 선택<input id="saved-archive" type="file" accept=".zip"></label><label>결과 폴더 선택<input id="saved-result-folder" type="file" webkitdirectory multiple></label></div>
           <div class="import-actions"><select id="import-library" aria-label="이 PC의 저장 기록"><option value="">저장 기록 선택</option></select><button id="import-local" type="button">기록 열기</button></div>
         </div>
@@ -204,7 +210,7 @@
     <div id="reconstruction-stage" hidden>
     <div id="map-content">
     <section class="heading"><div><p class="eyebrow">VIDEO → SPATIAL RECONSTRUCTION</p><h2 id="result-title" class="result-title">복원 결과</h2><p id="run-name">복원 결과를 불러오는 중입니다.</p></div>
-      <a id="download" class="download" hidden download>지도 내려받기 <span>↗</span></a></section>
+      <div class="result-actions"><a id="result-editor" class="saved-editor-link" target="_blank" rel="noopener" hidden>3D 지도 편집 ↗</a><a id="download" class="download" hidden download>지도 내려받기 <span>↗</span></a></div></section>
     <p id="saved-result-status" class="saved-result-status" role="status" hidden></p>
     <div id="error" role="alert" hidden></div>
     <section id="live-status" class="live-status" hidden aria-label="실시간 처리 상태">

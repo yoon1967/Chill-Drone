@@ -63,7 +63,7 @@ def build_parser():
     real = sub.add_parser('real', help='실기체 관제(드론 Wi-Fi 연결 뒤)')
     real.add_argument('--phone', action='store_true', help='폰에서도 열리게(같은 망 안에서만, 방화벽 규칙 필요)')
     real.add_argument('--detect', action=argparse.BooleanOptionalAction, default=None, help='사람 탐지')
-    real.add_argument('--map', action=argparse.BooleanOptionalAction, default=None, help='3D 지도(지도 콘솔 + 연결기)')
+    real.add_argument('--map', action=argparse.BooleanOptionalAction, default=None, help='실시간 감독에 3D 점군 연결')
     real.add_argument('--mona', choices=['no', 'hand', 'flight'], default=None,
                       help='MoNA 자율: hand = 손에 든 시험(-AutoStart), flight = 비행')
     real.add_argument('--no-browser', action='store_true', help='브라우저를 열지 않음')

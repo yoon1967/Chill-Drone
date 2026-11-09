@@ -35,7 +35,38 @@ body[data-map-source=live] #saved-result-status{display:none}
 .saved-confirm{display:block!important;line-height:1.8}
 .saved-library-section{border-top:1px solid #dce2d6;margin-top:28px;padding-top:24px}
 .saved-library-heading{display:flex;justify-content:space-between;align-items:center;gap:16px;margin-bottom:16px}
-.saved-library-heading h2{font-size:17px}.saved-library-heading>div{display:flex;gap:8px}
+.saved-library-heading h2{font-size:17px}.saved-library-heading>div{display:flex;flex-wrap:wrap;gap:8px}
+.saved-editor-link{display:inline-flex;align-items:center;min-height:40px;padding:8px 14px;border:1px solid #9db298;border-radius:7px;background:#eaf1e4;color:#244d3b;font-size:12px;font-weight:600;white-space:nowrap}
+.saved-editor-link:hover{background:#dcebdc}.result-actions{display:flex;flex-wrap:wrap;gap:8px}
+.video-folder{display:grid;grid-template-columns:minmax(0,1fr) auto;gap:10px 16px;align-items:center;border:1px solid #d5dfd2;border-radius:10px;background:#fcfdf8;padding:12px 16px;margin-top:16px}
+.video-folder h3{font-size:13px;margin:0 0 4px}.video-folder p,.video-folder small{font-size:12px;color:#52654f;overflow-wrap:anywhere;margin:0}
+.video-folder-actions,.video-folder form>div{display:flex;flex-wrap:wrap;gap:8px}.video-folder form,.video-folder #video-folder-status{grid-column:1/-1}
+.video-folder form label{display:block;font-size:12px;margin-bottom:6px}.video-folder form input{flex:1 1 240px;min-width:0;border:1px solid #9db298;border-radius:6px;padding:8px;font-size:13px}.video-folder form small{display:block;margin-top:6px}
+@media(max-width:600px){.video-folder{grid-template-columns:1fr}}
+.saved-library-tools{display:flex;align-items:center;flex-wrap:wrap;gap:10px;margin-top:14px}
+.saved-library-tools .saved-folder-button{margin:0 auto 0 0}
+#landing-live{display:none}
+body.embedded-landing{background:#080808}
+body.embedded-landing > header,body.embedded-landing #workflow-guide,
+body.embedded-landing .source-bar,body.embedded-landing #rescue-settings,body.embedded-landing .saved-intro,
+body.embedded-landing #import-details > summary,body.embedded-landing #import-status:not([data-state=error]),body.embedded-landing footer{display:none}
+body.embedded-landing[data-map-source=saved][data-saved-phase=input] main{max-width:1600px;padding:clamp(32px,8.5vh,88px) clamp(16px,5.3vw,84px) 32px}
+body.embedded-landing[data-map-source=saved][data-saved-phase=input] #import-panel > details{margin:0 clamp(0px,2vw,28px);border:0;padding:0;background:transparent}
+body.embedded-landing[data-map-source=saved][data-saved-phase=input] #import-panel .import-drop{display:flex;flex-direction:column;align-items:center;justify-content:center;min-height:clamp(225px,36vh,360px);margin:0;padding:26px 20px;background:#f1f4eb;border:1px dashed #81957c;border-radius:14px}
+body.embedded-landing[data-map-source=saved][data-saved-phase=input] #import-panel .import-drop.drag-over{background:#dcebdc}
+body.embedded-landing #import-panel .import-drop strong{font-size:clamp(18px,2vw,24px);color:#304b3b}
+body.embedded-landing #import-panel .saved-file-button{min-height:46px;background:#304b3b}
+body.embedded-landing[data-map-source=saved][data-saved-phase=input] .saved-library-section{margin-top:clamp(36px,12.5vh,105px);padding:clamp(12px,2vw,24px);background:#f3f4ee}
+body.embedded-landing #landing-live{display:inline-flex;align-items:center}
+@media(max-height:730px) and (min-width:800px){
+  body[data-map-source=saved][data-saved-phase=input] header{height:52px}
+  body[data-map-source=saved][data-saved-phase=input] main{padding-top:14px}
+  body[data-map-source=saved][data-saved-phase=input] .source-bar{margin-bottom:12px}
+  body[data-map-source=saved][data-saved-phase=input] .saved-intro{margin-bottom:12px}
+  body[data-map-source=saved][data-saved-phase=input] #import-panel>details{padding:12px 18px}
+  body[data-map-source=saved][data-saved-phase=input] #import-panel .import-drop{padding:18px 24px}
+  body[data-map-source=saved][data-saved-phase=input] .saved-library-section{margin-top:16px;padding-top:12px}
+}
 .saved-library{display:grid;grid-template-columns:repeat(3,minmax(0,1fr));gap:12px}
 #import-panel .saved-record{text-align:left;padding:20px;display:flex;flex-direction:column;gap:12px;min-width:0;min-height:100px;background:#fcfdf8}
 .saved-record strong{font-size:14px;overflow-wrap:anywhere}.saved-record span{font-size:11px;color:#73826b;line-height:1.6}

@@ -29,6 +29,7 @@ test('drone mapping starts with calibration off, a profile, or JSON without an e
           starts.push(route.request().postDataJSON()); active = true;
           await route.fulfill({json: {session_id: 'test-session', session_status: 'starting'}});
         });
+        await page.route('**/api/live/tello/heartbeat', route => route.fulfill({json: {session_id: 'test-session'}}));
         await page.route('**/api/live/state*', route => route.fulfill({json: active ? {
           source: 'live', session_id: 'test-session', session_status: 'receiving', status: 'receiving',
           transport_ready: true, input: 'tello_camera', map_available: false} : {

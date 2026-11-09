@@ -67,6 +67,24 @@ def make_reconstruction(root):
 
 
 class SessionImportTests(unittest.TestCase):
+    def test_recent_library_reopens_failed_and_cancelled_attempts_after_restart(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            attempts = {'import_' + 'a' * 16: 'failed', 'import_' + 'b' * 16: 'cancelled'}
+            for key, status in attempts.items():
+                write(root / key / 'import.json', dict(name='capture.mp4', status=status, stage='depth', error='test'))
+            manager = ImportManager(root)
+            try:
+                self.assertEqual({item['local_id']: item['status'] for item in manager.library()}, attempts)
+                for key, status in attempts.items():
+                    record = manager.open_local(key)
+                    self.assertEqual((record['status'], record['name']), (status, 'capture.mp4'))
+                    self.assertFalse(record['source_video'])
+                    with self.assertRaisesRegex(ValueError, 'import_not_ready'):
+                        manager.resolve(key)
+            finally:
+                manager.shutdown()
+
     def test_history_download_roundtrip_keeps_result_replay_and_relative_frames_after_restart(self):
         source = self.root / 'original_reconstruction'
         make_reconstruction(source)

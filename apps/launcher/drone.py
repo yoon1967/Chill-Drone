@@ -20,6 +20,7 @@ REAL_PORT = 8010        # 실기체 게이트웨이
 FAKE_PORT = 8030        # 체험(가짜 드론) 게이트웨이. 실기체와 같이 켜도 겹치지 않게
 CONSOLE_PORT = 8790     # 지도 콘솔(apps/console)
 FAKE_MAP_PORT = 8795    # 가짜 지도 서버
+FAKE_CONSOLE_PORT = 8796  # 체험 관제의 영상 복원용 콘솔
 DRONE_UDP = (8889, 8890, 11111)   # Tello 명령·상태·영상. Tello는 처음 command를 보낸 쪽에만 답한다
 GROUND = {'grounded', 'disconnected', 'emergency'}
 MODE_KO = {'disconnected': '연결 끊김', 'grounded': '지상', 'manual': '수동 비행', 'auto': '자율 탐색',
@@ -175,26 +176,17 @@ def start_bridge(procs, map_url, gateway, label):
     say('       지도 연결기 켬(작은 창).')
 
 
-def start_console(gateway):
-    """실기체 게이트웨이에 지도 콘솔을 붙인다. 켜졌으면 True."""
-    map_url = url(CONSOLE_PORT)
+def start_console(gateway, *, port=CONSOLE_PORT):
+    """관제 화면에서 영상 복원에 쓸 로컬 지도 콘솔을 준비한다."""
+    map_url = url(port)
     if winproc.get_json(map_url + '/api/live'):
         say('       지도 콘솔은 이미 켜져 있어요.')
         return True
     if not (ROOT / 'apps/console/node_modules/three/build/three.module.js').is_file():
         warn('지도 콘솔 웹 의존성이 없습니다: pnpm --dir apps/console install --frozen-lockfile')
         return False
-    sys.path.insert(0, str(ROOT))
-    try:
-        from modules.mapping.data.model_assets import ModelAssetsMissing, require_local_models
-        require_local_models()
-    except ImportError as error:
-        warn(f'지도 패키지가 없습니다({error.name}). {PREPARE} 뒤 다시 켜세요.')
-        return False
-    except ModelAssetsMissing as error:
-        warn(f'지도 모델이 없습니다({error}). {PREPARE} 뒤 다시 켜세요.')
-        return False
-    winproc.start_window(f'Chill-Drone 지도 콘솔 ({CONSOLE_PORT})', ROOT, console_cmd(gateway, CONSOLE_PORT), minimized=True)
+    # 영상 선택과 기록 열기는 모델을 불러오기 전에도 사용할 수 있다.
+    winproc.start_window(f'Chill-Drone 지도 콘솔 ({port})', ROOT, console_cmd(gateway, port), minimized=True)
     if wait_for(lambda: winproc.get_json(map_url + '/api/live'), 30):
         say(f'       지도 콘솔 켬({map_url}).')
         return True
@@ -267,6 +259,7 @@ def run_fake(*, detect=True, map_=True, no_browser=False):
         start_bridge(procs, map_url, gateway, '체험')
     else:
         say('       켜지 않음')
+    start_console(gateway, port=FAKE_CONSOLE_PORT)
     page = gateway + '/#/live'
     say('[4/4] 화면 열기')
     open_page(page, no_browser)
@@ -358,11 +351,13 @@ def run_real(*, phone=False, detect=None, map_=None, mona=None, no_browser=False
     else:
         warn('아직 드론이 안 붙었어요. 전원과 Wi-Fi를 확인하세요. 답이 없으면 드론을 껐다 켜면 됩니다(게이트웨이는 그대로 두면 다시 붙어요).')
 
+    integrated_console = bool(reuse and st.get('mapping_console_url'))
+    standalone_console = not integrated_console and start_console(gateway)
     say('[5/6] 같이 켤 것' + (' (Enter = 대괄호 안 대문자)' if interactive else ''))
     if detect is None:
         detect = ask('사람 탐지(AI 합성·발견 목록)도 켤까요? [Y/n]', 'y', {'y', 'n'}) == 'y' if interactive else True
     if map_ is None:
-        map_ = ask('3D 지도(지도 콘솔 + 지도 연결기)도 켤까요? [y/N]', 'n', {'y', 'n'}) == 'y' if interactive else False
+        map_ = ask('실시간 감독에 3D 점군도 연결할까요? [y/N]', 'n', {'y', 'n'}) == 'y' if interactive else False
     if mona is None:
         mona = {'h': 'hand', 'f': 'flight'}.get(
             ask('MoNA 자율도 켤까요? [N = 안 켬 / h = 손에 든 시험 / f = 비행]', 'n', {'n', 'h', 'f'})) if interactive else None
@@ -370,10 +365,9 @@ def run_real(*, phone=False, detect=None, map_=None, mona=None, no_browser=False
     say('       사람 탐지: ' + ('켬' if detect else '안 켬'))
     if detect:
         start_detect(procs, gateway, '실기체')
-    say('       3D 지도: ' + ('켬' if map_ else '안 켬'))
-    if map_ and start_console(gateway):
+    say('       실시간 감독 3D 점군 연결: ' + ('통합 실행 중' if integrated_console else '켬' if map_ and standalone_console else '안 켬'))
+    if map_ and standalone_console:
         start_bridge(procs, url(CONSOLE_PORT), gateway, '실기체')
-        warn('지도 시작은 아직 지도 콘솔 화면만으로는 안 될 수 있어요(게이트웨이 모드). 막히면 지도 파트에 문의하세요.')
     say('       MoNA 자율: ' + {'hand': '손에 든 시험', 'flight': '비행'}.get(mona, '안 켬'))
     if mona in ('hand', 'flight'):
         start_mona(mona == 'hand')

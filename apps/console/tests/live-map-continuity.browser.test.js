@@ -26,7 +26,7 @@ test('live cloud survives empty/error results and unaligned segments remain acce
         const source = await (await route.fetch()).text();
         await route.fulfill({contentType: 'text/javascript', body: source
           .replace('renderer.render(scene, camera);', 'renderer.render(scene, camera); window.renderCount++;')
-          .replace('controls.target.copy(center);', 'window.fitTargets.push(center.toArray()); controls.target.copy(center);')});
+          .replace('mapTarget.copy(center);', 'window.fitTargets.push(center.toArray()); mapTarget.copy(center);')});
       });
       const job = {id: 'import_1234567890123456', status: 'running', stage: 'mapping', name: 'continuity',
         options: {mode: 'depth_rgbd'}, progress: {processed: 1, points: 3}, history_available: true};

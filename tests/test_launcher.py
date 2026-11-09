@@ -62,6 +62,7 @@ class FakeModeTests(unittest.TestCase):
                 patch.object(winproc, 'port_owners', return_value=[]), \
                 patch.object(winproc, 'processes', return_value=[]), \
                 patch.object(winproc, 'get_json', return_value=None), \
+                patch.object(drone, 'start_console') as console, \
                 patch.object(winproc, 'start_window') as window:
             self.assertEqual(drone.run_fake(no_browser=True), 0)
         argvs = [c.args[2] for c in window.call_args_list]
@@ -70,6 +71,7 @@ class FakeModeTests(unittest.TestCase):
         self.assertEqual(argvs[1][-4:], ['--gateway', 'http://127.0.0.1:8030', '--yolo-model', 'yolo.pt'])
         self.assertEqual(argvs[2][-3:], ['--port', '8795', '--start'])
         self.assertEqual(argvs[3][-4:], ['--map', 'http://127.0.0.1:8795', '--gateway', 'http://127.0.0.1:8030'])
+        console.assert_called_once_with('http://127.0.0.1:8030', port=8796)
 
     def test_running_programs_are_not_started_twice(self):
         running = [Proc(5, 0, 'python -m modules.perception.inference.gateway_ai_client --gateway http://127.0.0.1:8030'),
@@ -108,11 +110,15 @@ class RealModeTests(unittest.TestCase):
         with self.common()[0], self.common()[1], self.common()[2], \
                 patch.object(drone, 'state', return_value=tello('grounded', battery_pct=70, temp_high_c=60)), \
                 patch.object(winproc, 'processes', return_value=[]), \
+                patch.object(drone, 'start_console', return_value=True) as console, \
+                patch.object(drone, 'start_bridge') as bridge, \
                 patch.object(drone, 'start_mona') as mona, \
                 patch.object(drone, 'open_page') as page, \
                 patch.object(winproc, 'start_window') as window:
             self.assertEqual(drone.run_real(detect=False, map_=False, mona='hand', interactive=False), 0)
         window.assert_not_called()
+        console.assert_called_once_with('http://127.0.0.1:8010')
+        bridge.assert_not_called()
         mona.assert_called_once_with(True)
         self.assertEqual(page.call_args.args[0], 'http://127.0.0.1:8010/?preset=autonomy#/live')
 
@@ -122,12 +128,15 @@ class RealModeTests(unittest.TestCase):
                 patch.object(drone, 'state', side_effect=lambda base: next(states, tello('grounded'))), \
                 patch.object(winproc, 'port_owners', return_value=[]), \
                 patch.object(winproc, 'processes', return_value=[]), \
+                patch.object(winproc, 'get_json', side_effect=[None, {'enabled': True}]), \
+                patch.object(Path, 'is_file', return_value=True), \
                 patch.object(drone, 'open_page'), \
                 patch.object(winproc, 'start_window') as window:
             self.assertEqual(drone.run_real(detect=False, map_=False, interactive=False, phone=False), 0)
-        argv = window.call_args.args[2]
+        argv, console = (call.args[2] for call in window.call_args_list)
         self.assertEqual(argv[-2:], ['--port', '8010'])
         self.assertNotIn('--fake', argv)
+        self.assertEqual(console[-4:], ['--port', '8790', '--tello-gateway', 'http://127.0.0.1:8010'])
 
 
 class StopTests(unittest.TestCase):

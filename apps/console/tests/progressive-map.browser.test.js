@@ -38,6 +38,37 @@ test('reconstruction has no axis widget and completed maps reopen after replay o
         Number(new URL(route.request().url()).searchParams.get('revision')) === preview.revision ? {unchanged: true} : preview}));
       await page.route('**/api/import/preview-frame?*', route => route.fulfill({contentType: 'image/png', body: Buffer.from('iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mP8/x8AAwMCAO+aWQ0AAAAASUVORK5CYII=', 'base64')}));
       await page.goto(url + '/#saved');
+      await page.evaluate(async () => {
+        const {OrbitControls} = await import('/vendor/OrbitControls.js');
+        const update = OrbitControls.prototype.update;
+        OrbitControls.prototype.update = function (...args) {
+          const result = update.apply(this, args);
+          if (this.domElement?.parentElement?.id === 'progressive-viewport') {
+            window.reconstructionView = {position: this.object.position.toArray(), target: this.target.toArray(),
+              rotation: this.object.quaternion.toArray()};
+          }
+          return result;
+        };
+      });
+      const canvas = page.locator('#progressive-viewport canvas');
+      const readView = () => page.evaluate(() => window.reconstructionView);
+      const delta = (a, b) => a.map((value, i) => value - b[i]);
+      const near = (a, b) => Math.hypot(...delta(a, b)) < 1e-7;
+      async function pan() {
+        await canvas.scrollIntoViewIfNeeded();
+        await page.waitForFunction(() => window.reconstructionView);
+        const before = await readView();
+        const {x, y, width, height} = await canvas.boundingBox();
+        await page.mouse.move(x + width / 2, y + height / 2);
+        await page.mouse.down({button: 'right'});
+        await page.mouse.move(x + width / 2 + 55, y + height / 2 + 30, {steps: 4});
+        await page.mouse.up({button: 'right'});
+        const after = await readView();
+        assert.ok(Math.hypot(...delta(after.position, before.position)) > .01, 'right drag moves the viewing camera');
+        assert.ok(near(delta(after.position, before.position), delta(after.target, before.target)), 'position and target move together');
+        assert.ok(near(after.rotation, before.rotation), 'right drag preserves viewing direction');
+        return after;
+      }
       await page.waitForFunction(() => document.querySelector('#progressive-count').textContent.includes('지도 반영 0'));
       assert.equal(await page.locator('#progressive-frame').isVisible(), false);
       preview = {...preview, revision: 2, timestamp_s: .1, front_tof: {distance_m: null, used: false, surface_supported: false},
@@ -45,6 +76,7 @@ test('reconstruction has no axis widget and completed maps reopen after replay o
       await page.locator('#progressive-frame:not([hidden])').waitFor();
       const small = Number(await page.locator('#progressive-viewport').getAttribute('data-frame-point-size'));
       assert.equal(small, 2);
+      const pannedPreview = await pan();
       preview = {...preview, revision: 3, timestamp_s: .15, tracking: 'lost',
         front_tof: {distance_m: .8, surface_supported: true},
         frame_preview: {space: 'camera', tof_verified: true, points: mapped.points}};
@@ -52,11 +84,14 @@ test('reconstruction has no axis widget and completed maps reopen after replay o
       await page.locator('#progressive-frame:not([hidden])').waitFor();
       assert.match(await page.locator('#progressive-map-detail').textContent(), /카메라 기준 임시 점군/);
       assert.match(await page.locator('#progressive-count').textContent(), /지도 반영 0/);
+      assert.ok(near((await readView()).position, pannedPreview.position), 'a new temporary point cloud preserves the pan');
       preview = {...mapped, revision: 4, timestamp_s: .18, tracking: 'pose_predicted', pose_confirmed: false};
       await page.locator('#progressive-pose').filter({hasText: /선형 이동 기반 자세 예측/}).waitFor();
+      const pannedMap = await pan();
       preview = mapped;
       await page.locator('#progressive-pose').filter({hasText: /위치·방향 확정/}).waitFor();
       await page.locator('#progressive-viewport[data-frame-preview=""][data-point-count="3"]').waitFor();
+      assert.ok(near((await readView()).position, pannedMap.position), 'a new revision of the same map preserves the pan');
       assert.equal(await page.locator('#progressive-viewport').getAttribute('data-verified-points'), '2');
       assert.match(await page.locator('#progressive-frame').getAttribute('src'), /frame_0000002/);
       await page.waitForFunction(() => document.querySelector('#progressive-count').textContent.includes('지도 반영 1'));
