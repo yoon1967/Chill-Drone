@@ -44,7 +44,7 @@ TEMP_WARN_C = 75             # 경고만. 고온 자동 착륙은 하지 않는�
 VIDEO_STALE_S = 1.0
 VIDEO_START_GRACE_S = 3.0    # streamon 직후 첫 프레임까지는 video_stale로 보지 않는다
 VIDEO_GROUND_WARN_S = 30.0   # 지상에서 영상이 이만큼 켜져 있으면 video_on_ground 경고
-VIDEO_GROUND_OFF_S = 60.0    # 지상에서 영상이 이만큼 켜져 있으면 자동으로 끈다
+VIDEO_GROUND_OFF_S = None    # 지상에서도 영상을 자동으로 끄지 않는다(경고만). 초를 넣으면 그만큼 켜져 있을 때 끈다
 VIDEO_CMDS = ("video_on", "video_off")
 AUTONOMY_STATE_S = 0.1       # 자율에 Tello 상태 원문을 보내는 간격(약 10Hz)
 AUTONOMY_STATUS_S = 1.0      # flight_status는 바뀔 때 + 이 간격
@@ -431,7 +431,7 @@ class Gateway:
             return
         if self._video_ground_mono is None:
             self._video_ground_mono = self.clock()
-        elif self.clock() - self._video_ground_mono >= VIDEO_GROUND_OFF_S:
+        elif VIDEO_GROUND_OFF_S is not None and self.clock() - self._video_ground_mono >= VIDEO_GROUND_OFF_S:
             self._video_busy = True
             threading.Thread(target=self._video_auto, args=(False, "ground_timeout"), name="gateway-video",
                              daemon=True).start()
@@ -575,7 +575,7 @@ class Gateway:
         if video_on and not video_ok and on_s is not None and on_s >= VIDEO_START_GRACE_S:
             warnings.append("video_stale")
         if ground_s is not None and ground_s >= VIDEO_GROUND_WARN_S:
-            warnings.append("video_on_ground")  # 지상 발열. VIDEO_GROUND_OFF_S가 되면 자동으로 끈다
+            warnings.append("video_on_ground")  # 지상 발열 경고(1분에 약 16°C). VIDEO_GROUND_OFF_S를 정하면 그때 끈다
         down_valid = bool(si.get("tof_valid"))
         return {
             "schema_version": SCHEMA_VERSION,
