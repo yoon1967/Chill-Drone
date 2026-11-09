@@ -1,0 +1,19 @@
+<?xml version="1.0"?>
+<!-- Closed-loop avoidance sim: the live planner/trajectory server/PID (planner.launch) with sim_world.py in place of
+     camera, depth network and SLAM. Never talks to a gateway or a drone. -->
+<launch>
+  <env name="OPENBLAS_NUM_THREADS" value="1"/>
+  <arg name="scenario_file"/>
+  <arg name="result"/>
+  <arg name="ctrl_pt_dist" default="0.1"/>
+  <arg name="plan_max_vel" default="0.2"/>
+  <include file="$(find mona_integration)/launch/planner.launch">
+    <arg name="ctrl_pt_dist" value="$(arg ctrl_pt_dist)"/>
+    <arg name="plan_max_vel" value="$(arg plan_max_vel)"/>
+  </include>
+  <node pkg="mona_integration" type="sim_world.py" name="sim_world" output="screen" required="true">
+    <param name="scenario_file" value="$(arg scenario_file)"/>
+    <param name="result" value="$(arg result)"/>
+    <param name="max_speed" value="$(arg plan_max_vel)"/>
+  </node>
+</launch>

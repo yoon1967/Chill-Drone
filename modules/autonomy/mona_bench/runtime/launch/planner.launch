@@ -1,0 +1,72 @@
+<?xml version="1.0"?>
+<!-- Planner, trajectory server and PID shared by full.launch (live/replay) and sim.launch (closed-loop sim).
+     Inputs: /sync/depth_metric (m), /sync/camera_pose (camera_link in map), /sync/tf_odom, goal on
+     /waypoint_generator/waypoints. Output: /mona/candidate_cmd_vel (map frame, never a drone command). -->
+<launch>
+  <!-- Planner map intrinsics (unchanged upstream values), shared with the floor filter. -->
+  <arg name="map_fx" value="631.304382"/><arg name="map_fy" value="643.417053"/>
+  <arg name="map_cx" value="320.982631"/><arg name="map_cy" value="243.577051"/>
+  <!-- The map frame is the first (pitched) camera pose, so the real floor becomes a slope that rises
+       into flight height a few metres ahead. Remove floor pixels from the planner's depth only. -->
+  <arg name="floor_filter" default="true"/>
+  <!-- Planner speed limit per axis (m/s), also the PID horizontal limit (~max_speed). The develop gateway's rc limit
+       30 lets the Tello reach about 0.22 m/s per axis (bridge rc compensation), so 0.2 m/s stays. -->
+  <arg name="plan_max_vel" default="0.2"/>
+  <node if="$(arg floor_filter)" pkg="mona_integration" type="floor_filter.py" name="floor_filter" output="screen" required="true">
+    <remap from="~depth_in" to="/sync/depth_metric"/>
+    <remap from="~depth_out" to="/mona/depth_planning"/>
+    <param name="fx" value="$(arg map_fx)"/><param name="fy" value="$(arg map_fy)"/>
+    <param name="cx" value="$(arg map_cx)"/><param name="cy" value="$(arg map_cy)"/>
+    <param name="band_m" value="0.15"/>
+  </node>
+  <include file="$(find plan_manage)/launch/kino_algorithm.xml">
+    <arg name="map_size_x_" value="12.0"/><arg name="map_size_y_" value="8.0"/><arg name="map_size_z_" value="3.5"/>
+    <arg name="odometry_topic" value="/sync/tf_odom"/>
+    <arg name="camera_pose_topic" value="/sync/camera_pose"/>
+    <arg name="depth_topic" value="$(eval '/mona/depth_planning' if str(arg('floor_filter')).lower() == 'true' else '/sync/depth_metric')"/>
+    <arg name="cloud_topic" value="/mona/unused_cloud"/>
+    <arg name="cx" value="$(arg map_cx)"/><arg name="cy" value="$(arg map_cy)"/>
+    <arg name="fx" value="$(arg map_fx)"/><arg name="fy" value="$(arg map_fy)"/>
+    <arg name="max_vel" value="$(arg plan_max_vel)"/><arg name="max_acc" value="0.4"/>
+    <arg name="flight_type" value="1"/><arg name="point_num" value="1"/>
+    <arg name="point0_x" value="4.0"/><arg name="point0_y" value="0.0"/><arg name="point0_z" value="0.8"/>
+    <arg name="point1_x" value="0.0"/><arg name="point1_y" value="0.0"/><arg name="point1_z" value="0.8"/>
+    <arg name="point2_x" value="0.0"/><arg name="point2_y" value="0.0"/><arg name="point2_z" value="0.8"/>
+  </include>
+  <!-- B-spline control point spacing. Upstream 0.5 m at 3 m/s is a 0.17 s knot interval; at our 0.2 m/s it is
+       2.5 s, too coarse: first plans overshot the goal and came back in a loop (sim: 4 m goal -> (4.8, -1.9)),
+       and a box below flight height failed the route. Closed-loop sim 11/06 (6 worlds): 0.5 -> 5/6 arrived,
+       0.2 -> one collision (corner cut), 0.1 -> 6/6 arrived, no collision. 0.1 m is a 0.5 s interval. -->
+  <arg name="ctrl_pt_dist" default="0.1"/>
+  <param name="fast_planner_node/manager/control_points_distance" value="$(arg ctrl_pt_dist)"/>
+  <!-- Keep conservative inflation; the upstream example's 0.009m is not used. -->
+  <param name="fast_planner_node/sdf_map/obstacles_inflation" value="0.45"/>
+  <!-- The PID sends no vertical speed, so a path over or under an obstacle would be flown level, into it.
+       A ceiling and a floor 0.5 m from the start height (map z 0, where SLAM starts) leave no room around
+       anything reaching flight height plus the 0.45 m inflation, so the planner must go around sideways.
+       The upstream example uses a 2.5 m ceiling and no floor (the floor filter makes the floor look free). -->
+  <param name="fast_planner_node/sdf_map/virtual_ceil_height" value="0.5"/>
+  <param name="fast_planner_node/sdf_map/virtual_floor_height" value="-0.5"/>
+  <!-- Planar planning (patch in prepare_workspace.py): the search, the goal relocation and the B-spline
+       optimizer keep the start height. The ceiling/floor above only cover the area the camera updated, and
+       11/06 in flight every plan still left the flight height (goal moved to +0.59 m, path to -0.96 m). -->
+  <param name="fast_planner_node/search/planar" value="true"/>
+  <!-- From rest the first search step moves at most 0.5 x max_vel x init_max_tau = 0.08 m (0.2 m/s, 0.8 s),
+       and only when max_acc >= max_vel / init_max_tau (0.25; 0.4 leaves room for 0.3 m/s). With 0.08 m/s^2 and 0.1 m cells every child
+       stayed in the start cell ("open set empty" at iteration 1). A 0.05 m search grid keeps 0.2 m/s. -->
+  <param name="fast_planner_node/search/resolution_astar" value="0.05"/>
+  <node pkg="plan_manage" type="traj_server" name="traj_server" output="screen">
+    <remap from="/position_cmd" to="/planning/pos_cmd"/>
+    <remap from="/odom_world" to="/sync/tf_odom"/>
+    <param name="traj_server/time_forward" value="1.5"/>
+    <!-- Hold the reference while the drone is behind it (patch): slow from 0.2 m, stopped at 0.45 m. Without it a lagging
+         drone chased a point far ahead and cut the corner (sim 11/09: 0.87 m off the plan, touched the person). -->
+    <param name="traj_server/wait_near_m" value="0.2"/>
+    <param name="traj_server/wait_far_m" value="0.45"/>
+  </node>
+  <node pkg="mav_controller" type="pid_controller.py" name="pid_controller" output="screen">
+    <!-- Full controller runs, but output is a candidate, never a hardware command. -->
+    <remap from="/tello/cmd_vel" to="/mona/candidate_cmd_vel"/>
+    <param name="max_speed" value="$(arg plan_max_vel)"/>
+  </node>
+</launch>

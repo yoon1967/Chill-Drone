@@ -48,7 +48,7 @@ cleanup() {
 trap cleanup EXIT
 for i in {1..40}; do rosparam list >/dev/null 2>&1 && break; sleep .25; done
 rosparam set /use_sim_time true
-roslaunch mona_integration full.launch hardware:=false depth_device:="$depth_device" depth_model:="$depth_model" > "$run_dir/stack.log" 2>&1 &
+roslaunch mona_integration full.launch hardware:=false depth_device:="$depth_device" depth_model:="$depth_model" ${MONA_LAUNCH_ARGS:-} > "$run_dir/stack.log" 2>&1 &
 stack_pid=$!
 ready=false
 for i in {1..120}; do

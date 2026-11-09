@@ -30,6 +30,9 @@ RUN curl -fsSL https://bootstrap.pypa.io/pip/3.8/get-pip.py -o /tmp/get-pip.py \
 # CUDA 12 / cuDNN 9 build; reuses the CUDA libraries shipped with the torch wheels.
 RUN python3 -m pip install --no-cache-dir onnxruntime-gpu==1.19.2 \
     && python3 -m pip check
+# Synchronous WebSocket client for the drone gateway's /ws/autonomy (gateway_bridge.py).
+RUN python3 -m pip install --no-cache-dir websocket-client==1.8.0 \
+    && python3 -m pip check
 ENV LD_LIBRARY_PATH=/usr/local/lib/python3.8/dist-packages/nvidia/cudnn/lib:/usr/local/lib/python3.8/dist-packages/nvidia/cublas/lib:/usr/local/lib/python3.8/dist-packages/nvidia/cuda_runtime/lib:/usr/local/lib/python3.8/dist-packages/nvidia/cufft/lib:/usr/local/lib/python3.8/dist-packages/nvidia/curand/lib:/usr/local/lib/python3.8/dist-packages/nvidia/cuda_nvrtc/lib
 FROM python-deps AS runtime
 COPY upstream.lock.json prepare_workspace.py ./
