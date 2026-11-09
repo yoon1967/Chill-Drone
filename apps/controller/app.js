@@ -15,6 +15,7 @@ const ui = {
   map3d: { mode: loadPref("map-mode", "3d"), host: null, view: null, revision: undefined, loading: false, has: false },  // 3D 점군(지도 연결기)
   mapBig: loadPref("map-big", "0") === "1",   // 지도 칸을 가장 큰 칸(기본 프리셋은 영상)과 바꿔 크게 본다
   preset: new URLSearchParams(location.search).get("preset") || loadPref("controller.preset", ""),   // 실시간 감독 칸 배치(presets.js)
+  edit: null,   // 화면 편집 중이면 { draft: 고치는 배치, from: 시작한 프리셋 id }
   console: { frame: null, url: null, slot: null, ro: null, loadedUp: null },   // 지도 콘솔 iframe(placeConsole). loadedUp: 열 때 콘솔 상태
   autonomy: { connected: false, path: null, people: null, pathRev: 0, peopleRev: 0, loading: false, track: [] },  // 자율 지도(/api/autonomy)
 };
@@ -584,17 +585,47 @@ function detailLine(st) {
 // ---------- 실시간 감독 칸(패널)과 배치(프리셋) ----------
 // 칸마다 그리는 함수 하나. 어느 칸을 격자 어디에 둘지는 프리셋(presets.js)이 정한다.
 // 상태 줄·알림·조종 줄(착륙·비상 정지)은 칸이 아니다. 어떤 프리셋에서도 격자 밖에 그대로 있다.
+// min: 편집할 때 줄일 수 있는 가장 작은 크기 [가로 칸, 세로 칸].
 const PANELS = {
-  video: { name: "영상", render: (c) => videoPanel(c.st, c.events) },
-  findings: { name: "발견 목록", render: (c) => detectionList(c.events) },
-  map: { name: "지도", render: (c) => mapPanel(c.st, c.events, c.track) },
-  timeline: { name: "비행 기록", render: (c) => timelinePanel(c.track) },
+  video: { name: "영상", min: [3, 2], render: (c) => videoPanel(c.st, c.events) },
+  findings: { name: "발견 목록", min: [3, 2], render: (c) => detectionList(c.events) },
+  map: { name: "지도", min: [3, 2], render: (c) => mapPanel(c.st, c.events, c.track) },
+  timeline: { name: "비행 기록", min: [3, 1], render: (c) => timelinePanel(c.track) },
 };
-const PRESETS = window.PRESETS || [];
+const PRESETS = window.PRESETS || [];   // 기본 프리셋(presets.js, 고칠 수 없음)
+const overlaps = (a, b) => a.x < b.x + b.w && b.x < a.x + a.w && a.y < b.y + b.h && b.y < a.y + a.h;
+const MINE_KEY = "controller.presets.mine";   // 내 프리셋: 화면 편집에서 저장한 것(이 브라우저에만)
+let MINE = loadMine();
+const allPresets = () => [...PRESETS, ...MINE];
 
 function livePreset() {
-  return PRESETS.find((p) => p.id === ui.preset) || PRESETS[0]
+  if (ui.edit) return ui.edit.draft;   // 편집 중에는 고치고 있는 배치
+  return allPresets().find((p) => p.id === ui.preset) || PRESETS[0]
     || { id: "all", name: "모든 칸", grid: [12, 6], panels: Object.keys(PANELS).map((id, i) => ({ id, x: 0, y: i * 2, w: 12, h: 2 })) };
+}
+
+// 저장해 둔 프리셋을 믿고 쓸 수 있게: 격자 크기를 제한하고, 모르는 칸·같은 칸 두 번·겹치는 칸은 뺀다.
+function normalizePreset(p) {
+  if (!p || typeof p !== "object" || !Array.isArray(p.panels)) return null;
+  const int = (v, lo, hi, d) => (Number.isFinite(Number(v)) ? Math.max(lo, Math.min(hi, Math.round(Number(v)))) : d);
+  const grid = [int(p.grid?.[0], 4, 24, 12), int(p.grid?.[1], 3, 12, 6)];
+  const panels = [];
+  for (const c of presetCells({ grid, panels: p.panels.filter((x) => x && typeof x === "object") })) {
+    if (panels.some((o) => o.id === c.id || overlaps(o, c))) continue;
+    panels.push({ id: c.id, x: c.x, y: c.y, w: c.w, h: c.h, ...(c.id === "map" && MAP_MODES[c.mode] ? { mode: c.mode } : {}) });
+  }
+  return panels.length ? { id: String(p.id || ""), name: String(p.name || "내 프리셋").slice(0, 40), grid, panels } : null;
+}
+
+function loadMine() {
+  try {
+    const list = JSON.parse(localStorage.getItem(MINE_KEY) || "[]");
+    return Array.isArray(list) ? list.map(normalizePreset).filter((p) => p && p.id.startsWith("mine-")) : [];
+  } catch (e) { return []; }
+}
+
+function storeMine() {
+  try { localStorage.setItem(MINE_KEY, JSON.stringify(MINE)); return true; } catch (e) { return false; }
 }
 
 // 프리셋 바꾸기: 크게 보기는 풀고, 프리셋이 지도 보기(2D/3D)를 정해 두었으면 그것으로 시작한다(그 뒤 바꾸는 건 자유).
@@ -614,7 +645,7 @@ function presetCells(p) {
   const fit = (v, lo, hi) => Math.max(lo, Math.min(hi, Math.round(Number(v) || 0)));
   return p.panels.filter((c) => PANELS[c.id]).map((c, o) => {
     const w = fit(c.w, 1, cols), h = fit(c.h, 1, rows);
-    return { id: c.id, x: fit(c.x, 0, cols - w), y: fit(c.y, 0, rows - h), w, h, o };
+    return { id: c.id, x: fit(c.x, 0, cols - w), y: fit(c.y, 0, rows - h), w, h, o, mode: c.mode };
   });
 }
 
@@ -630,16 +661,20 @@ function board(ctx, p) {
   let cells = presetCells(p);
   const m = cells.find((c) => c.id === "map");
   ui.mapCanBig = !!m && cells.some((c) => c.w * c.h > m.w * m.h);   // 지도가 이미 가장 큰 칸이면 크게 보기 버튼을 숨긴다
-  if (ui.live && ui.mapBig && ui.mapCanBig) cells = swapBiggest(cells, "map");   // 크게 보기 버튼은 게이트웨이 연결 화면에만 있다
+  if (!ui.edit && ui.live && ui.mapBig && ui.mapCanBig) cells = swapBiggest(cells, "map");   // 크게 보기 버튼은 게이트웨이 연결 화면에만 있다
   const [cols, rows] = p.grid;
-  const layout = cells.map((c) => `${c.id}:${c.x},${c.y},${c.w},${c.h},${c.o}`).join(";");   // 배치가 바뀌면 다시 그린다(render)
-  return `<div class="live-main board" data-layout="${esc(layout)}" style="--cols:${cols};--rows:${rows}">${cells.map((c) =>
-    `<div class="cell" data-panel="${c.id}" style="--x:${c.x + 1};--y:${c.y + 1};--w:${c.w};--h:${c.h};--o:${c.o}">${PANELS[c.id].render(ctx)}</div>`).join("")}</div>`;
+  const layout = `${ui.edit ? "edit|" : ""}${cells.map((c) => `${c.id}:${c.x},${c.y},${c.w},${c.h},${c.o}`).join(";")}`;   // 배치가 바뀌면 다시 그린다(render)
+  const slots = ui.edit ? Array.from({ length: cols * rows }, (_, i) => `<i class="slot" style="--x:${(i % cols) + 1};--y:${Math.floor(i / cols) + 1}"></i>`).join("") : "";
+  return `<div class="live-main board ${ui.edit ? "editing" : ""}" data-layout="${esc(layout)}" style="--cols:${cols};--rows:${rows}">${slots}${cells.map((c) =>
+    `<div class="cell" data-panel="${c.id}" style="--x:${c.x + 1};--y:${c.y + 1};--w:${c.w};--h:${c.h};--o:${c.o}">${PANELS[c.id].render(ctx)}${ui.edit ? editCover(c, cells.length) : ""}</div>`).join("")}
+    ${ui.edit && !cells.length ? `<p class="board-empty">위 편집 막대에서 넣을 칸을 고르세요.</p>` : ""}</div>`;
 }
 
 // ---------- 화면 ----------
 function renderLive() {  // 모니터 한 화면(1366×768 이상)에 스크롤 없이 들어가게 배치한다.
   const ctx = current();
+  const locked = ui.edit && editLocked();   // 편집 중에 이륙했거나 창이 좁아지면 편집을 닫는다(저장 안 함)
+  if (locked) { ui.edit = null; syncEditbar(); toast(EDIT_CLOSED[locked]); }
   return `${statusStrip(ctx.st, ctx.events)}${alertBox(ctx.sc, ctx.events)}${board(ctx, livePreset())}${controlBar(ctx.st)}`;
 }
 
@@ -736,7 +771,8 @@ function render() {
     ui.view = v;
     document.body.dataset.view = v;
     document.querySelectorAll(".views a").forEach((a) => a.setAttribute("aria-current", a.dataset.view === v ? "page" : "false"));
-    $("#preset-wrap").hidden = v !== "live" || PRESETS.length < 2;   // 프리셋은 실시간 감독 화면만
+    $("#preset-wrap").hidden = v !== "live";   // 프리셋·화면 편집은 실시간 감독 화면만
+    syncEditbar();
     app.innerHTML = html;
     ui.cache = { __keys: keys };
     parts.forEach((p) => { ui.cache[p.dataset.part] = p.outerHTML; });
@@ -1077,6 +1113,193 @@ function bindSticks() {
   });
 }
 
+// ---------- 화면 편집(내 프리셋) ----------
+// 땅에 있을 때, 넓은 창(격자 배치)에서만 연다. 칸을 끌어 옮기고(다른 칸 위에 놓으면 자리 바꿈) 오른쪽 아래 모서리로 크기를 바꾼다.
+// 편집하는 동안 칸마다 덮개를 씌워 칸 안 버튼은 눌리지 않는다. 기본 프리셋은 고치지 않고 "내 프리셋"으로 새로 저장한다(이 브라우저에만).
+const WIDE = "(min-width:1100px) and (min-height:700px)";   // style.css 격자 배치 기준과 같다
+const EDIT_CLOSED = {
+  flight: "비행 중이라 화면 편집을 닫았습니다(저장 안 됨). 프리셋 바꾸기는 됩니다",
+  narrow: "창이 좁아 화면 편집을 닫았습니다(저장 안 됨). 가로 1100·세로 700 이상에서 편집하세요",
+};
+const isMine = (id) => MINE.some((p) => p.id === id);
+
+function editLocked() {   // 편집할 수 없는 까닭(없으면 null)
+  const st = ui.state;
+  if (ui.live && st && (st.flight_busy === "takeoff" || !["grounded", "disconnected"].includes(st.mode))) return "flight";
+  if (!matchMedia(WIDE).matches) return "narrow";
+  return null;
+}
+
+function fillPresetPicker() {
+  const opt = (p) => `<option value="${esc(p.id)}" title="${esc(p.note || "")}">${esc(p.name)}</option>`;
+  $("#preset").innerHTML = PRESETS.map(opt).join("") + (MINE.length ? `<optgroup label="내 프리셋">${MINE.map(opt).join("")}</optgroup>` : "");
+  $("#preset").value = livePreset().id;
+}
+
+// 칸 덮개: 중요한 순서(좁은 화면에서 쌓는 순서)·이름·크기, 더 중요하게·빼기 버튼, 크기 조절 손잡이.
+function editCover(c, n) {
+  return `<div class="cell-edit" data-edit-cell="${c.id}">
+    <span class="cell-head"><span class="cell-name"><b>${c.o + 1}</b> ${esc(PANELS[c.id].name)} · <span class="cell-size">${c.w}×${c.h}</span></span>
+      <span class="cell-tools"><button data-edit-up="${c.id}" ${c.o === 0 ? "disabled" : ""} title="더 중요하게(좁은 화면에서 더 위에 쌓임)">중요 ↑</button><button data-edit-remove="${c.id}" title="이 칸 빼기" aria-label="${esc(PANELS[c.id].name)} 칸 빼기">✕</button></span></span>
+    <span class="cell-hint">${n > 1 ? "끌어서 옮기기 · 다른 칸 위에 놓으면 자리 바꿈" : "끌어서 옮기기"}</span>
+    <span class="cell-resize" data-edit-resize="${c.id}" title="끌어서 크기 조절"></span></div>`;
+}
+
+function openEdit() {
+  const why = editLocked();
+  if (why) return toast(why === "flight" ? "비행 중에는 화면을 편집할 수 없습니다. 프리셋 바꾸기는 됩니다" : "화면 편집은 넓은 창(가로 1100·세로 700 이상)에서 합니다");
+  const p = livePreset();
+  ui.edit = { draft: JSON.parse(JSON.stringify(p)), from: p.id };
+  ui.mapBig = false;
+  $("#edit-name").value = isMine(p.id) ? p.name : `${p.name} (내 것)`;
+  syncEditbar();
+  render();
+}
+
+// 편집 막대(index.html #editbar)는 #app 밖이라 10Hz 다시 그리기에 걸리지 않는다(이름 입력이 끊기지 않게). 바뀔 때만 여기서 맞춘다.
+function syncEditbar() {
+  const e = ui.edit;
+  $("#editbar").hidden = !e || view() !== "live";
+  $("#preset").disabled = !!e;
+  $("#edit-layout").disabled = !!e;
+  if (!e) return;
+  const on = new Set(e.draft.panels.map((c) => c.id));
+  $("#edit-panels").innerHTML = Object.entries(PANELS).map(([id, p]) =>
+    `<button data-edit-toggle="${id}" aria-pressed="${on.has(id)}" title="${on.has(id) ? "빼기" : "빈 자리에 넣기"}">${on.has(id) ? "✓" : "+"} ${esc(p.name)}</button>`).join("");
+  const mine = isMine(e.from);
+  $('[data-edit="save"]').textContent = mine ? "저장" : "내 프리셋으로 저장";
+  $('[data-edit="saveas"]').hidden = !mine;
+  $('[data-edit="delete"]').hidden = !mine;
+}
+
+function editChanged() {
+  syncEditbar();
+  ui.cache = {};   // 끌다가 제자리로 돌아와도 칸 위치를 다시 맞추게 통째로 다시 그린다
+  render();
+}
+
+function togglePanel(id) {
+  const d = ui.edit.draft, i = d.panels.findIndex((c) => c.id === id);
+  if (i >= 0) { d.panels.splice(i, 1); return editChanged(); }
+  const [w, h] = PANELS[id].min, [cols, rows] = d.grid;
+  for (let y = 0; y + h <= rows; y++) {
+    for (let x = 0; x + w <= cols; x++) {
+      if (!d.panels.some((o) => overlaps(o, { x, y, w, h }))) { d.panels.push({ id, x, y, w, h }); return editChanged(); }
+    }
+  }
+  toast(`${PANELS[id].name} 칸을 넣을 빈 자리가 없습니다. 다른 칸을 줄이거나 빼세요`);
+}
+
+function raisePanel(id) {   // 중요한 순서를 하나 앞으로
+  const l = ui.edit.draft.panels, i = l.findIndex((c) => c.id === id);
+  if (i > 0) { [l[i - 1], l[i]] = [l[i], l[i - 1]]; editChanged(); }
+}
+
+// 끌기: 놓는 자리는 칸 단위로 맞춘다. 비어 있으면 옮기고, 다른 칸 위면 두 칸의 자리(위치·크기)를 바꾸고, 겹치면 되돌린다.
+function startEditDrag(ev, id, kind) {
+  const boardEl = $("#app .board"), cellEl = boardEl?.querySelector(`.cell[data-panel="${id}"]`);
+  const d = ui.edit.draft, c0 = d.panels.find((c) => c.id === id);
+  if (!cellEl || !c0) return;
+  ev.preventDefault();
+  const [cols, rows] = d.grid, r = boardEl.getBoundingClientRect();
+  const gap = parseFloat(getComputedStyle(boardEl).columnGap) || 0;
+  const cw = (r.width + gap) / cols, rh = (r.height + gap) / rows;
+  const fit = (v, lo, hi) => Math.max(lo, Math.min(hi, v));
+  const fits = (c, rect) => rect.w >= PANELS[c.id].min[0] && rect.h >= PANELS[c.id].min[1];
+  let next = c0, swap = null, bad = false;
+  const move = (e) => {
+    const dx = Math.round((e.clientX - ev.clientX) / cw), dy = Math.round((e.clientY - ev.clientY) / rh);
+    swap = null;
+    if (kind === "move") {
+      const gx = Math.floor((e.clientX - r.left) / cw), gy = Math.floor((e.clientY - r.top) / rh);
+      swap = d.panels.find((o) => o !== c0 && gx >= o.x && gx < o.x + o.w && gy >= o.y && gy < o.y + o.h) || null;
+      next = swap ? c0 : { ...c0, x: fit(c0.x + dx, 0, cols - c0.w), y: fit(c0.y + dy, 0, rows - c0.h) };
+    } else {
+      const [mw, mh] = PANELS[id].min;
+      next = { ...c0, w: fit(c0.w + dx, mw, cols - c0.x), h: fit(c0.h + dy, mh, rows - c0.y) };
+    }
+    bad = swap ? !fits(c0, swap) || !fits(swap, c0) : d.panels.some((o) => o !== c0 && overlaps(o, next));
+    for (const [k, v] of [["--x", next.x + 1], ["--y", next.y + 1], ["--w", next.w], ["--h", next.h]]) cellEl.style.setProperty(k, v);
+    const size = cellEl.querySelector(".cell-size");
+    if (size) size.textContent = `${next.w}×${next.h}`;
+    cellEl.classList.toggle("bad", bad);
+    boardEl.querySelectorAll(".cell").forEach((el) => el.classList.toggle("swap", el.dataset.panel === swap?.id));
+  };
+  const end = (e) => {
+    document.removeEventListener("pointermove", move);
+    document.removeEventListener("pointerup", end);
+    document.removeEventListener("pointercancel", end);
+    if (!ui.edit) return;
+    if (e.type === "pointerup" && bad) toast(swap ? "칸이 너무 작아져서 자리를 바꿀 수 없습니다" : "다른 칸과 겹치는 자리에는 놓을 수 없습니다");
+    else if (e.type === "pointerup" && swap) {
+      const a = { x: c0.x, y: c0.y, w: c0.w, h: c0.h };
+      Object.assign(c0, { x: swap.x, y: swap.y, w: swap.w, h: swap.h });
+      Object.assign(swap, a);
+    } else if (e.type === "pointerup") Object.assign(c0, { x: next.x, y: next.y, w: next.w, h: next.h });
+    editChanged();
+  };
+  document.addEventListener("pointermove", move);
+  document.addEventListener("pointerup", end);
+  document.addEventListener("pointercancel", end);
+}
+
+function saveEdit(asNew) {
+  const d = ui.edit.draft;
+  if (!d.panels.length) return toast("칸이 하나도 없습니다. 칸을 하나 이상 넣으세요");
+  const keep = !asNew && isMine(ui.edit.from);
+  const p = normalizePreset({ ...d, id: keep ? ui.edit.from : `mine-${Date.now().toString(36)}`, name: $("#edit-name").value.trim() || d.name });
+  MINE = keep ? MINE.map((x) => (x.id === p.id ? p : x)) : [...MINE, p];
+  const stored = storeMine();
+  ui.edit = null;
+  ui.preset = p.id;
+  savePref("controller.preset", p.id);
+  fillPresetPicker();
+  editChanged();
+  toast(stored ? `"${p.name}" 저장 · 이 브라우저에만 남습니다` : "브라우저 저장소에 쓰지 못했습니다. 이 창을 닫으면 사라집니다");
+}
+
+function deleteMine(btn) {   // 한 번 더 눌러야 지운다(되돌릴 수 없음)
+  if (btn.dataset.armed !== "1") {
+    btn.dataset.armed = "1";
+    btn.textContent = "한 번 더 누르면 삭제";
+    clearTimeout(deleteMine.t);
+    deleteMine.t = setTimeout(() => { btn.dataset.armed = ""; btn.textContent = "삭제"; }, 3000);
+    return;
+  }
+  clearTimeout(deleteMine.t);
+  btn.dataset.armed = "";
+  btn.textContent = "삭제";
+  const gone = MINE.find((p) => p.id === ui.edit.from);
+  MINE = MINE.filter((p) => p !== gone);
+  storeMine();
+  ui.edit = null;
+  ui.preset = PRESETS[0]?.id || "";
+  savePref("controller.preset", ui.preset);
+  fillPresetPicker();
+  editChanged();
+  toast(`"${gone?.name}" 삭제`);
+}
+
+document.addEventListener("pointerdown", (ev) => {
+  if (!ui.edit || ev.button !== 0 || ev.target.closest("button")) return;
+  const h = ev.target.closest("[data-edit-resize], [data-edit-cell]");
+  if (h) startEditDrag(ev, h.dataset.editResize || h.dataset.editCell, h.dataset.editResize ? "resize" : "move");
+});
+
+document.addEventListener("click", (ev) => {
+  const t = ev.target.closest("#edit-layout, [data-edit], [data-edit-toggle], [data-edit-up], [data-edit-remove]");
+  if (!t) return;
+  if (t.id === "edit-layout") return openEdit();
+  if (!ui.edit) return;
+  if (t.dataset.editToggle) return togglePanel(t.dataset.editToggle);
+  if (t.dataset.editRemove) return togglePanel(t.dataset.editRemove);
+  if (t.dataset.editUp) return raisePanel(t.dataset.editUp);
+  const a = t.dataset.edit;
+  if (a === "save" || a === "saveas") return saveEdit(a === "saveas");
+  if (a === "delete") return deleteMine(t);
+  if (a === "cancel") { ui.edit = null; editChanged(); }
+});
+
 // ---------- 시작 ----------
 (async () => {
   ui.live = await detectGateway();
@@ -1095,9 +1318,9 @@ function bindSticks() {
   }
   // 프리셋 고르기. 고른 뒤 선택 상자에서 포커스를 빼야 WASD 조종 키가 다시 먹는다(선택 상자에 포커스가 가면 조종 입력은 멈춘다).
   const pick = $("#preset");
-  pick.innerHTML = PRESETS.map((p) => `<option value="${esc(p.id)}" title="${esc(p.note || "")}">${esc(p.name)}</option>`).join("");
-  pick.value = livePreset().id;
+  fillPresetPicker();
   pick.onchange = () => { choosePreset(pick.value); pick.blur(); };
+  window.addEventListener("resize", () => { if (ui.edit && editLocked()) render(); });
   window.addEventListener("hashchange", leaveControls);
   window.addEventListener("resize", placeConsole);
   render();

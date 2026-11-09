@@ -4,6 +4,7 @@
 //   id는 app.js의 PANELS에 있는 칸(video·findings·map·timeline), x·y는 0부터 시작하는 왼쪽 위 칸, w·h는 차지하는 칸 수.
 //   지도 칸은 mode("2d" 자율 지도 / "3d" 점군)로 프리셋을 고를 때 처음 보기를 정할 수 있다(없으면 쓰던 보기 그대로).
 // - 첫 번째가 기본 프리셋. 주소에 ?preset=<id>를 붙이면 그 프리셋으로 연다.
+// - 여기 프리셋은 화면에서 고치지 않는다. 화면 편집으로 바꾼 배치는 "내 프리셋"으로 브라우저에만 저장된다(app.js MINE).
 "use strict";
 
 window.PRESETS = [

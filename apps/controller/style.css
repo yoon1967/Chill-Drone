@@ -127,7 +127,23 @@ body[data-view=control] main{padding-bottom:24px}body[data-view=review] main{pad
   .live-main.board{grid-template-columns:repeat(var(--cols),minmax(0,1fr));grid-template-rows:repeat(var(--rows),minmax(0,1fr))}
   .board>.cell{grid-column:var(--x)/span var(--w);grid-row:var(--y)/span var(--h)}
   .board .timeline{flex:1;min-height:0;max-height:none}
+  .board>.slot{grid-column:var(--x)/span 1;grid-row:var(--y)/span 1;border:1px dashed var(--line);border-radius:8px}
 }
+/* 화면 편집: 위 편집 막대, 칸마다 덮개(끌기·크기 조절), 빈 격자 칸은 점선 */
+#preset-wrap button{padding:3px 10px;font-size:12px;color:var(--text)}#preset-wrap button:disabled{opacity:.5;cursor:default}
+.editbar{display:flex;align-items:center;gap:8px;flex-wrap:wrap;padding:8px 20px;background:var(--accent-soft);border-bottom:1px solid var(--line);font-size:13px}
+.editbar button{padding:4px 10px;font-size:12px}.editbar input{font:inherit;padding:4px 8px;border:1px solid var(--line);border-radius:6px;width:180px}
+.edit-panels{display:flex;gap:4px;flex-wrap:wrap}.edit-panels button[aria-pressed=false]{border-style:dashed;color:var(--muted)}
+.board.editing>.cell{position:relative}
+.cell-edit{position:absolute;inset:0;z-index:3;display:flex;flex-direction:column;justify-content:space-between;padding:8px;border:2px dashed var(--accent);border-radius:12px;background:rgba(31,95,153,.12);cursor:move;touch-action:none;user-select:none}
+.cell-head{display:flex;justify-content:space-between;align-items:flex-start;gap:6px;flex-wrap:wrap}
+.cell-name{background:var(--panel);border-radius:7px;padding:3px 10px;font-size:13px;box-shadow:0 1px 3px #0002}.cell-name b{color:var(--accent)}
+.cell-tools{display:flex;gap:4px}.cell-tools button{padding:2px 9px;font-size:12px}.cell-tools button:disabled{opacity:.45;cursor:default}
+.cell-hint{align-self:center;font-size:12px;color:var(--accent);background:var(--panel);border-radius:6px;padding:2px 8px;opacity:.9}
+.cell-resize{position:absolute;right:3px;bottom:3px;width:22px;height:22px;cursor:nwse-resize;border-right:4px solid var(--accent);border-bottom:4px solid var(--accent);border-radius:0 0 9px 0}
+.board .cell.bad .cell-edit{border-color:var(--danger);background:rgba(163,45,45,.16)}
+.board .cell.swap .cell-edit{border-style:solid;background:rgba(31,95,153,.28)}
+.board-empty{grid-column:1/-1;grid-row:1/-1;align-self:center;text-align:center;color:var(--muted)}
 @media (max-width:900px){.review-grid,.review-grid.two{grid-template-columns:1fr}.top{gap:8px;padding:8px 16px}main{padding:12px 16px 120px}}
 @media (max-width:520px){.views a{padding:5px 8px;font-size:13px}.scenario{order:5}.controls{padding:8px 16px}}
 /* 게이트웨이 연결(실시간) */
