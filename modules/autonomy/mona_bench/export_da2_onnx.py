@@ -29,16 +29,23 @@ def sha256(path):
 def main():
     parser = argparse.ArgumentParser()
     parser.add_argument("output_dir", type=Path)
-    parser.add_argument("--weights-dir", type=Path,
-                        default=Path.home() / ".cache/huggingface/local/da2-metric-indoor-small")
+    parser.add_argument("--weights-dir", type=Path, help="Optional separate copy of the Hugging Face weights")
     parser.add_argument("--precision", choices=sorted(NAMES), default="fp16")
     args = parser.parse_args()
     import torch
     from huggingface_hub import snapshot_download
+    from huggingface_hub.errors import LocalEntryNotFoundError
     from transformers import AutoModelForDepthEstimation
 
-    weights = Path(snapshot_download(REPO, revision=REVISION, local_dir=args.weights_dir,
-                                     allow_patterns=["*.json", "model.safetensors"]))
+    options = dict(revision=REVISION, local_dir=args.weights_dir, allow_patterns=["*.json", "model.safetensors"])
+    try:
+        weights = Path(snapshot_download(REPO, **options, local_files_only=True))
+    except LocalEntryNotFoundError:
+        weights = None
+    if weights is None or not all((weights / name).is_file() for name in ("config.json", "model.safetensors")):
+        weights = Path(snapshot_download(REPO, **options))
+    if sha256(weights / "model.safetensors") != WEIGHTS_SHA256:
+        weights = Path(snapshot_download(REPO, **options, force_download=True))
     if sha256(weights / "model.safetensors") != WEIGHTS_SHA256:
         raise SystemExit("model.safetensors SHA-256 differs from the pinned revision")
     model = AutoModelForDepthEstimation.from_pretrained(weights).eval()

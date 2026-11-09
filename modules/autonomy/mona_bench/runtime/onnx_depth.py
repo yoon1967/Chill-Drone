@@ -16,6 +16,11 @@ import cv2
 import numpy as np
 import onnxruntime as ort
 
+if __package__:
+    from .depth_artifacts import DA_V2_FP16_FILE, DA_V2_FP16_SHA256
+else:
+    from depth_artifacts import DA_V2_FP16_FILE, DA_V2_FP16_SHA256
+
 Spec = namedtuple("Spec", "path sha256 input_hw mean std interpolation output")
 MODELS = {
     "sc_depth_v2_nyu": Spec(
@@ -26,8 +31,7 @@ MODELS = {
     # fp16 inside with float32 input/output: 37 ms vs 64 ms per frame on the RTX 4050 Laptop,
     # p99 relative difference 0.26% on real frames, so the depth node keeps up with 8-9 Hz video.
     "da_v2_metric_indoor_small": Spec(
-        "/models/da_v2_metric_indoor_small_518x686_fp16.onnx",
-        "f2b7c5b75fc35ecde8681ac1df8c08dd77207ab41d77f4248f6e1fee1b6957a7",
+        f"/models/{DA_V2_FP16_FILE}", DA_V2_FP16_SHA256,
         (518, 686), (0.485, 0.456, 0.406), (0.229, 0.224, 0.225), cv2.INTER_CUBIC, "metric"),
     "da_v2_metric_indoor_small_fp32": Spec(
         "/models/da_v2_metric_indoor_small_518x686.onnx",

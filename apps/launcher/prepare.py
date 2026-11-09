@@ -1,15 +1,59 @@
-"""켜기 전에 빠진 것을 준비한다(인터넷 필요): 패키지 → 모델 파일 → 지도 콘솔 웹 의존성.
-
-1·2번을 켤 때마다 먼저 확인하고, 빠진 것만 받는다(다 있으면 몇 초 안에 넘어간다).
-패키지 설치 순서는 이전 start_3d_mapping.cmd의 준비(--prepare-models)를 그대로 옮겼다.
-"""
+"""PC의 실행 환경을 확인한 뒤 빠진 프로젝트 의존성만 준비한다."""
 import importlib.util
+import os
 from pathlib import Path
 import shutil
 import subprocess
 import sys
 
+from . import docker_assets
+
 ROOT = Path(__file__).resolve().parents[2]
+THREE = ROOT / 'apps/console/node_modules/three'
+WEB_FILES = ('build/three.module.js', 'build/three.core.js', 'examples/jsm/controls/OrbitControls.js')
+NODE_INSTALL_HINT = 'Node.js LTS를 설치해 주세요. https://nodejs.org/'
+
+
+def console_web_ready():
+    return all((THREE / file).is_file() for file in WEB_FILES)
+
+
+def console_install_command():
+    pnpm = shutil.which('pnpm')
+    if pnpm:
+        return [pnpm]
+    npx = docker_assets.installed_program(
+        'npx', Path(os.environ.get('ProgramFiles', 'C:/Program Files')) / 'nodejs/npx.cmd')
+    return [npx, '--yes', 'pnpm@10'] if npx else None
+
+
+def check_host(*, mona):
+    """호스트 설정을 바꾸거나 프로젝트 파일을 만들지 않고 확인한다."""
+    problems = []
+    if sys.version_info[:2] != (3, 12) or sys.maxsize <= 2**32:
+        problems.append('Python 3.12(64비트)를 설치해 주세요. https://www.python.org/downloads/windows/')
+    if not console_web_ready() and not console_install_command():
+        problems.append(NODE_INSTALL_HINT)
+    docker = docker_assets.docker_problem(mona=mona)
+    if docker:
+        problems.append(docker)
+    if problems:
+        print('[실행 전 확인] 이 PC에 필요한 설정이 있습니다.', flush=True)
+        for problem in problems:
+            print('  - ' + problem, flush=True)
+        print('위 항목을 준비한 후 scripts/start.cmd를 다시 실행해 주세요.', flush=True)
+        return False
+    return True
+
+
+def create_project_environment():
+    env = ROOT / '.venv'
+    python = env / ('Scripts/python.exe' if os.name == 'nt' else 'bin/python')
+    print('프로젝트 Python 가상환경을 준비합니다...', flush=True)
+    if subprocess.call([sys.executable, '-B', '-m', 'venv', str(env)], cwd=ROOT) == 0 and python.is_file():
+        return python
+    print('[오류] 가상환경을 만들지 못했습니다. 위 메시지를 확인하고 scripts/start.cmd를 다시 실행해 주세요.', flush=True)
+    return None
 
 
 def ensure_python_environment(*, allow_install=False):
@@ -40,11 +84,12 @@ def ensure_python_environment(*, allow_install=False):
                 print('PyTorch 설치: ' + ('NVIDIA CUDA' if index.endswith('cu128') else 'CPU'), flush=True)
                 # torchvision도 같은 저장소에서 함께 받는다. 따로 두면 ultralytics가 PyPI의 최신 torchvision을 받으면서
                 # 그에 맞는 CPU용 torch로 바꿔 버린다(GPU를 못 씀).
-                if subprocess.call(pip + ['torch>=2.6,<3', 'torchvision', '--index-url', index], cwd=ROOT):
+                if subprocess.call(pip + ['torch==2.11.0', 'torchvision==0.26.0', '--index-url', index], cwd=ROOT):
                     print('[오류] PyTorch 설치에 실패했습니다. 인터넷과 디스크 여유를 확인하고 다시 실행하세요.', flush=True)
                     return False
             requirements = ROOT / 'modules/mapping/data/requirements-stream.txt'
-            if subprocess.call(pip + ['-r', str(requirements)], cwd=ROOT):
+            pinned = ['transformers==4.57.6'] if 'transformers' in missing else []
+            if subprocess.call(pip + pinned + ['-r', str(requirements)], cwd=ROOT):
                 print('[오류] 지도·사람 탐지 패키지 설치에 실패했습니다. 위 메시지를 확인하고 다시 실행하세요.', flush=True)
                 return False
             importlib.invalidate_caches()
@@ -81,23 +126,30 @@ def ensure_models():
 
 def ensure_console_web():
     """지도 콘솔 웹 의존성(apps/console/node_modules). 없으면 pnpm으로 설치한다."""
-    if (ROOT / 'apps/console/node_modules/three/build/three.module.js').is_file():
+    if console_web_ready():
         return True
-    pnpm = shutil.which('pnpm')
-    if not pnpm:
-        print('[오류] 지도 콘솔 웹 의존성이 없고 pnpm도 없습니다. Node.js와 pnpm을 설치한 뒤 다시 실행하세요.')
+    command = console_install_command()
+    if not command:
+        print('[오류] ' + NODE_INSTALL_HINT, flush=True)
         return False
     print('지도 콘솔 웹 의존성을 설치합니다(pnpm)...', flush=True)
-    if subprocess.call([pnpm, '--dir', 'apps/console', 'install', '--frozen-lockfile'], cwd=ROOT):
+    result = subprocess.call(command + ['--dir', 'apps/console', 'install', '--frozen-lockfile'], cwd=ROOT,
+                             env={**os.environ, 'CI': 'true'})
+    if result or not console_web_ready():
         print('[오류] 웹 의존성 설치에 실패했습니다. 위 메시지를 확인하고 다시 실행하세요.')
         return False
     return True
 
 
-def ensure_all(*, console=True):
-    """빠진 것을 받는다. 못 받은 게 있어도 멈추지 않고 무엇이 준비됐는지 돌려준다(그것만 빼고 켠다)."""
-    packages = ensure_python_environment(allow_install=True)
-    gateway = ensure_gateway_environment(True)
-    models = packages and ensure_models()
-    web = ensure_console_web() if console else True
-    return {'packages': packages, 'gateway': gateway, 'models': models, 'web': web}
+def ensure_all(*, mona=False):
+    """선택한 모드의 파일을 준비하고 첫 실패에서 멈춘다."""
+    try:
+        return (ensure_python_environment(allow_install=True)
+                and ensure_gateway_environment(True)
+                and ensure_console_web()
+                and ensure_models()
+                and docker_assets.ensure_image(docker_assets.ORB_IMAGE, ROOT / 'modules/mapping/localization/orbslam3')
+                and (not mona or docker_assets.ensure_mona()))
+    except OSError as error:
+        print(f'[오류] 프로젝트 준비 중 파일 또는 프로그램에 접근하지 못했습니다. {error}', flush=True)
+        return False

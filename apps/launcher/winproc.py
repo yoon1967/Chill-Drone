@@ -3,6 +3,8 @@ import ctypes
 from dataclasses import dataclass
 import json
 import locale
+import os
+from pathlib import Path
 import re
 import subprocess
 import sys
@@ -10,6 +12,7 @@ from urllib.error import HTTPError
 from urllib.request import ProxyHandler, Request, build_opener
 
 CREATE_NO_WINDOW = 0x08000000
+CREATE_NEW_CONSOLE = 0x00000010
 STILL_ACTIVE = 259
 _opener = build_opener(ProxyHandler({}))   # 같은 PC 주소는 프록시를 거치지 않는다
 
@@ -100,16 +103,24 @@ def wifi_ssids(text=None):
     return [m.group(1) for m in re.finditer(r'^\s*SSID\s*:\s*(.+?)\s*$', text, re.M)]
 
 
-def _quote(arg):
-    return '"' + str(arg).replace('"', '\\"') + '"'
+def service_log(cwd, name):
+    return Path(cwd) / 'data/outputs/launcher' / f'{name}.log'
 
 
-def start_window(title, cwd, argv, minimized=False):
-    """새 콘솔 창에서 띄운다. 창 제목을 달고, 그 창에서 Ctrl+C로 끌 수 있다.
-    인자는 모두 따옴표로 감싼다(cmd가 & | < > 같은 문자를 해석하지 않게)."""
-    line = 'start ' + _quote(title) + (' /MIN' if minimized else '') + ' /D ' + _quote(cwd) + ' ' + \
-        ' '.join(_quote(a) for a in argv)
-    subprocess.Popen('cmd /d /c ' + line, creationflags=CREATE_NO_WINDOW)
+def start_service(name, cwd, argv):
+    """서비스를 숨은 콘솔에서 띄우고 로그를 남긴다. 콘솔은 서비스별 Ctrl+C 종료에 사용한다."""
+    log = service_log(cwd, name)
+    log.parent.mkdir(parents=True, exist_ok=True)
+    options = {}
+    if os.name == 'nt':
+        startup = subprocess.STARTUPINFO()
+        startup.dwFlags = subprocess.STARTF_USESHOWWINDOW
+        startup.wShowWindow = subprocess.SW_HIDE
+        options = {'creationflags': CREATE_NEW_CONSOLE, 'startupinfo': startup}
+    with log.open('w', encoding='utf-8') as output:
+        return subprocess.Popen(argv, cwd=cwd, stdin=subprocess.DEVNULL, stdout=output,
+                                stderr=subprocess.STDOUT, env={**os.environ, 'PYTHONUNBUFFERED': '1',
+                                                               'PYTHONIOENCODING': 'utf-8'}, **options)
 
 
 _CTRL_C_HELPER = r'''

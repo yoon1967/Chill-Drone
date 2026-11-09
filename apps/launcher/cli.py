@@ -3,9 +3,10 @@
 메뉴는 두 개다: 1 체험(가짜 드론), 2 실기체 관제. 고른 쪽의 기능을 묻지 않고 모두 켠다.
 """
 import argparse
+import subprocess
 import sys
 
-from . import drone
+from . import drone, prepare
 
 MENU = [
     ('1', '체험', '가짜 드론으로 관제 화면·사람 탐지·지도(드론 없이)'),
@@ -33,25 +34,42 @@ def menu():
     choice = input('\n번호를 고르세요: ').strip()
     print()
     if choice == '1':
-        return drone.run_fake()
+        return ['fake']
     if choice == '2':
-        return drone.run_real()
+        return ['real']
     print('1이나 2를 고르세요.')
-    return 0
+    return None
 
 
 def main(argv=None):
     argv = sys.argv[1:] if argv is None else list(argv)
     try:
-        if not argv:   # 더블클릭: 메뉴
-            return menu()
+        if not argv:
+            argv = menu()
+            if not argv:
+                return 0
         args = build_parser().parse_args(argv)
+        if not prepare.check_host(mona=args.command == 'real'):
+            return 1
+        if sys.prefix == sys.base_prefix:
+            try:
+                python = prepare.create_project_environment()
+                if python is None:
+                    return 1
+                with subprocess.Popen([str(python), '-B', '-m', 'apps.launcher', *argv], cwd=prepare.ROOT) as launcher:
+                    while True:
+                        try:
+                            return launcher.wait()
+                        except KeyboardInterrupt:
+                            # The launcher shares this console and handles Ctrl+C itself.
+                            continue
+            except OSError as error:
+                print(f'[오류] 가상환경을 준비하지 못했습니다. {error}\n'
+                      '위 메시지를 확인한 후 scripts/start.cmd를 다시 실행해 주세요.', flush=True)
+                return 1
         if args.command == 'fake':
             return drone.run_fake(no_browser=args.no_browser)
-        if args.command == 'real':
-            return drone.run_real(phone=args.phone, no_browser=args.no_browser)
-        build_parser().print_help()
-        return 0
+        return drone.run_real(phone=args.phone, no_browser=args.no_browser)
     except KeyboardInterrupt:
-        print('\n실행기를 멈췄어요. 켠 프로그램은 각자 창에서 계속 돌아요.')
+        print('\n실행을 중단했습니다. 이미 시작한 서비스를 종료하려면 실행기를 다시 열고 Enter를 누르세요.')
         return 0
