@@ -2,6 +2,7 @@
 
 프로젝트를 켜고 끄는 실행 파일을 하나로 모았다. `scripts\start.cmd`를 더블클릭하면 메뉴가 뜨고,
 명령줄에서는 `scripts\start.cmd <명령>`으로 바로 실행한다. 내용은 이 폴더의 Python 모듈(`python -m apps.launcher`)이다.
+매핑 계측 도구는 [modules/mapping/benchmarks](../../modules/mapping/benchmarks/)에 있다.
 
 | 메뉴 | 명령 | 하는 일 |
 | --- | --- | --- |

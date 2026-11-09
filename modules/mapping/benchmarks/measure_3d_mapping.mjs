@@ -65,7 +65,9 @@ try {
     };
   }
   const observer = new ResizeObserver(() => {`);
-    source=inject(source,'      controls.update(); renderer.render(scene, camera);',`
+    const render = source.match(/(?:controls\.update\(\); )?renderer\.render\(scene, camera\);/)?.[0];
+    if (!render) throw Error('Unsupported console render instrumentation anchor');
+    source=inject(source,render,`{
       const b = prefix === 'live-progressive' ? window.__mappingBench : null;
       if (b?.freeze) {
         const mode=b.mode;
@@ -85,12 +87,15 @@ try {
       }
       const query = b&&gpuExtension ? gl.createQuery() : null;
       if(query) gl.beginQuery(gpuExtension.TIME_ELAPSED_EXT,query);
-      const renderStart=performance.now();controls.update();renderer.render(scene,camera);const renderEnd=performance.now();
+      const renderStart=performance.now();
+      ${render}
+      const renderEnd=performance.now();
       if(query){gl.endQuery(gpuExtension.TIME_ELAPSED_EXT);gpuQueries.push({query,at:renderStart,mode:b.mode});}
       if(b){
         b.renders.push({at:renderStart,cpuMs:renderEnd-renderStart,mode:b.mode,calls:renderer.info.render.calls,triangles:renderer.info.render.triangles});
         if(b.pending){const row=b.pending;b.pending=null;requestAnimationFrame(now=>{row.paintAt=now;});}
-      }`);
+      }
+    }`);
     source=inject(source,'    if (disposed || !active) return;','    if (disposed || !active || (prefix === \'live-progressive\' && window.__mappingBench?.freeze)) return;');
     source=inject(source,'      const response = await fetch(`/api/import/${endpoint}`,','      const benchFetchStart = performance.now();\n      const response = await fetch(`/api/import/${endpoint}`,');
     source=inject(source,'      const value = await response.json();',`

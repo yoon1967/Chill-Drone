@@ -26,10 +26,13 @@ try {
     stop() {measuring=false;return {intervals:[...intervals],renders:[...renders],points:geometry.drawRange.count,capacity:pointCapacity};},
     fit};
   const observer = new ResizeObserver(() => {`);
-    const render='      controls.update(); renderer.render(scene, camera);';
-    if(!source.includes(render))throw Error('render instrumentation anchor changed');
-    source=source.replace(render,`const started=performance.now(); controls.update(); renderer.render(scene,camera);
-      if(measuring){if(previous!==null)intervals.push(started-previous);previous=started;renders.push(performance.now()-started);}`);
+    const render=source.match(/(?:controls\.update\(\); )?renderer\.render\(scene, camera\);/)?.[0];
+    if(!render)throw Error('render instrumentation anchor changed');
+    source=source.replace(render,`{
+      const started=performance.now();
+      ${render}
+      if(measuring){if(previous!==null)intervals.push(started-previous);previous=started;renders.push(performance.now()-started);}
+    }`);
     await route.fulfill({response,body:source});
   });
   await page.goto(url);

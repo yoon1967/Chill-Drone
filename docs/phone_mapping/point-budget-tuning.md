@@ -62,7 +62,7 @@ Windows, Edge headless의 실제 WebGL 렌더러, Intel Iris Xe / ANGLE D3D11에
 새 코드 적용에는 기존 서버 재시작이 필요하다.
 
 ```powershell
-& '<원본 저장소>/.venv/Scripts/python.exe' -B scripts/measure_point_budget.py `
+& '<원본 저장소>/.venv/Scripts/python.exe' -B modules/mapping/benchmarks/measure_point_budget.py `
   --history '<기존 복원 결과 폴더>' `
   --budgets 24000,28000,32000,36000,40000,48000 `
   --playwright-module '<playwright 모듈 폴더>' `
