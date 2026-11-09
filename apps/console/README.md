@@ -43,7 +43,7 @@
 기록은 크기가 늘어나므로 디스크 여유가 필요하며, 기록 대기가 밀릴 때 처리한 관측을 버리는 대신
 저장을 기다린다. 화면 재생은 과거에 표시한 최대 34,000점(정적 32,000 + 사람 색상 점 2,000)의 표본을 사용하고 원본 깊이는 별도로 보존한다.
 
-인터넷이 연결된 최초 설치 때 `scripts/start_3d_mapping.cmd --prepare-models`로 패키지와 모델 파일을 준비한다.
+인터넷이 연결된 최초 설치 때 `scripts/start.cmd prepare`로 패키지와 모델 파일을 준비한다.
 이 준비 명령에서 필요한 패키지가 빠졌을 때 프로젝트 `.venv`에 의존성을 설치하며, PyTorch가 없으면 NVIDIA GPU 감지 시 CUDA 12.8용,
 그 외에는 CPU용을 설치한다. 이미 설치된 PyTorch는 유지한다. 깊이 모델은 첫 복원에서 한 번 불러오고
 준비 추론을 마친 뒤 같은 서버의 다음 복원에서도 재사용한다. 준비 중에는 영상이 진행되지 않는다.
@@ -105,7 +105,7 @@ CUDA에서는 위치 추적 대기 중 약0.75초 이상 간격으로 준비용 
 상세 원인·계측과 남은 한계는 [실시간 지도 연속성](../../docs/phone_mapping/live-map-continuity.md)을 참고한다.
 
 Docker Desktop과 현재 코드로 빌드한 `ssafy-orbslam3:local`이 필요하다.
-`scripts/start_3d_mapping.cmd`의 기본 실행은 이미지 변경을 확인해 빌드한다. 직접 준비할 때는:
+`scripts/start.cmd map`의 기본 실행은 이미지 변경을 확인해 빌드한다. 직접 준비할 때는:
 
 ```powershell
 docker build -t ssafy-orbslam3:local modules/mapping/localization/orbslam3
@@ -129,11 +129,11 @@ SIFT DB·일괄 쌍 매칭·정밀 재투영 검증·PNG 보고서를 실시간 
 
 ## 설치와 실행
 
-Windows에서는 `scripts/start_3d_mapping.cmd`를 더블클릭해 지도와 수동 조종을 한 화면에서 연다.
+Windows에서는 `scripts/start.cmd`를 더블클릭해 메뉴 3(3D 지도 촬영)을 고르거나 `scripts/start.cmd map`을 실행해 지도와 수동 조종을 한 화면에서 연다.
 실행기가 로컬 Tello 게이트웨이와 지도 서버를 띄우고, 같은 게이트웨이에서 영상과 센서 자세를 받는다.
 실행기는 로컬에서 현재 체크아웃한 브랜치의 코드를 사용하며 원격 브랜치를 자동으로 받거나 전환하지 않는다.
 MR을 develop에 머지한 뒤에는 로컬 변경을 정리한 상태에서 `git switch develop`, `git pull --ff-only origin develop`을 실행하고 기존 매핑 서버를 종료한 뒤 같은 CMD를 다시 실행한다. 실행 파일을 별도로 복사하거나 적용할 필요는 없다.
-Python·웹 의존성과 로컬 모델을 먼저 준비한다. 인터넷이 있을 때 `scripts/start_3d_mapping.cmd --prepare-models`를
+Python·웹 의존성과 로컬 모델을 먼저 준비한다. 인터넷이 있을 때 `scripts/start.cmd prepare`를
 실행하면 빠른 복원 모델과 통합 조종에 필요한 게이트웨이 패키지를 준비한다.
 통합 Tello 매핑은 센서 자세를 사용한다. ORB-SLAM3 영상 경로를 사용할 때 Docker Desktop Linux 엔진과 SLAM 이미지를 준비한다.
 실행기에 표시되는 `Code folder`가 의도한 워크트리인지 확인한다. 공유 `.venv`의 경로와 실행 코드의 폴더는 다를 수 있다.
@@ -306,7 +306,7 @@ Tello 입력은 아래 실측 기본값을 사용한다. 실측 미터 단위나
 
 ### 통합 실행
 
-1. 노트북을 드론 Wi-Fi에 연결하고 `scripts/start_3d_mapping.cmd`를 실행한다.
+1. 노트북을 드론 Wi-Fi에 연결하고 `scripts/start.cmd map`을 실행한다(메뉴 3).
 2. **지도 콘솔**에서 **영상 켜기**를 누른다. 지도 안의 **Tello · 실시간 3D 지도 → 드론 연결 · 지도 시작**을 누른다.
 3. 비행할 때 조종 줄에서 주변을 확인하고 **키보드 조종 활성화**를 누른다. 조작 키와 이륙·정지 조건은 [관제 화면 안내](../controller/README.md#조작-실시간)를 따른다.
 4. **착륙** 후 **수신 종료**로 지도를 저장한다. 실행기 종료 시 비행 중이면 게이트웨이가 이동을 멈추고 착륙을 요청한다.
@@ -383,7 +383,7 @@ Windows Git Bash에서 실행한다. 기존 프로젝트 Python·Three.js와 Doc
 4. **수신 종료**는 이 입력이 켠 영상에 `streamoff`를 보내고 SDK·영상 수신기를 정리한다.
    이 모드에는 이륙·착륙·rc 명령이 없다. 비행 조작은 기존 조종 사이트에서 수행한다.
 
-`scripts\start_3d_mapping.cmd --direct`는 RoboMaster TT 확장 키트의 전방 `EXT tof?`를
+`scripts\start.cmd map --direct`는 RoboMaster TT 확장 키트의 전방 `EXT tof?`를
 자동 조회한다. 카메라와 같은 방향으로 설치한 전방 센서를 가정한다. 0.10 m 이상 1.20 m 미만의
 거리 중 영상 수신 시각과 0.2초 이내인 값을 사용한다. ToF를 반영하는 프레임은 전방 센서 범위
 안에서 실측과 일치하는 표면을 추가한다. 그 표면에 가까운 영상 복셀은 깊이 방향으로 제한적으로

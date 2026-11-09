@@ -1,28 +1,18 @@
-"""CMD setup, image freshness and failure isolation without downloads or Docker."""
-import os
+"""통합 실행기의 3D 지도 촬영(apps/launcher/mapping.py, 이전 start_3d_mapping.cmd): 준비·이미지 신선도·실패 격리.
+다운로드·Docker 없이."""
 from contextlib import nullcontext
 from pathlib import Path
 import subprocess
 import tempfile
-import types
 import unittest
 from unittest.mock import patch
 
-
-LAUNCHER = Path(__file__).resolve().parents[1] / 'scripts/start_3d_mapping.cmd'
-
-
-def load_launcher():
-    module = types.ModuleType('mapping_launcher_test')
-    with patch.dict(os.environ, {'MAPPING_LAUNCHER': str(LAUNCHER)}):
-        exec(compile(LAUNCHER.read_text(encoding='utf-8').rsplit('# === PYTHON ===', 1)[1],
-                     str(LAUNCHER), 'exec'), module.__dict__)
-    return module
+from apps.launcher import mapping
 
 
 class MappingLauncherTests(unittest.TestCase):
     def setUp(self):
-        self.launcher = load_launcher()
+        self.launcher = mapping
         self.expected = self.launcher.slam_source_hash(
             self.launcher.ROOT / 'modules/mapping/localization/orbslam3')
 
@@ -53,6 +43,7 @@ class MappingLauncherTests(unittest.TestCase):
         self.assertEqual(len(commands), 2)
         self.assertEqual(commands[0][:5], [self.launcher.sys.executable, '-B', '-m', 'pip', 'install'])
         self.assertEqual(commands[0][-2:], ['--index-url', 'https://download.pytorch.org/whl/cu128'])
+        self.assertIn('torchvision', commands[0])   # 같은 CUDA 저장소에서 함께(따로 두면 CPU용 torch로 바뀜)
         self.assertIn('--no-cache-dir', commands[0])
         self.assertEqual(commands[1][-2:], ['-r', str(self.launcher.ROOT / 'modules/mapping/data/requirements-stream.txt')])
 
@@ -96,53 +87,49 @@ class MappingLauncherTests(unittest.TestCase):
             self.assertFalse(self.launcher.ensure_python_environment(allow_install=True))
 
     def test_setup_failure_never_starts_server_or_opens_browser(self):
-        with patch.object(self.launcher.sys, 'argv', [str(LAUNCHER), '--no-browser']), \
-                patch.object(self.launcher.Path, 'is_file', return_value=True), \
+        with patch.object(self.launcher.Path, 'is_file', return_value=True), \
                 patch.object(self.launcher, 'ensure_python_environment', return_value=False), \
                 patch.object(self.launcher, 'ensure_slam_image') as docker, \
                 patch.object(self.launcher.subprocess, 'Popen') as server, \
                 patch.object(self.launcher.webbrowser, 'open') as browser:
-            self.assertEqual(self.launcher.main(), 1)
+            self.assertEqual(self.launcher.main(['--no-browser']), 1)
         docker.assert_not_called()
         server.assert_not_called()
         browser.assert_not_called()
 
     def test_live_default_owns_one_gateway_and_passes_it_to_viewer(self):
-        with patch.object(self.launcher.sys, 'argv', [str(LAUNCHER), '--no-browser']), \
-                patch.object(self.launcher.Path, 'is_file', return_value=True), \
+        with patch.object(self.launcher.Path, 'is_file', return_value=True), \
                 patch.object(self.launcher, 'ensure_python_environment', return_value=True), \
                 patch.object(self.launcher, 'ensure_gateway_environment', return_value=True), \
                 patch.object(self.launcher, 'ensure_slam_image') as docker, \
                 patch('modules.mapping.data.model_assets.require_local_models', return_value={}), \
                 patch.object(self.launcher, 'managed_gateway', return_value=nullcontext('http://127.0.0.1:8021')) as gateway, \
                 patch.object(self.launcher, 'run_viewer', return_value=0) as viewer:
-            self.assertEqual(self.launcher.main(), 0)
+            self.assertEqual(self.launcher.main(['--no-browser']), 0)
         docker.assert_not_called()
         gateway.assert_called_once_with(viewer.call_args.args[1], fake=False)
         self.assertEqual(viewer.call_args.args[4:6], ('http://127.0.0.1:8021', True))
 
     def test_model_preparation_is_explicit_and_does_not_start_viewer(self):
-        with patch.object(self.launcher.sys, 'argv', [str(LAUNCHER), '--prepare-models']), \
-                patch.object(self.launcher.Path, 'is_file', return_value=True), \
+        with patch.object(self.launcher.Path, 'is_file', return_value=True), \
                 patch.object(self.launcher, 'ensure_python_environment', return_value=True) as packages, \
                 patch.object(self.launcher, 'ensure_gateway_environment', return_value=True), \
                 patch.object(self.launcher.subprocess, 'call', return_value=0) as prepare, \
                 patch.object(self.launcher.subprocess, 'Popen') as viewer:
-            self.assertEqual(self.launcher.main(), 0)
+            self.assertEqual(self.launcher.main(['--prepare-models']), 0)
         packages.assert_called_once_with(allow_install=True)
         self.assertEqual(prepare.call_args.args[0][-2:], ['modules.mapping.data.prepare_models', '--download'])
         viewer.assert_not_called()
 
     def test_missing_model_files_stop_before_docker_and_viewer(self):
         from modules.mapping.data.model_assets import ModelAssetsMissing
-        with patch.object(self.launcher.sys, 'argv', [str(LAUNCHER), '--no-browser']), \
-                patch.object(self.launcher.Path, 'is_file', return_value=True), \
+        with patch.object(self.launcher.Path, 'is_file', return_value=True), \
                 patch.object(self.launcher, 'ensure_python_environment', return_value=True), \
                 patch.object(self.launcher, 'ensure_gateway_environment', return_value=True), \
                 patch('modules.mapping.data.model_assets.require_local_models', side_effect=ModelAssetsMissing('depth')), \
                 patch.object(self.launcher, 'ensure_slam_image') as docker, \
                 patch.object(self.launcher.subprocess, 'Popen') as viewer:
-            self.assertEqual(self.launcher.main(), 1)
+            self.assertEqual(self.launcher.main(['--no-browser']), 1)
         docker.assert_not_called()
         viewer.assert_not_called()
 
