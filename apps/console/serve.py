@@ -136,6 +136,44 @@ class Timeline:
             return self.cache[key]
 
 
+class GatewayDrone:
+    """Gateway mode: the control gateway owns the Tello link. Read its drone state (read-only, short cache)
+    so the drone panel shows that link instead of offering a second, conflicting direct SDK connection."""
+    ttl_s = 1.0
+
+    def __init__(self, clock=time.monotonic):
+        self.clock, self.lock, self.cache = clock, threading.Lock(), {}
+
+    def read(self, gateway):
+        now = self.clock()
+        with self.lock:
+            hit = self.cache.get(gateway)
+            if hit and now - hit[0] < self.ttl_s:
+                return dict(hit[1])
+        value = {'url': gateway, 'reachable': False, 'connected': False, 'source': None,
+                 'battery_pct': None, 'mode': None, 'video_available': False}
+        try:
+            from modules.mapping.localization.tello_input import NoRedirect
+            with build_opener(ProxyHandler({}), NoRedirect()).open(gateway + '/api/drone/state', timeout=1) as response:
+                state = json.loads(response.read(262145))
+            if isinstance(state, dict) and state.get('type') == 'drone_state':
+                battery, video = state.get('battery_pct'), state.get('video')
+                value.update(reachable=True, connected=state.get('connected') is True,
+                    source=state['source'] if isinstance(state.get('source'), str) else None,
+                    battery_pct=battery if type(battery) in (int, float) and 0 <= battery <= 100 else None,
+                    mode=state['mode'] if isinstance(state.get('mode'), str) else None,
+                    video_available=isinstance(video, dict) and video.get('available') is True)
+        except (OSError, ValueError):
+            pass
+        with self.lock:
+            self.cache[gateway] = (now, value)
+        return dict(value)
+
+
+GATEWAY_DRONE = GatewayDrone()
+GATEWAY_OWNED_DRONE_ACTIONS = {'/api/drones/scan', '/api/drones/connect', '/api/drones/explore', '/api/drones/preview/start'}
+
+
 class ViewerServer(ThreadingHTTPServer):
     # JPEG uploads and the viewer's parallel state/image requests share this listener.
     request_queue_size = 32
@@ -277,6 +315,10 @@ class ViewerHandler(BaseHTTPRequestHandler):
             if url.path.startswith('/api/drones/'):
                 if not self.drones:
                     self.json_response({'error': 'drone_discovery_disabled'}, 404)
+                    return
+                if getattr(self.tello_map, 'gateway', None) and url.path in GATEWAY_OWNED_DRONE_ACTIONS:
+                    # The gateway holds the Tello ports and Wi-Fi link; a direct connect would fail or switch Wi-Fi.
+                    self.json_response({'error': 'gateway_mode_owns_drone'}, 409)
                     return
                 body = json.loads(data)
                 with self.tello_input_lock:
@@ -464,6 +506,11 @@ class ViewerHandler(BaseHTTPRequestHandler):
                 and runtime.get('input_origin') == 'gateway_reported_tello'
                 and isinstance(age, (int, float)) and 0 <= age < 2):
             value.update(connected=True, owner='video-input')
+        gateway = getattr(self.tello_map, 'gateway', None)
+        if gateway:
+            # Gateway mode: report the control gateway's own drone link, not a direct SDK connection.
+            link = GATEWAY_DRONE.read(gateway)
+            value.update(owner='gateway', gateway=link, connected=bool(link['connected'] or value.get('connected')))
         value.update(mapping_session_id=session.id if session else None,
             disconnect_available=bool(self.drones.link or (session and not manual) or (self.tello and self.tello.running)),
             mapping_active=bool(session and (not session.done or active)),

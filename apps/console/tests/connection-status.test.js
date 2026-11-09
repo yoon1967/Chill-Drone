@@ -15,6 +15,20 @@ test('unreachable server does not accuse the drone; a responding error is distin
   assert.equal(failed.video.text, '입력 없음');
 });
 
+test('gateway mode shows the control gateway drone link outside a map session', () => {
+  const idle = {source: 'live', status: 'idle', session_id: null};
+  const gateway = link => ({owner: 'gateway', gateway: link});
+  const up = connectionStatus({state: idle, droneState: gateway({reachable: true, connected: true})});
+  assert.deepEqual(up.drone, {text: '게이트웨이 연결', tone: 'ok'});
+  assert.match(up.note, /관제 게이트웨이가 연결합니다/);
+  assert.equal(connectionStatus({state: idle, droneState: gateway({reachable: true, connected: false})}).drone.text, '게이트웨이 · 드론 대기');
+  assert.equal(connectionStatus({state: idle, droneState: gateway({reachable: false})}).drone.text, '게이트웨이 꺼짐');
+  // 지도가 돌면 지금처럼 지도 입력 기준(중계 응답)으로 보인다
+  const mapping = {...active, input_origin: 'gateway_reported_tello'};
+  assert.equal(connectionStatus({state: mapping, droneState: gateway({reachable: true, connected: true})}).drone.text, '중계 응답');
+  assert.equal(connectionStatus({state: idle}).drone.text, '해당 없음');   // 직접 연결 모드는 그대로
+});
+
 test('video, tracking and completed records cannot imply a current connection', () => {
   assert.equal(connectionStatus({state: active}).video.text, '수신 중');
   const stalled = connectionStatus({state: {...active, tracking_state: 3}, fresh: false});

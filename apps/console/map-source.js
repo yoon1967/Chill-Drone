@@ -77,7 +77,7 @@ export function mappingPreparation(job) {
 }
 
 // Read-only status: a browser/server failure never proves that the drone is offline.
-export function connectionStatus({reachable = true, responseOK = true, state = {}, capture = {}, fresh = true} = {}) {
+export function connectionStatus({reachable = true, responseOK = true, state = {}, capture = {}, fresh = true, droneState = {}} = {}) {
   const row = (text, tone = 'idle') => ({text, tone});
   const result = {server: row('연결됨', 'ok'), drone: row('연결 전'), video: row('대기'), map: row('대기'), note: '', camera: null};
   if (!reachable || !responseOK) {
@@ -111,6 +111,10 @@ export function connectionStatus({reachable = true, responseOK = true, state = {
     state.input_origin.startsWith('gateway_') ? '중계 응답' : '응답 확인', 'ok');
   else if (pending || active) result.drone = row('연결 중', 'warn');
   else if (state.session_id) result.drone = row('종료');
+  // Gateway mode: outside a map session, show the control gateway's own drone link instead of "해당 없음".
+  const gatewayLink = droneState.owner === 'gateway' && !active && !pending ? droneState.gateway || {} : null;
+  if (gatewayLink) result.drone = gatewayLink.connected ? row('게이트웨이 연결', 'ok') :
+    row(gatewayLink.reachable ? '게이트웨이 · 드론 대기' : '게이트웨이 꺼짐', 'warn');
   if (active) {
     result.video = state.transport_received > 0 ? row(fresh ? '수신 중' : '수신 지연', fresh ? 'ok' : 'warn') : row('입력 대기', 'warn');
     result.map = !state.transport_ready ? row('준비 중', 'warn') :
@@ -135,7 +139,9 @@ export function connectionStatus({reachable = true, responseOK = true, state = {
     if (!capture.session && capture.error) { result.drone = row('확인 전'); result.video = row('대기'); }
   } else if (error) {
     result.map = row('오류 확인', 'warn'); result.note = captureError(new Error(error)).message;
-  } else result.note = preparation ? `${preparation.title} · ${preparation.detail}` : active ? '드론 응답과 영상 수신·지도 처리를 구분해 표시합니다.' : '시작 전에는 드론 연결을 확인하지 않습니다. 종료 후에는 기록만 표시합니다.';
+  } else result.note = preparation ? `${preparation.title} · ${preparation.detail}` : active ? '드론 응답과 영상 수신·지도 처리를 구분해 표시합니다.' :
+    gatewayLink ? '드론은 관제 게이트웨이가 연결합니다. 관제 화면에서 드론 영상이 켜지면 지도를 시작할 수 있습니다.' :
+    '시작 전에는 드론 연결을 확인하지 않습니다. 종료 후에는 기록만 표시합니다.';
   const tof = state.depth_job?.progress?.front_tof;
   if (active && state.input === 'tello_camera' && !error && !preparation && tof) {
     if (!Number.isFinite(tof.distance_m)) result.note = '전방 ToF 실측 대기 · 영상 추정 점군 표시';
@@ -149,7 +155,7 @@ export function monitorConnections({element = (id) => document.getElementById(id
   let capture = {}, state = {}, droneState = {}, reachable = false, responseOK = true, timer, closed = false;
   let session, count = -1, advancedAt = 0;
   function render() {
-    const status = connectionStatus({reachable, responseOK, state, capture, fresh: clock() - advancedAt < 5000});
+    const status = connectionStatus({reachable, responseOK, state, capture, fresh: clock() - advancedAt < 5000, droneState});
     for (const key of ['server', 'drone', 'video', 'map']) {
       const node = element('connection-' + key);
       node.textContent = status[key].text; node.dataset.state = status[key].tone;
