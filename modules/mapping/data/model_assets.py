@@ -9,7 +9,7 @@ PERSON_MODEL = 'yolo26n-seg.pt'
 class ModelAssetsMissing(RuntimeError):
     def __init__(self, name):
         super().__init__(f'model_assets_missing: {name} · 모델 파일이 준비되지 않았습니다. '
-            '인터넷 연결 상태에서 start_3d_mapping.cmd --prepare-models를 실행한 뒤 드론에 연결하세요. '
+            '인터넷 연결 상태에서 scripts/start.cmd prepare를 실행한 뒤 드론에 연결하세요. '
             '지도 실행 중에는 모델을 다운로드하지 않습니다.')
 
 

@@ -24,14 +24,13 @@
 
 ## 실행
 
-Windows에서는 `scripts/start_autonomy.cmd`를 더블클릭하면 서버와 브라우저가 함께 열린다.
-저장소의 `.venv` Python을 사용하며 추가 패키지 설치는 필요 없다.
-창을 열어 둔 채 사용하고, 종료할 때는 `Ctrl+C`를 누른다.
-포트가 사용 중이면 `scripts\start_autonomy.cmd --port 8891`로 바꿀 수 있다.
+Windows에서는 `scripts/start.cmd`를 더블클릭해 메뉴를 고른다([실행기 안내](../launcher/README.md)).
+드론 없이 보려면 메뉴 1 체험(`scripts\start.cmd fake`: 가짜 드론 + 사람 탐지 + 가짜 지도),
+실기체는 메뉴 2(`scripts\start.cmd real`), 끌 때는 메뉴 0(`scripts\start.cmd stop`, 실기체가 공중이면 끄지 않는다).
 브라우저를 자동으로 열지 않으려면 `--no-browser`, 옵션 안내는 `--help`를 사용한다.
 
-허병우 팀원의 별도 자율비행 웹 서버는 `scripts/start_team_autonomy_docker.cmd`(Docker) 또는
-`scripts/start_team_autonomy_wsl.cmd`(WSL ROS 2)로 실행한다. 기본 주소는 `http://localhost:8080`이다.
+허병우 팀원의 별도 자율비행 웹 서버는 `scripts\start.cmd team-autonomy docker`(Docker) 또는
+`scripts\start.cmd team-autonomy wsl`(WSL ROS 2)로 실행한다. 기본 주소는 `http://localhost:8080`이다.
 팀원 브랜치의 웹 ROS 노드를 실행하며 비행 드라이버·미션은 별도로 시작한다.
 설치·연결·옵션은 [실행기 안내](../../docs/autonomy/WEB_LAUNCHERS.md)를 따른다.
 
@@ -49,7 +48,7 @@ python -m http.server 8791 --bind 127.0.0.1 --directory apps/controller
 
 ### 조작 (실시간)
 
-지도와 함께 실행할 때는 `scripts/start_3d_mapping.cmd`로 **지도 콘솔**을 연다. **영상 켜기**와
+지도와 함께 실행할 때는 `scripts/start.cmd map`(메뉴 3)으로 **지도 콘솔**을 연다. **영상 켜기**와
 **키보드 조종 활성화**를 순서대로 선택한다. 지도 안을 클릭하면 이동 입력이 해제된다.
 조종 줄의 **키보드 조종 활성화**를 다시 누르면 입력을 재개할 수 있다.
 
