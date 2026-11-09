@@ -24,13 +24,13 @@
 
 ## 실행
 
-Windows에서는 `scripts/start.cmd`를 더블클릭해 메뉴를 고른다([실행기 안내](../launcher/README.md)).
-드론 없이 보려면 메뉴 1 체험(`scripts\start.cmd fake`: 가짜 드론 + 사람 탐지 + 가짜 지도),
-실기체는 메뉴 2(`scripts\start.cmd real`), 끌 때는 메뉴 0(`scripts\start.cmd stop`, 실기체가 공중이면 끄지 않는다).
+Windows에서는 `scripts/start.cmd`를 더블클릭해 1이나 2를 고른다([실행기 안내](../launcher/README.md)).
+1 체험(`scripts\start.cmd fake`)은 가짜 드론 + 사람 탐지 + 가짜 지도, 2 실기체 관제(`scripts\start.cmd real`)는 게이트웨이 +
+사람 탐지 + 3D 지도(자동 시작) + MoNA 자율을 모두 켠다. 끌 때는 실행기 창에서 Enter(실기체가 공중이면 끄지 않는다).
 브라우저를 자동으로 열지 않으려면 `--no-browser`, 옵션 안내는 `--help`를 사용한다.
 
-허병우 팀원의 별도 자율비행 웹 서버는 `scripts\start.cmd team-autonomy docker`(Docker) 또는
-`scripts\start.cmd team-autonomy wsl`(WSL ROS 2)로 실행한다. 기본 주소는 `http://localhost:8080`이다.
+허병우 팀원의 별도 자율비행 웹 서버는 `.\.venv\Scripts\python.exe -B infra\autonomy-web\launcher.py docker`(Docker) 또는
+`.\.venv\Scripts\python.exe -B infra\autonomy-web\launcher.py wsl`(WSL ROS 2)로 실행한다. 기본 주소는 `http://localhost:8080`이다.
 팀원 브랜치의 웹 ROS 노드를 실행하며 비행 드라이버·미션은 별도로 시작한다.
 설치·연결·옵션은 [실행기 안내](../../docs/autonomy/WEB_LAUNCHERS.md)를 따른다.
 
@@ -48,8 +48,8 @@ python -m http.server 8791 --bind 127.0.0.1 --directory apps/controller
 
 ### 조작 (실시간)
 
-지도와 함께 실행할 때는 `scripts/start.cmd map`(메뉴 3)으로 **지도 콘솔**을 연다. **영상 켜기**와
-**키보드 조종 활성화**를 순서대로 선택한다. 지도 안을 클릭하면 이동 입력이 해제된다.
+지도와 함께 실행할 때는 `scripts/start.cmd` 2(실기체 관제)가 **지도 콘솔**을 함께 켜고, **영상 켜기**를 누르면 지도를 시작한다.
+게이트웨이를 지도 통합 모드로 띄웠을 때는 **영상 켜기**와 **키보드 조종 활성화**를 순서대로 선택한다. 지도 안을 클릭하면 이동 입력이 해제된다.
 조종 줄의 **키보드 조종 활성화**를 다시 누르면 입력을 재개할 수 있다.
 
 | 하는 일 | PC 감독 화면 | 폰 현장 조작 |

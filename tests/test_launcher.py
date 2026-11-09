@@ -1,12 +1,14 @@
-"""통합 실행기(apps/launcher): 안전한 끄기, 드론 포트 충돌, 띄울 명령, 메뉴·명령 연결. 드론·창·PowerShell 없이."""
+"""통합 실행기(apps/launcher): 1·2번만, 묻지 않고 모두 켜기, 드론 포트 충돌, 안전한 끄기. 드론·창·PowerShell 없이."""
 from pathlib import Path
 import subprocess
-import sys
+import threading
 import unittest
 from unittest.mock import patch
 
 from apps.launcher import cli, drone, winproc
 from apps.launcher.winproc import Proc
+
+READY = {'packages': True, 'gateway': True, 'models': True, 'web': True}
 
 
 def tello(mode, **extra):
@@ -52,179 +54,180 @@ class CommandLineTests(unittest.TestCase):
         self.assertTrue(line.startswith('cmd /d /c start "Chill-Drone 게이트웨이 (8010)" /D '))
         self.assertTrue(line.endswith('"python.exe" "-B" "a&b.py"'))
 
+    def test_mona_runs_in_flight_mode(self):
+        cmd = drone.mona_cmd()
+        self.assertNotIn('-AutoStart', cmd)   # 경로는 운용자가 이륙 뒤 "자율"을 눌러야 시작
+        self.assertEqual(cmd[cmd.index('-Seconds') + 1], '3600')
+
 
 class FakeModeTests(unittest.TestCase):
-    def test_fake_drone_starts_gateway_detection_map_and_bridge(self):
+    def test_fake_drone_starts_everything_without_asking(self):
         with patch.object(drone, 'show_code'), \
+                patch.object(drone.prepare, 'ensure_all', return_value=READY) as ready, \
                 patch.object(drone, 'state', return_value=None), \
                 patch.object(drone, 'wait_for', return_value=True), \
-                patch.object(drone, 'detect_ready', return_value=(Path('yolo.pt'), None)), \
+                patch('modules.mapping.data.model_assets.person_checkpoint', return_value=Path('yolo.pt')), \
                 patch.object(winproc, 'port_owners', return_value=[]), \
                 patch.object(winproc, 'processes', return_value=[]), \
                 patch.object(winproc, 'get_json', return_value=None), \
                 patch.object(drone, 'start_console') as console, \
                 patch.object(winproc, 'start_window') as window:
-            self.assertEqual(drone.run_fake(no_browser=True), 0)
+            self.assertEqual(drone.run_fake(no_browser=True, interactive=False), 0)
+        ready.assert_called_once_with(console=True)   # 영상 복원용 지도 콘솔(8796) 웹 의존성까지
         argvs = [c.args[2] for c in window.call_args_list]
         self.assertEqual(len(argvs), 4)
         self.assertEqual(argvs[0][-3:], ['--port', '8030', '--fake'])
         self.assertEqual(argvs[1][-4:], ['--gateway', 'http://127.0.0.1:8030', '--yolo-model', 'yolo.pt'])
         self.assertEqual(argvs[2][-3:], ['--port', '8795', '--start'])
         self.assertEqual(argvs[3][-4:], ['--map', 'http://127.0.0.1:8795', '--gateway', 'http://127.0.0.1:8030'])
-        console.assert_called_once_with('http://127.0.0.1:8030', port=8796)
+        console.assert_called_once_with('http://127.0.0.1:8030', READY, port=8796)
 
     def test_running_programs_are_not_started_twice(self):
         running = [Proc(5, 0, 'python -m modules.perception.inference.gateway_ai_client --gateway http://127.0.0.1:8030'),
                    Proc(6, 0, 'python gateway_map_bridge.py --map http://127.0.0.1:8795 --gateway http://127.0.0.1:8030')]
-        with patch.object(drone, 'show_code'), \
+        with patch.object(drone, 'show_code'), patch.object(drone.prepare, 'ensure_all', return_value=READY), \
                 patch.object(drone, 'state', return_value={'type': 'drone_state', 'source': 'fake'}), \
                 patch.object(winproc, 'processes', return_value=running), \
                 patch.object(winproc, 'get_json', return_value={'enabled': True}), \
                 patch.object(winproc, 'start_window') as window:
-            self.assertEqual(drone.run_fake(no_browser=True), 0)
+            self.assertEqual(drone.run_fake(no_browser=True, interactive=False), 0)
         window.assert_not_called()
 
 
 class RealModeTests(unittest.TestCase):
-    def common(self):
-        return [patch.object(drone, 'show_code'), patch.object(winproc, 'wifi_ssids', return_value=['TELLO-59FA6D']),
-                patch.object(drone, 'firewall_hint')]
+    def run_real(self, ready=READY, first_state=None, owners=()):
+        states = iter([first_state])
+        console_up = iter([None])   # 처음 확인은 꺼짐, 켠 뒤에는 응답
 
-    def test_drone_ports_in_use_stop_before_starting_anything(self):
-        with self.common()[0], self.common()[1], self.common()[2], \
-                patch.object(drone, 'state', return_value=None), \
-                patch.object(winproc, 'port_owners', return_value=[('udp', 8889, 4242)]), \
+        def get_json(target, timeout=2.0):
+            if target.endswith('/api/drone/state'):
+                return next(states, tello('grounded', battery_pct=70, temp_high_c=60))
+            return next(console_up, {'enabled': True})
+        with patch.object(drone, 'show_code'), patch.object(drone, 'firewall_hint'), \
+                patch.object(drone.prepare, 'ensure_all', return_value=ready), \
+                patch.object(winproc, 'wifi_ssids', return_value=['TELLO-59FA6D']), \
+                patch.object(winproc, 'get_json', side_effect=get_json), \
+                patch.object(winproc, 'port_owners', return_value=list(owners)), \
                 patch.object(winproc, 'processes', return_value=[Proc(4242, 0, 'python check_server.py')]), \
-                patch.object(winproc, 'start_window') as window:
-            self.assertEqual(drone.run_real(interactive=False, no_browser=True), 1)
-        window.assert_not_called()
-
-    def test_non_real_gateway_on_8010_is_refused(self):
-        with self.common()[0], self.common()[1], self.common()[2], \
-                patch.object(drone, 'state', return_value={'type': 'drone_state', 'source': 'fake'}), \
-                patch.object(winproc, 'start_window') as window:
-            self.assertEqual(drone.run_real(interactive=False, no_browser=True), 1)
-        window.assert_not_called()
-
-    def test_running_real_gateway_is_reused_and_choices_pick_the_preset(self):
-        with self.common()[0], self.common()[1], self.common()[2], \
-                patch.object(drone, 'state', return_value=tello('grounded', battery_pct=70, temp_high_c=60)), \
-                patch.object(winproc, 'processes', return_value=[]), \
-                patch.object(drone, 'start_console', return_value=True) as console, \
-                patch.object(drone, 'start_bridge') as bridge, \
-                patch.object(drone, 'start_mona') as mona, \
+                patch('modules.mapping.data.model_assets.person_checkpoint', return_value=Path('yolo.pt')), \
+                patch.object(drone, 'mona_problem', return_value=None), \
+                patch.object(drone, 'start_mona_when_connected') as mona, \
+                patch.object(drone.mapkeeper, 'MapKeeper') as keeper, \
                 patch.object(drone, 'open_page') as page, \
                 patch.object(winproc, 'start_window') as window:
-            self.assertEqual(drone.run_real(detect=False, map_=False, mona='hand', interactive=False), 0)
-        window.assert_not_called()
-        console.assert_called_once_with('http://127.0.0.1:8010')
-        bridge.assert_not_called()
-        mona.assert_called_once_with(True)
-        self.assertEqual(page.call_args.args[0], 'http://127.0.0.1:8010/?preset=autonomy#/live')
+            code = drone.run_real(interactive=False)
+        return code, [c.args[2] for c in window.call_args_list], mona, keeper, page
 
-    def test_new_real_gateway_uses_port_8010_without_fake(self):
-        states = iter([None])
-        with self.common()[0], self.common()[1], self.common()[2], \
-                patch.object(drone, 'state', side_effect=lambda base: next(states, tello('grounded'))), \
-                patch.object(winproc, 'port_owners', return_value=[]), \
-                patch.object(winproc, 'processes', return_value=[]), \
-                patch.object(winproc, 'get_json', side_effect=[None, {'enabled': True}]), \
-                patch.object(Path, 'is_file', return_value=True), \
-                patch.object(drone, 'open_page'), \
+    def test_everything_is_started_without_asking(self):
+        code, argvs, mona, keeper, page = self.run_real()
+        self.assertEqual(code, 0)
+        self.assertEqual(len(argvs), 4)
+        self.assertEqual(argvs[0][-2:], ['--port', '8010'])
+        self.assertNotIn('--fake', argvs[0])
+        self.assertIn('modules.perception.inference.gateway_ai_client', argvs[1])
+        self.assertEqual(argvs[2][-2:], ['--tello-gateway', 'http://127.0.0.1:8010'])
+        self.assertEqual(argvs[3][-4:], ['--map', 'http://127.0.0.1:8790', '--gateway', 'http://127.0.0.1:8010'])
+        mona.assert_called_once()
+        keeper.assert_called_once_with('http://127.0.0.1:8010', 'http://127.0.0.1:8790', drone.say)
+        self.assertEqual(page.call_args.args[0], 'http://127.0.0.1:8010/#/live')
+
+    def test_missing_packages_skip_detection_and_map_but_start_the_gateway(self):
+        code, argvs, _, keeper, _ = self.run_real(ready={**READY, 'packages': False, 'models': False})
+        self.assertEqual(code, 0)
+        self.assertEqual(len(argvs), 1)
+        keeper.assert_not_called()
+
+    def test_missing_models_start_console_without_map_keeper(self):
+        code, argvs, _, keeper, _ = self.run_real(ready={**READY, 'models': False})
+        self.assertEqual(code, 0)
+        self.assertEqual([a[-2:] for a in argvs], [['--port', '8010'], ['--tello-gateway', 'http://127.0.0.1:8010'],
+                                                   ['--gateway', 'http://127.0.0.1:8010']])   # 탐지 없음, 콘솔·연결기는 켬
+        keeper.assert_not_called()
+
+    def test_drone_ports_in_use_stop_before_starting_anything(self):
+        code, argvs, mona, _, _ = self.run_real(owners=[('udp', 8889, 4242)])
+        self.assertEqual((code, argvs), (1, []))
+        mona.assert_not_called()
+
+    def test_non_real_gateway_on_8010_is_refused(self):
+        code, argvs, _, _, _ = self.run_real(first_state={'type': 'drone_state', 'source': 'fake'})
+        self.assertEqual((code, argvs), (1, []))
+
+
+class MonaStarterTests(unittest.TestCase):
+    def test_mona_starts_once_after_the_drone_connects(self):
+        states = iter([tello('disconnected', connected=False), tello('grounded')])
+        stop = threading.Event()
+        with patch.object(drone, 'state', side_effect=lambda base: next(states, tello('grounded'))), \
+                patch.object(drone, 'mona_running', return_value=False), \
                 patch.object(winproc, 'start_window') as window:
-            self.assertEqual(drone.run_real(detect=False, map_=False, interactive=False, phone=False), 0)
-        argv, console = (call.args[2] for call in window.call_args_list)
-        self.assertEqual(argv[-2:], ['--port', '8010'])
-        self.assertNotIn('--fake', argv)
-        self.assertEqual(console[-4:], ['--port', '8790', '--tello-gateway', 'http://127.0.0.1:8010'])
+            drone.start_mona_when_connected('http://127.0.0.1:8010', stop, interval=0.01).join(2)
+        self.assertEqual(window.call_count, 1)
+        self.assertEqual(window.call_args.args[2], drone.mona_cmd())
 
 
 class StopTests(unittest.TestCase):
-    def run_stop(self, procs, states, **kwargs):
+    def run_stop(self, procs, states, keeper=None):
         sent = []
+        stop_event = threading.Event()
         with patch.object(drone.signal, 'signal'), \
                 patch.object(winproc, 'processes', return_value=procs), \
                 patch.object(drone, 'state', side_effect=lambda base: states.get(base)), \
-                patch.object(drone.subprocess, 'run', return_value=done()), \
+                patch.object(drone, 'mona_running', return_value=False), \
                 patch.object(winproc, 'alive', side_effect=lambda pid: pid not in sent), \
                 patch.object(winproc, 'send_ctrl_c', side_effect=sent.append), \
-                patch.object(winproc, 'kill_tree') as kill, \
-                patch.object(drone, 'ask', return_value=kwargs.pop('answer', 'y')):
-            code = drone.run_stop(**kwargs)
-        return code, sent, kill
+                patch.object(winproc, 'kill_tree') as kill:
+            code = drone.run_stop(keeper=keeper, stop_event=stop_event)
+        return code, sent, kill, stop_event
 
     def test_nothing_is_stopped_while_a_real_drone_is_in_the_air(self):
         procs = [Proc(10, 0, 'python gateway_server.py --port 8010'),
                  Proc(20, 0, 'python -m modules.perception.inference.gateway_ai_client --gateway http://127.0.0.1:8010')]
-        code, sent, kill = self.run_stop(procs, {'http://127.0.0.1:8010': tello('auto')}, yes=True)
-        self.assertEqual(code, 1)
-        self.assertEqual(sent, [])
+        keeper = unittest.mock.Mock()
+        code, sent, kill, stop_event = self.run_stop(procs, {'http://127.0.0.1:8010': tello('auto')}, keeper)
+        self.assertEqual((code, sent), (1, []))
         kill.assert_not_called()
+        keeper.stop.assert_not_called()
+        self.assertFalse(stop_event.is_set())
 
     def test_map_console_gateway_in_the_air_also_blocks(self):
         procs = [Proc(30, 0, r'python C:\repo\apps\console\serve.py --enable-camera --port 8790 '
                              r'--tello-gateway http://127.0.0.1:8011')]
-        code, sent, _ = self.run_stop(procs, {'http://127.0.0.1:8011': tello('manual')}, yes=True)
+        code, sent, _, _ = self.run_stop(procs, {'http://127.0.0.1:8011': tello('manual')})
         self.assertEqual((code, sent), (1, []))
 
-    def test_grounded_programs_get_ctrl_c_helpers_first_gateway_last(self):
+    def test_on_the_ground_map_is_saved_then_helpers_stop_first_gateway_last(self):
         procs = [Proc(10, 0, 'python gateway_server.py --port 8010'),
                  Proc(21, 0, 'python gateway_map_bridge.py --map http://127.0.0.1:8790 --gateway http://127.0.0.1:8010'),
                  Proc(20, 0, 'python -m modules.perception.inference.gateway_ai_client --gateway http://127.0.0.1:8010')]
-        code, sent, kill = self.run_stop(procs, {'http://127.0.0.1:8010': tello('grounded')}, yes=True)
+        keeper = unittest.mock.Mock()
+        code, sent, kill, stop_event = self.run_stop(procs, {'http://127.0.0.1:8010': tello('grounded')}, keeper)
         self.assertEqual(code, 0)
+        keeper.stop.assert_called_once_with()
+        self.assertTrue(stop_event.is_set())
         self.assertEqual(sent, [20, 21, 10])
         kill.assert_not_called()
 
-    def test_start_cmd_window_left_asking_to_terminate_is_closed(self):
-        procs = [Proc(40, 0, r'"C:\WINDOWS\system32\cmd.exe" /c C:\repo\scripts\start.cmd map --fake'),
-                 Proc(41, 40, r'"C:\repo\.venv\Scripts\python.exe" -B -m apps.launcher map --fake'),
-                 Proc(42, 41, r'C:\repo\.venv\Scripts\python.exe -B C:\repo\apps\console\serve.py --enable-camera '
-                              r'--port 8790 --tello-gateway http://127.0.0.1:8010')]
-        fake = {'type': 'drone_state', 'source': 'fake', 'mode': 'grounded'}
-        code, sent, kill = self.run_stop(procs, {'http://127.0.0.1:8010': fake}, yes=True)
-        self.assertEqual((code, sent), (0, [42, 41]))
-        kill.assert_called_once_with(40)
-
-    def test_connected_drone_asks_first_and_no_keeps_everything(self):
-        procs = [Proc(10, 0, 'python gateway_server.py --port 8010')]
-        code, sent, _ = self.run_stop(procs, {'http://127.0.0.1:8010': tello('grounded')}, answer='n')
-        self.assertEqual((code, sent), (0, []))
-
 
 class CliTests(unittest.TestCase):
-    def test_commands_reach_the_right_launcher(self):
-        with patch.object(cli.mapping, 'main', return_value=0) as mapping, \
-                patch.object(cli, 'ensure_console_web', return_value=True):
-            self.assertEqual(cli.main(['map', '--fake', '--no-browser']), 0)
-            mapping.assert_called_with(['--fake', '--no-browser'])
-            self.assertEqual(cli.main(['prepare']), 0)
-            mapping.assert_called_with(['--prepare-models'])
-        with patch.object(cli.mapping, 'main') as mapping, patch.object(cli, 'ensure_console_web', return_value=False):
-            self.assertEqual(cli.main(['prepare']), 1)
-        mapping.assert_not_called()
-        with patch.object(cli.subprocess, 'call', return_value=0) as call:
-            self.assertEqual(cli.main(['team-autonomy', 'wsl', '--port', '8081']), 0)
-        self.assertEqual(call.call_args.args[0], [sys.executable, '-B', str(cli.TEAM_AUTONOMY), 'wsl', '--port', '8081'])
-        with patch.object(cli.drone, 'run_stop', return_value=0) as stop:
-            cli.main(['stop', '--yes'])
-        stop.assert_called_once_with(yes=True)
-
-    def test_real_options_given_on_the_command_line_skip_questions(self):
+    def test_only_fake_and_real_commands(self):
+        with patch.object(cli.drone, 'run_fake', return_value=0) as fake:
+            self.assertEqual(cli.main(['fake', '--no-browser']), 0)
+        fake.assert_called_once_with(no_browser=True)
         with patch.object(cli.drone, 'run_real', return_value=0) as real:
-            cli.main(['real', '--no-detect', '--mona', 'hand', '--no-browser'])
-        self.assertEqual(real.call_args.kwargs, dict(phone=False, detect=False, map_=None, mona='hand',
-                                                     no_browser=True, interactive=False))
+            self.assertEqual(cli.main(['real', '--phone']), 0)
+        real.assert_called_once_with(phone=True, no_browser=False)
+        for removed in (['map'], ['prepare'], ['stop'], ['team-autonomy', 'docker'], ['real', '--map']):
+            with self.subTest(removed=removed), self.assertRaises(SystemExit):
+                cli.main(removed)
 
-    def test_menu_choices(self):
-        with patch.object(cli.drone, 'show_code'), patch.object(cli.mapping, 'main', return_value=0) as mapping, \
-                patch('builtins.input', side_effect=['3', 'f', '']):
-            self.assertEqual(cli.main([]), 0)
-        mapping.assert_called_once_with(['--fake'])
-        with patch.object(cli.drone, 'show_code'), patch.object(cli.drone, 'run_stop', return_value=0) as stop, \
-                patch('builtins.input', side_effect=['0', '']):
-            self.assertEqual(cli.main([]), 0)
-        stop.assert_called_once_with()
+    def test_menu_has_two_choices(self):
+        self.assertEqual([key for key, _, _ in cli.MENU], ['1', '2'])
+        for choice, target in (('1', 'run_fake'), ('2', 'run_real')):
+            with self.subTest(choice=choice), patch.object(cli.drone, 'show_code'), \
+                    patch.object(cli.drone, target, return_value=0) as run, patch('builtins.input', return_value=choice):
+                self.assertEqual(cli.main([]), 0)
+            run.assert_called_once_with()
 
 
 if __name__ == '__main__':

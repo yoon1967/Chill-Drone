@@ -1,6 +1,6 @@
 @echo off
 setlocal DisableDelayedExpansion
-rem Chill-Drone launcher. Double-click for the menu, or: start.cmd fake ^| real ^| map ^| team-autonomy ^| prepare ^| stop
+rem Chill-Drone launcher. Double-click for the menu (1 fake drone, 2 real drone), or: start.cmd fake ^| real [--phone]
 rem Details: apps\launcher\README.md
 set "CHILL_CALLER=%CD%"
 pushd "%~dp0.." || exit /b 1
@@ -13,9 +13,8 @@ if exist "%CHILL_PY%" goto found
 if defined CHILL_DRONE_PYTHON set "CHILL_PY=%CHILL_DRONE_PYTHON%"
 if exist "%CHILL_PY%" goto found
 echo [ERROR] Project Python (.venv) was not found in this checkout or the main Git worktree.
-echo Create it once, then prepare packages and models with internet:
+echo Create it once (1 or 2 then downloads missing packages and models with internet):
 echo   py -3.12 -m venv .venv
-echo   scripts\start.cmd prepare
 echo Or set CHILL_DRONE_PYTHON to the python.exe to use.
 pause
 popd
