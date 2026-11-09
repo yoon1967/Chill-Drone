@@ -76,6 +76,18 @@ export function importMessage(job) {
 
 export function openUrl(id) { return `/?asset=${encodeURIComponent(id)}#saved`; }
 
+export async function requestImport(action, body, query = '') {
+  const response = await fetch(`/api/import/${action}${query}`, body === undefined ? {cache: 'no-store'} :
+    {method: 'POST', headers: {'X-Mapping-Client': '1', 'Content-Type': 'application/json'}, body: JSON.stringify(body)});
+  const value = await response.json();
+  if (!response.ok) {
+    const error = new Error(errors[value.error] || value.error, {cause: value.error});
+    error.httpStatus = response.status;
+    throw error;
+  }
+  return value;
+}
+
 const processingStages = ['inspect', 'input', 'features', 'reconstruction', 'preview', 'finalization'];
 export function savedPhase(job) {
   if (job.status === 'awaiting_options') return 'settings';
@@ -200,13 +212,7 @@ export function connectImport({profiles = null, onPhase = () => {}} = {}) {
     if (asset) $('saved-media-slot').append($('import-selected'));
   });
   window.addEventListener('pagehide', () => { progressive?.dispose(); clearPreview(); clearInterval(timer); clearTimeout(polling); uploadController?.abort(); });
-  async function request(action, body, query = '') {
-    const response = await fetch(`/api/import/${action}${query}`, body === undefined ? {cache: 'no-store'} :
-      {method: 'POST', headers: {'X-Mapping-Client': '1', 'Content-Type': 'application/json'}, body: JSON.stringify(body)});
-    const value = await response.json();
-    if (!response.ok) throw new Error(errors[value.error] || value.error);
-    return value;
-  }
+  const request = requestImport;
   function fail(error) {
     $('import-status').textContent = error.name === 'AbortError' ? '전송을 취소했습니다.' : error.message;
     $('import-status').dataset.state = 'error'; $('import-progress').hidden = true;

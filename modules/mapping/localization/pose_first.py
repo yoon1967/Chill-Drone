@@ -114,9 +114,10 @@ class ConstantVelocityPose:
             return None, False
 
         predicted = last.copy()
-        previous_stamp, previous, _ = self.poses[0]
+        previous_stamp, previous, _ = next((sample for sample in self.poses
+            if last_stamp - sample[0] <= self.max_sample_gap_s + 1e-6), self.poses[-1])
         interval = last_stamp - previous_stamp
-        if 1 / 120 <= interval <= self.max_sample_gap_s:
+        if interval >= 1 / 120:
             steps = elapsed / interval
             delta = last[:3, 3] - previous[:3, 3]
             samples = np.asarray(anchors, dtype=float)
