@@ -53,6 +53,8 @@ indoor4m = [   # MONA_SIM_SET=indoor4m: 4 m forward in a 6 x 4 m room (goal 1 m 
     # rc calibration error (gateway rc fit from few flights): the Tello moves slower / faster than asked
     dict(name="room6x4_person_1m_slow_x0.6", boxes=room(front=5.0) + [person(1.0)], speed_gain=0.6),
     dict(name="room6x4_person_1m_fast_x1.3", boxes=room(front=5.0) + [person(1.0)], speed_gain=1.3),
+    # SLAM height drift (hand-held 11/09: +0.6 m over a 4 m level walk; about 0.035 m/s at 0.2 m/s)
+    dict(name="room6x4_person_1m_slam_z_drift", boxes=room(front=5.0) + [person(1.0)], pose_drift_mps=[0.0, 0.0, 0.035]),
 ]
 sets = {"person": people, "indoor": indoor, "indoor4m": indoor4m}
 scenarios = sets[os.environ["MONA_SIM_SET"]] if os.environ.get("MONA_SIM_SET") in sets else [

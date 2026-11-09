@@ -139,7 +139,8 @@ def ros_main():
     scan_deg = float(scenario.get("scan_deg", 0.0))   # look-around before the route (bridge ~scan_deg)
     depth_scale = float(scenario.get("depth_scale", 1.0))   # perception bias: >1 sees things farther than they are
     # SLAM error: the planner, PID and guards see the estimate; collisions are judged on the true position.
-    drift = np.array(list(scenario.get("pose_drift_mps", [0.0, 0.0])) + [0.0], dtype=float)  # steady drift (m/s)
+    # steady SLAM drift (m/s, x y [z]); z: hand-held 11/09 SLAM height rose 0.6 m over a 4 m level walk
+    drift = np.array((list(scenario.get("pose_drift_mps", [0.0, 0.0])) + [0.0, 0.0, 0.0])[:3], dtype=float)
     drift_from_start = bool(scenario.get("drift_from_start", False))   # drift already during the look-around
     pose_noise = float(scenario.get("pose_noise_m", 0.0))     # per-pose jitter (m, 1 sigma)
     depth_noise = float(scenario.get("depth_noise", 0.0))     # per-pixel relative depth noise (1 sigma)
