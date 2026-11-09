@@ -33,12 +33,14 @@ BACK_LIMIT_M = 0.5                     # plan going farther behind the route sta
 MAX_SPEED_MPS = 0.3                    # horizontal cap; the gateway hello lowers it to the real reachable speed
 SCAN_LIMIT_S = 45.0                    # look-around must finish in this time (+-90 deg at 0.24 rad/s takes about 30 s)
 # The develop gateway turns cmd_vel into rc with assumed gains (hello k_lin 100, k_yaw 57, rc_limit 30), but the Tello
-# does not move below about rc 12 (flight logs 11/03-11/06: forward rc 8-12 -> 0 m/s, 20 -> 0.10, 25 -> 0.20,
-# 45 -> about 0.35 m/s; yaw rc 30 -> 14 deg/s, 40 -> 20 deg/s). 11/06 the route's 0.1 m/s commands became rc 10 and
+# does not move below about rc 12. rc step flight 11/09 (indoor, mission pads under the drone, Tello VPS, mean of each
+# 2.5 s step after 1 s): forward rc 10/12 -> 0.01 m/s, 15 -> 0.07, 20 -> 0.10, 25 -> 0.19, 30 -> 0.26 (fit
+# rc = 10.9 + 74.5 v); yaw rc 10 -> 3.7 deg/s, 15 -> 8.2, 20 -> 8.7, 25 -> 13.8, 30 -> 15.3 (fit 6.2 + 81.8 rad/s).
+# 11/06 the route's 0.1 m/s commands became rc 10 and
 # the drone never left after takeoff. Until the gateway is calibrated (S15P31B205-274) the bridge sends the speed
 # that the gateway's gains turn into the rc the Tello needs: rc = start rc + slope x speed.
-TELLO_RC_MIN_LIN, TELLO_K_LIN = 12, 80.0     # horizontal: rc at which it starts to move, rc per m/s above it
-TELLO_RC_MIN_YAW, TELLO_K_YAW = 6, 99.0      # yaw: rc per rad/s above the start rc
+TELLO_RC_MIN_LIN, TELLO_K_LIN = 11, 75.0     # horizontal: rc at which it starts to move, rc per m/s above it
+TELLO_RC_MIN_YAW, TELLO_K_YAW = 6, 82.0      # yaw: rc per rad/s above the start rc
 MIN_CMD_MPS, MIN_CMD_RPS = 0.01, 0.02        # smaller commands are sent as 0 (no rc jumps at hover)
 ORIGIN_HEIGHT_TOL_M = 0.25           # route start z (map) must be near 0: the planner ceiling/floor (+-0.5 m)
                                        # are relative to where SLAM started, which must be the flight height

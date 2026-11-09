@@ -163,16 +163,16 @@ class RcCompensationTests(unittest.TestCase):
 
     def test_sends_the_rc_the_tello_needs(self):
         comp = RcCompensation(100.0, 57.0, 30)
-        # 11/06: 0.1 m/s went out as rc 10 and the Tello did not move; now rc 12 + 80 x 0.1 = 20
-        self.assertEqual(self.rc(comp, {"vx_mps": 0.1, "vy_mps": -0.05, "vz_mps": 0.0, "yaw_rate_rps": 0.0}), (20, -16, 0))
-        self.assertEqual(self.rc(comp, {"vx_mps": 0.0, "vy_mps": 0.0, "vz_mps": 0.0, "yaw_rate_rps": 0.2}), (0, 0, 26))
+        # 11/06: 0.1 m/s went out as rc 10 and the Tello did not move; now rc 11 + 75 x 0.12 = 20 (11/09 step flight)
+        self.assertEqual(self.rc(comp, {"vx_mps": 0.12, "vy_mps": -0.04, "vz_mps": 0.0, "yaw_rate_rps": 0.0}), (20, -14, 0))
+        self.assertEqual(self.rc(comp, {"vx_mps": 0.0, "vy_mps": 0.0, "vz_mps": 0.0, "yaw_rate_rps": 0.2}), (0, 0, 22))
         self.assertEqual(self.rc(comp, {"vx_mps": 1.0, "vy_mps": 0.0, "vz_mps": 0.0, "yaw_rate_rps": -1.0}), (30, 0, -30))
 
     def test_tiny_commands_and_limits(self):
         comp = RcCompensation(100.0, 57.0, 30)
         self.assertEqual(self.rc(comp, {"vx_mps": 0.005, "vy_mps": 0.0, "vz_mps": 0.0, "yaw_rate_rps": 0.01}), (0, 0, 0))
-        self.assertAlmostEqual(comp.max_speed(), 0.225)
-        self.assertAlmostEqual(comp.max_yaw_rate(), 24 / 99)
+        self.assertAlmostEqual(comp.max_speed(), 19 / 75)
+        self.assertAlmostEqual(comp.max_yaw_rate(), 24 / 82)
 
     def test_no_gains_means_unchanged(self):
         cmd = {"vx_mps": 0.1, "vy_mps": 0.0, "vz_mps": 0.0, "yaw_rate_rps": 0.0}
