@@ -1,6 +1,13 @@
 FROM ros:noetic-ros-base-focal AS system
 SHELL ["/bin/bash", "-o", "pipefail", "-c"]
 ENV DEBIAN_FRONTEND=noninteractive PYTHONUNBUFFERED=1
+# Avoid intermittent HTTP archive/proxy errors during the first large install.
+# The ROS base already includes ca-certificates for HTTPS verification.
+RUN sed -i \
+    -e 's|http://archive.ubuntu.com/ubuntu|https://archive.ubuntu.com/ubuntu|g' \
+    -e 's|http://security.ubuntu.com/ubuntu|https://security.ubuntu.com/ubuntu|g' \
+    /etc/apt/sources.list \
+    && printf 'Acquire::Retries "3";\n' > /etc/apt/apt.conf.d/80-retries
 RUN apt-get update && apt-get install -y --no-install-recommends \
     build-essential cmake git ca-certificates curl libeigen3-dev libopencv-dev \
     libboost-serialization-dev libnlopt-dev libarmadillo-dev libdw-dev \
