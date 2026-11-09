@@ -17,14 +17,25 @@
       <a href="#/control" data-view="control">현장 조작</a>
     </nav>
     <span class="spacer"></span>
-    <label class="scenario" id="preset-wrap" hidden>화면
-      <select id="preset" aria-label="화면 프리셋 선택"></select>
-    </label>
+    <span class="scenario" id="preset-wrap" hidden>
+      <label for="preset">화면</label> <select id="preset" aria-label="화면 프리셋 선택"></select>
+      <button type="button" id="edit-layout" title="칸을 옮기고 크기를 바꿔 내 프리셋으로 저장합니다(땅에 있을 때만)">편집</button>
+    </span>
     <label class="scenario" id="scenario-wrap">상황
       <select id="scenario" aria-label="샘플 상황 선택"></select>
     </label>
     <span class="badge sample" title="서버에 연결하지 않고 계약 형식의 샘플 데이터로 그린 화면입니다">샘플 데이터</span>
   </header>
+  <div class="editbar" id="editbar" role="toolbar" aria-label="화면 편집" hidden>
+    <b>화면 편집</b>
+    <span class="muted">칸</span><span class="edit-panels" id="edit-panels"></span>
+    <span class="spacer"></span>
+    <label>이름 <input id="edit-name" maxlength="40" autocomplete="off"></label>
+    <button type="button" data-edit="save">저장</button>
+    <button type="button" data-edit="saveas" hidden>새 프리셋으로 저장</button>
+    <button type="button" data-edit="delete" hidden>삭제</button>
+    <button type="button" data-edit="cancel">취소</button>
+  </div>
   <main id="app"></main>
   <div id="toast" role="status" aria-live="polite"></div>
   <script src="sample.js"></script>
