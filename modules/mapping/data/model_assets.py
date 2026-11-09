@@ -1,9 +1,14 @@
-"""Resolve prepared weights from disk without invoking a model hub download."""
+"""Resolve local model weights and provision the person checkpoint during setup."""
+from hashlib import file_digest
 from pathlib import Path
+from shutil import copyfile
+from tempfile import TemporaryDirectory
 
 DEPTH_MODEL = 'depth-anything/Depth-Anything-V2-Metric-Indoor-Small-hf'
 SCENE_MODEL = 'nvidia/segformer-b0-finetuned-ade-512-512'
 PERSON_MODEL = 'yolo26n-seg.pt'
+PERSON_REVISION = '45588070f19053475015dd860367c7780dd34b2a'
+PERSON_SHA256 = '361fbfabab285c3237700b6bb91d7ecfa602cd945fffda8dbe1242829b71e73f'
 
 
 class ModelAssetsMissing(RuntimeError):
@@ -30,6 +35,18 @@ def cached_snapshot(model_id):
 def person_checkpoint():
     import torch
     return Path(torch.hub.get_dir()) / 'checkpoints' / PERSON_MODEL
+
+
+def download_person_checkpoint(target):
+    from huggingface_hub import hf_hub_download
+    source = hf_hub_download('Ultralytics/YOLO26', PERSON_MODEL, revision=PERSON_REVISION)
+    target.parent.mkdir(parents=True, exist_ok=True)
+    with TemporaryDirectory(prefix='.yolo-', dir=target.parent) as folder:
+        candidate = copyfile(source, Path(folder) / PERSON_MODEL)
+        with candidate.open('rb') as stream:
+            if file_digest(stream, 'sha256').hexdigest() != PERSON_SHA256:
+                raise ModelAssetsMissing(f'{PERSON_MODEL} SHA-256 mismatch')
+        candidate.replace(target)
 
 
 def require_local_models():

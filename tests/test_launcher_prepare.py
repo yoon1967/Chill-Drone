@@ -1,10 +1,41 @@
 """실행기 준비(apps/launcher/prepare.py): 빠진 패키지·모델·웹 의존성만 받기. 다운로드 없이."""
+from hashlib import sha256
 from pathlib import Path
 import subprocess
+import tempfile
 import unittest
 from unittest.mock import patch
 
-from apps.launcher import prepare
+from apps.launcher import docker_assets, prepare
+
+
+class HostCheckTests(unittest.TestCase):
+    def test_docker_checks_read_only_and_explain_what_to_prepare(self):
+        endpoint = 'npipe:////./pipe/dockerDesktopLinuxEngine'
+        wsl_engine = 'linux|6.6.87-microsoft-standard-WSL2'
+        for installed, replies, mona, hint in (
+            (False, [], False, 'Docker Desktop을 설치'),
+            (True, ['ssh://other-pc'], False, '이 PC의 Linux 엔진'),
+            (True, [endpoint, None], False, 'Linux 엔진이 시작'),
+            (True, [endpoint, 'windows|10.0'], False, 'Linux 컨테이너 모드'),
+            (True, [endpoint, 'linux|6.12-linuxkit'], True, 'WSL 2 기반 엔진'),
+            (True, [endpoint, wsl_engine, None], True, 'NVIDIA GPU 드라이버'),
+            (True, [endpoint, wsl_engine], False, None),
+            (True, [endpoint, wsl_engine, '591.44'], True, None),
+        ):
+            with self.subTest(hint=hint, mona=mona), patch.dict(docker_assets.os.environ, clear=True), \
+                    patch.object(docker_assets.sys, 'platform', 'win32'), \
+                    patch.object(docker_assets, 'installed_program', return_value=installed), \
+                    patch.object(docker_assets, 'probe', side_effect=replies) as probe:
+                problem = docker_assets.docker_problem(mona=mona)
+                if hint:
+                    self.assertIn(hint, problem)
+                else:
+                    self.assertIsNone(problem)
+                self.assertEqual(probe.call_count, len(replies))
+                for call in probe.call_args_list:
+                    if call.args[0][0] == 'docker':
+                        self.assertIn(call.args[0][1], ('context', 'info'))
 
 
 class PythonPackageTests(unittest.TestCase):
@@ -39,7 +70,7 @@ class PythonPackageTests(unittest.TestCase):
         self.assertEqual(len(commands), 2)
         self.assertEqual(commands[0][:5], [self.launcher.sys.executable, '-B', '-m', 'pip', 'install'])
         self.assertEqual(commands[0][-2:], ['--index-url', 'https://download.pytorch.org/whl/cu128'])
-        self.assertIn('torchvision', commands[0])   # 따로 두면 ultralytics가 CPU용 torch로 바꾼다
+        self.assertIn('torchvision==0.26.0', commands[0])   # 따로 두면 ultralytics가 CPU용 torch로 바꾼다
         self.assertIn('--no-cache-dir', commands[0])
         self.assertEqual(commands[1][-2:], ['-r', str(self.launcher.ROOT / 'modules/mapping/data/requirements-stream.txt')])
 
@@ -96,27 +127,64 @@ class ModelAndWebTests(unittest.TestCase):
         self.assertEqual(call.call_args.args[0][-2:], ['modules.mapping.data.prepare_models', '--download'])
 
     def test_console_web_uses_pnpm_when_missing(self):
-        with patch.object(prepare.Path, 'is_file', return_value=False), \
+        with patch.object(prepare, 'console_web_ready', side_effect=[False, True]), \
                 patch.object(prepare.shutil, 'which', return_value='pnpm'), \
                 patch.object(prepare.subprocess, 'call', return_value=0) as call:
             self.assertTrue(prepare.ensure_console_web())
         self.assertEqual(call.call_args.args[0], ['pnpm', '--dir', 'apps/console', 'install', '--frozen-lockfile'])
-        with patch.object(prepare.Path, 'is_file', return_value=False), patch.object(prepare.shutil, 'which', return_value=None):
+        with patch.object(prepare.Path, 'is_file', return_value=False), patch.object(prepare.shutil, 'which', return_value=None), \
+                patch.object(prepare.docker_assets, 'installed_program', return_value=None):
             self.assertFalse(prepare.ensure_console_web())
 
-    def test_ensure_all_reports_each_part_and_skips_models_without_packages(self):
+    def test_failed_package_preparation_stops_before_the_next_stage(self):
         with patch.object(prepare, 'ensure_python_environment', return_value=False), \
-                patch.object(prepare, 'ensure_gateway_environment', return_value=True), \
+                patch.object(prepare, 'ensure_gateway_environment') as gateway, \
                 patch.object(prepare, 'ensure_models') as models, \
-                patch.object(prepare, 'ensure_console_web', return_value=True):
-            self.assertEqual(prepare.ensure_all(), {'packages': False, 'gateway': True, 'models': False, 'web': True})
+                patch.object(prepare, 'ensure_console_web') as web, \
+                patch.object(docker_assets, 'ensure_image') as build:
+            self.assertFalse(prepare.ensure_all())
+        gateway.assert_not_called()
         models.assert_not_called()
+        web.assert_not_called()
+        build.assert_not_called()
+
+    def test_real_preparation_builds_both_images_and_demo_skips_mona(self):
         with patch.object(prepare, 'ensure_python_environment', return_value=True), \
                 patch.object(prepare, 'ensure_gateway_environment', return_value=True), \
                 patch.object(prepare, 'ensure_models', return_value=True), \
-                patch.object(prepare, 'ensure_console_web') as web:
-            self.assertEqual(prepare.ensure_all(console=False), {'packages': True, 'gateway': True, 'models': True, 'web': True})
-        web.assert_not_called()
+                patch.object(prepare, 'ensure_console_web', return_value=True), \
+                patch.object(docker_assets, 'ensure_image', return_value=True) as build, \
+                patch.object(docker_assets, 'ensure_mona_model', return_value=True), \
+                patch.object(docker_assets, 'probe', return_value=None), \
+                patch.object(docker_assets.subprocess, 'call', return_value=0) as docker:
+            self.assertTrue(prepare.ensure_all())
+            docker.assert_not_called()
+            self.assertTrue(prepare.ensure_all(mona=True))
+        self.assertEqual([item.args[0] for item in build.call_args_list],
+                         [docker_assets.ORB_IMAGE, docker_assets.ORB_IMAGE, docker_assets.MONA_IMAGE])
+        self.assertEqual(docker.call_args.args[0][:5], ['docker', 'run', '--rm', '--gpus', 'all'])
+
+    def test_mona_reuses_verified_model_and_never_publishes_invalid_export(self):
+        payload = b'verified model'
+
+        def export(command, **_):
+            (Path(command[-1]) / docker_assets.DA_V2_FP16_FILE).write_bytes(payload)
+            return 0
+
+        with tempfile.TemporaryDirectory() as folder, \
+                patch.object(docker_assets, 'MONA_OUTPUT', Path(folder)), \
+                patch.object(docker_assets, 'DA_V2_FP16_SHA256', sha256(payload).hexdigest()), \
+                patch.object(docker_assets, 'export_python', return_value='python'), \
+                patch.object(docker_assets.subprocess, 'call', side_effect=export) as call:
+            self.assertTrue(docker_assets.ensure_mona_model())
+            self.assertTrue(docker_assets.ensure_mona_model())
+            call.assert_called_once()
+            model = Path(folder) / 'models' / docker_assets.DA_V2_FP16_FILE
+            model.write_bytes(b'broken existing file')
+            payload = b'invalid export'
+            self.assertFalse(docker_assets.ensure_mona_model())
+            self.assertEqual(model.read_bytes(), b'broken existing file')
+            self.assertEqual(list(model.parent.iterdir()), [model])
 
 
 if __name__ == '__main__':

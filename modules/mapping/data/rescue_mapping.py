@@ -57,12 +57,14 @@ class SemanticEstimator:
         from modules.perception.inference.tello_dual_segmentation import DualSegmentationProcessor, parser
         import torch
         args = parser().parse_args([])
-        from .model_assets import cached_snapshot, person_checkpoint, ModelAssetsMissing
+        from .model_assets import (
+            ModelAssetsMissing, cached_snapshot, download_person_checkpoint, person_checkpoint,
+        )
         checkpoint = person_checkpoint()
-        if not checkpoint.is_file():
+        if not checkpoint.is_file() or checkpoint.stat().st_size == 0:
             if not allow_download:
                 raise ModelAssetsMissing(args.yolo_model)
-            checkpoint.parent.mkdir(parents=True, exist_ok=True)
+            download_person_checkpoint(checkpoint)
         try:
             args.semantic_model = str(cached_snapshot(args.semantic_model))
         except ModelAssetsMissing:
