@@ -481,7 +481,7 @@ class ImportManager:
                 output.write(block)
                 remaining -= len(block)
 
-    def inspect(self, key, source=None):
+    def inspect(self, key, source=None, *, start_video=None):
         job = self.job(key)
         with self.lock:
             if job['status'] != 'uploading':
@@ -523,6 +523,14 @@ class ImportManager:
                         raise ValueError('reconstruction_result_not_ready')
                     from modules.mapping.data.frame_input import inspect_input
                     info = inspect_input(root)
+                    if start_video is not None:
+                        if info['kind'] != 'video':
+                            raise ValueError('video_required')
+                        if job['cancel'].is_set():
+                            raise InterruptedError('cancelled')
+                        job.update(source=root, summary=info, stage='preflight')
+                        start_video()
+                        return
                     job.update(source=root, summary=info, status='awaiting_options', stage='confirm')
                 if job['cancel'].is_set():
                     raise InterruptedError('cancelled')
@@ -661,7 +669,7 @@ class ImportManager:
                 self.initial = None
             return {'status': 'deleted', 'local_id': name}
 
-    def start(self, key, options, presentation_sync=False):
+    def start(self, key, options, presentation_sync=False, *, inspected=False):
         from modules.mapping.data.frame_input import validate_options
         job = self.job(key)
         options = validate_options(options, job.get('summary', {}))
@@ -675,15 +683,14 @@ class ImportManager:
             except RuntimeError as error:
                 raise ValueError(str(error)) from error
         with self.lock:
-            if job['status'] != 'awaiting_options':
+            if job['cancel'].is_set() or job['status'] != ('inspecting' if inspected else 'awaiting_options'):
                 raise ValueError('import_not_waiting_for_options')
-            if any(j['status'] in {'running', 'cancelling'} for j in self.jobs.values()):
+            if any(j is not job and j['status'] in {'running', 'cancelling'} for j in self.jobs.values()):
                 raise ValueError('reconstruction_busy')
-            job.update(status='running', stage='input', options=options, presentation_sync=presentation_sync)
-        output = job['path'] / ('reconstruction_' + uuid.uuid4().hex[:8])
-        job['output'] = output
-        config = job['path'] / 'options.json'
-        config.write_text(json.dumps(options), encoding='utf-8')
+            output = job['path'] / ('reconstruction_' + uuid.uuid4().hex[:8])
+            config = job['path'] / 'options.json'
+            config.write_text(json.dumps(options), encoding='utf-8')
+            job.update(status='running', stage='input', options=options, output=output, presentation_sync=presentation_sync)
         def work():
             try:
                 if options['mode'] == 'depth_rgbd':
@@ -755,10 +762,11 @@ class ImportManager:
         if job.get('live_session') is not None:
             job['live_session'].stop('user_stop')
             return self.public(key)
-        if job['cancel'].is_set():
-            return self.public(key)
-        job['status'] = 'cancelling'
-        job['cancel'].set()
+        with self.lock:
+            if job['cancel'].is_set() or job['status'] in {'ready', 'complete', 'failed', 'cancelled'}:
+                return self.public(key)
+            job['status'] = 'cancelling'
+            job['cancel'].set()
         with self.preview_changed:
             self.preview_changed.notify_all()
         if job.get('process'):

@@ -20,6 +20,7 @@ def integrate_history(output, progress=lambda **fields: None):
             continue
         path = reader.root / 'frames' / f"{entry['revision']:08d}.npz"
         predicted = entry['tracking'] == 'pose_predicted'
+        estimated = predicted or entry.get('estimated_alignment', False)
         with np.load(path, allow_pickle=False) as frame:
             map_id = int(frame['map_id'])
             group = groups.setdefault(map_id, {'map_id': map_id, 'cells': {}, 'cameras': [],
@@ -43,10 +44,11 @@ def integrate_history(output, progress=lambda **fields: None):
                 confidence = frame['semantic_confidence'] if 'semantic_confidence' in frame else np.ones(depth.shape, np.float32)
                 group['surface'].integrate(frame['rgb'], depth, frame['world_from_camera'],
                     frame['intrinsics'], labels, confidence, tof_verified=bool(frame['tof_verified']) if 'tof_verified' in frame else False,
-                    pose_predicted=predicted, depth_classes=frame['depth_classes'] if 'depth_classes' in frame else None)
+                    pose_predicted=estimated,
+                    depth_classes=frame['depth_classes'] if 'depth_classes' in frame else None)
                 detections = [{'mask': mask, 'confidence': float(confidence)} for mask, confidence in
                     zip(frame['person_instances'], frame['person_confidences'])] if 'person_instances' in frame else []
-                people = group['sightings'].snapshot(entry['timestamp_s']) if predicted else group['sightings'].update(
+                people = group['sightings'].snapshot(entry['timestamp_s']) if estimated else group['sightings'].update(
                     detections, depth, frame['world_from_camera'], frame['intrinsics'], entry['timestamp_s'], entry['frame_id'])
                 group['rescue'] = dict(schema_version=SCHEMA, map_id=map_id, people=people,
                     render_mode='points', point_revision=group['surface'].revision,
@@ -70,6 +72,8 @@ def integrate_history(output, progress=lambda **fields: None):
                 group['cameras'][-1]['pose_source'] = 'constant_velocity'
             elif entry['tracking'] == 'pose_reused':
                 group['cameras'][-1]['pose_source'] = 'previous_frame_pnp'
+            elif entry['tracking'] == 'pose_held':
+                group['cameras'][-1]['pose_source'] = 'last_observed_pose'
         done += 1
         progress(integrated_frames=done, integration_total=total, integrated_maps=len(groups),
             integrated_points=sum(len(g['surface'].cells) if 'surface' in g else len(g['cells']) for g in groups.values()))

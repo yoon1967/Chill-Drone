@@ -16,12 +16,13 @@ if (!validPersonColor(settings.person_color)) settings.person_color = defaults.p
 const validSampleFps = value => typeof value === 'number' && Number.isFinite(value) && value >= .1 && value <= 15;
 if (!validSampleFps(settings.sample_fps)) settings.sample_fps = defaults.sample_fps;
 export function mappingSettings() { return {...settings}; }
-export function mappingOptions() {
+export function mappingOptions({includeSampling = true} = {}) {
   const input = globalThis.document?.getElementById?.('rescue-sample-fps');
-  if (input?.validity?.valid === false) throw new Error('지도에 사용할 초당 프레임은 0.1~15 사이로 입력해 주세요.');
+  if (includeSampling && input?.validity?.valid === false) throw new Error('지도에 사용할 초당 프레임은 0.1~15 사이로 입력해 주세요.');
   return {semantic_mapping: settings.semantic_mapping === true, depth_resolution: [256, 384, 518].includes(settings.depth_resolution) ? settings.depth_resolution : 384,
     point_budget: [4000,8000,10000,16000,32000].includes(settings.point_budget) ? settings.point_budget : defaults.point_budget,
-    sample_fps: settings.sample_fps, person_color: settings.person_color, person_outline: settings.person_outline === true};
+    ...(includeSampling ? {sample_fps: settings.sample_fps} : {}),
+    person_color: settings.person_color, person_outline: settings.person_outline === true};
 }
 export function onMappingSettings(callback) { subscribers.add(callback); return () => subscribers.delete(callback); }
 export function connectMappingSettings() {

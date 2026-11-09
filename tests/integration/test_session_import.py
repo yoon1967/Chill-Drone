@@ -371,6 +371,42 @@ class SessionImportTests(unittest.TestCase):
         thread.join(1)
         self.assertTrue(done.is_set())
 
+    def test_uploaded_video_auto_reconstructs_without_a_browser_acknowledgement(self):
+        key = self.manager.create('source.mp4')['id']
+        video = self.manager.job(key)['path'] / 'bundle' / 'source.mp4'
+        video.write_bytes(b'video')
+
+        def run(_source, output, options, stop_event, on_preview):
+            self.assertTrue(options['causal_video'])
+            self.assertFalse(options['all_video_frames'])
+            self.assertEqual(options['sample_fps'], 3)
+            for revision in (1, 2):
+                on_preview({'revision': revision, 'points': [], 'cameras': []})
+            make_reconstruction(output)
+
+        server = ViewerServer(('127.0.0.1', 0), partial(ViewerHandler, imports=self.manager,
+            timeline=Timeline(), observations=ObservationCache()))
+        thread = threading.Thread(target=server.serve_forever, daemon=True)
+        thread.start()
+        try:
+            with patch('modules.mapping.data.frame_input.inspect_input', return_value={'kind': 'video', 'width': 32, 'height': 24}), \
+                    patch('importlib.util.find_spec', return_value=True), \
+                    patch('modules.mapping.localization.orbslam3_live.require_slam_image'), \
+                    patch.object(self.manager.depth_worker, 'run', side_effect=run):
+                connection = HTTPConnection('127.0.0.1', server.server_port)
+                connection.request('POST', '/api/import/inspect?id=' + key, json.dumps({'auto_reconstruct': {}}),
+                    {'X-Mapping-Client': '1', 'Content-Type': 'application/json'})
+                response = connection.getresponse()
+                self.assertEqual(response.status, 202)
+                response.read()
+                connection.close()
+                self.assertEqual(self.wait(key)['status'], 'complete')
+                self.assertFalse(self.manager.preview(key)['needs_presentation'])
+        finally:
+            server.shutdown()
+            server.server_close()
+            thread.join(2)
+
     def test_recent_library_lists_one_card_for_reopened_local_map(self):
         source = self.manager.root / 'saved_session'
         make_session(source)
@@ -494,6 +530,13 @@ class SessionImportTests(unittest.TestCase):
         self.assertEqual(options['camera']['fx'], 1500)
         with self.assertRaisesRegex(ValueError, 'dimensions_must_match'):
             validate_options({'confirmed': True, 'camera': camera}, {'width': 960, 'height': 540})
+
+    def test_causal_video_accepts_a_configured_mapping_rate(self):
+        summary = {'kind': 'video', 'source_fps': 29.97}
+        options = {'confirmed': True, 'mode': 'depth_rgbd', 'causal_video': True}
+        default = validate_options(options, summary)
+        self.assertEqual((default['sample_fps'], default['frame_fps']), (3, 29.97))
+        self.assertEqual(validate_options({**options, 'sample_fps': 4.5}, summary)['sample_fps'], 4.5)
 
     def test_default_depth_import_preserves_cumulative_preview_option(self):
         options = {'confirmed': True, 'mode': 'depth_rgbd'}

@@ -27,7 +27,7 @@ def _array_bytes(array):
 
 
 class HistoryWriter:
-    def __init__(self, output, write_json, render_window_s=10., synchronous=False):
+    def __init__(self, output, write_json, render_window_s=10., synchronous=False, compress=False):
         self.root = Path(output) / 'history'
         (self.root / 'frames').mkdir(parents=True)
         self.write_json = write_json
@@ -42,6 +42,7 @@ class HistoryWriter:
         self.error = None
         self.closed = False
         self.synchronous = synchronous
+        self.compress = compress or not synchronous
         self.index = None
         self.thread = None
         if synchronous:
@@ -90,10 +91,10 @@ class HistoryWriter:
         if snapshot.get('rescue') is not None:
             arrays['rescue_json'] = np.frombuffer(json.dumps(snapshot['rescue'], allow_nan=False,
                 separators=(',', ':')).encode('utf-8'), dtype=np.uint8)
-        # Sequential reconstruction trades larger chunks for no compression stall.
-        compression = zipfile.ZIP_STORED if self.synchronous else zipfile.ZIP_DEFLATED
+        # Compress saved video history without dropping observations.
+        compression = zipfile.ZIP_DEFLATED if self.compress else zipfile.ZIP_STORED
         with zipfile.ZipFile(temporary, 'w', compression=compression,
-                             compresslevel=None if self.synchronous else 1) as archive:
+                             compresslevel=1 if self.compress else None) as archive:
             for name, array in arrays.items():
                 archive.writestr(name + '.npy', _array_bytes(array))
         from modules.mapping.localization.orbslam3 import replace_file

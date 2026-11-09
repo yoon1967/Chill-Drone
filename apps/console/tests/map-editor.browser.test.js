@@ -1,14 +1,11 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
 import {createRequire} from 'node:module';
-import {readFile} from 'node:fs/promises';
-import {basename, dirname} from 'node:path';
 
 const gateway = process.env.MAPPING_CONTROLLER_URL;
-const video = process.env.MAPPING_EDITOR_VIDEO;
 
-test('combined controller keeps the mapping frame and opens independent saved and supervisor edits',
-  {skip: !gateway || !video, timeout: 65000}, async () => {
+test('controller opens a dedicated video reconstruction and keeps supervisor edits independent',
+  {skip: !gateway, timeout: 45000}, async () => {
     const {chromium} = process.env.MAPPING_PLAYWRIGHT_MODULE ?
       createRequire(import.meta.url)(process.env.MAPPING_PLAYWRIGHT_MODULE) : await import('playwright');
     const browser = await chromium.launch({channel: 'msedge', headless: true});
@@ -17,59 +14,119 @@ test('combined controller keeps the mapping frame and opens independent saved an
       const errors = [];
       page.context().on('page', tab => tab.on('pageerror', error => errors.push(error.message)));
       page.on('pageerror', error => errors.push(error.message));
+      const job = {id: 'import_1234567890123456', name: '복도.mp4', summary: {kind: 'video', duration_s: 4}, status: 'uploading'};
+      const saved = {id: 'import_6543210987654321', name: '이전 지도', status: 'complete'};
+      const points = [[0, 0, 2, 255, 0, 0], [1, 0, 2, 0, 255, 0], [0, 1, 2, 0, 0, 255]];
+      const acknowledgements = [];
+      await page.route('**/api/import/library', route => route.fulfill({json: {items: [saved]}}));
+      await page.route('**/api/import/local', route => route.fulfill({json: saved}));
+      await page.route('**/api/import/create', route => {
+        job.status = 'uploading';
+        job.progress = {};
+        return route.fulfill({json: job});
+      });
+      await page.route('**/api/import/upload?*', route => {
+        assert.equal(new URL(route.request().url()).searchParams.get('path'), job.name);
+        return route.fulfill({json: {status: 'uploaded'}});
+      });
+      await page.route('**/api/import/inspect?*', route => {
+        assert.equal(route.request().postDataJSON().auto_reconstruct.sample_fps, undefined);
+        job.status = 'running'; job.stage = 'model';
+        return route.fulfill({json: job});
+      });
+      await page.route('**/api/import/status?*', route => route.fulfill({json:
+        new URL(route.request().url()).searchParams.get('id') === saved.id ? saved : job}));
+      await page.route('**/api/import/preview?*', route => route.fulfill({json:
+        Number(new URL(route.request().url()).searchParams.get('revision')) === 1 ? {unchanged: true} : {
+        revision: 1, frame_id: 'frame_0000001.jpg', frame_number: 1, timestamp_s: 1,
+        tracking: 'pose_held', map_id: 0, points, cameras: [[0, 0, 0]], needs_presentation: false,
+      }}));
+      await page.route('**/api/import/preview-frame?*', route => route.fulfill({contentType: 'image/png',
+        body: Buffer.from('iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mP8/x8AAwMCAO+aWQ0AAAAASUVORK5CYII=', 'base64')}));
+      await page.route('**/api/import/presented?*', route => {
+        acknowledgements.push(route.request().url());
+        return route.fulfill({json: {revision: 1}});
+      });
+      await page.route('**/api/saved/run?*', route => route.fulfill({json: {
+        schema_version: 'phone-sfm-result/1.2', scale: {unit: 'arbitrary'},
+        quality: {result_status: 'partial', coverage: {map_count: 2, held_pose_frames: 1}},
+        points: [...points, [1, 1, 2, 255, 255, 255]].map(([x, y, z, ...rgb], index) => [index, x, -y, -z, ...rgb]),
+      }}));
+      await page.route('**/api/import/cancel?*', route => {
+        job.status = 'cancelled';
+        return route.fulfill({json: job});
+      });
       await page.goto(gateway + '/#/map');
       const frame = page.frameLocator('.console-frame');
-      await frame.locator('#import-drop').waitFor();
-      await frame.locator('.saved-record').first().waitFor();
-      await page.locator('body.console-landing').waitFor();
-      assert.equal(await frame.locator('#rescue-settings').isVisible(), false);
-      assert.equal(await page.locator('.console-view > header').isVisible(), false);
-      const top = await page.locator('body > .top').boundingBox();
-      const drop = await frame.locator('#import-drop').boundingBox();
-      const recent = await frame.locator('#saved-library-section').boundingBox();
-      assert.ok(drop.y >= top.y + top.height && drop.height >= 225 && drop.y + drop.height < recent.y);
-      const console = new URL(await page.locator('.console-frame').getAttribute('src')).origin;
-      const initial = await (await page.request.get(console + '/api/import/video-folder')).json();
-      await frame.locator('#video-folder-change').click();
-      await frame.locator('#video-folder-input').fill('relative-path');
-      await frame.getByRole('button', {name: '저장', exact: true}).click();
-      await frame.getByText('이 PC에 이미 있는 폴더의 전체 경로를 입력하세요.').waitFor();
-      await frame.locator('#video-folder-input').fill(dirname(video));
-      await frame.getByRole('button', {name: '저장', exact: true}).click();
-      await frame.getByText('영상 폴더 위치를 저장했습니다.').waitFor();
-      await page.reload();
-      await frame.locator('#video-folder-path').getByText(dirname(video), {exact: true}).waitFor();
-      await frame.locator('#video-folder-change').click();
-      await frame.locator('#video-folder-reset').click();
-      await frame.locator('#video-folder-path').getByText(initial.folder, {exact: true}).waitFor();
-
-      await frame.getByRole('button', {name: '실시간 지도', exact: true}).click();
-      await frame.locator('#connection-monitor').waitFor();
-      await page.locator('body:not(.console-landing) .controls').waitFor();
+      await frame.getByRole('button', {name: '영상 선택'}).waitFor();
+      await frame.locator('main').evaluate(async () => {
+        const {OrbitControls} = await import('/vendor/OrbitControls.js');
+        const update = OrbitControls.prototype.update;
+        OrbitControls.prototype.update = function (...args) {
+          const updated = update.apply(this, args);
+          const camera = this.object;
+          window.mappingView = {orthographic: camera.isOrthographicCamera, up: camera.up.toArray(),
+            z: camera.position.z, targetZ: this.target.z};
+          return updated;
+        };
+      });
+      assert.equal(await frame.locator('#import-panel, #workflow-guide, #rescue-settings').count(), 0);
+      assert.equal(await page.locator('#app .strip, #app .controls, .console-view, .console-tools').count(), 0);
+      const top = await page.locator('.top').boundingBox();
+      const surface = await page.locator('.console-frame').boundingBox();
+      assert.equal(surface.width, 1440);
+      assert.ok(Math.abs(surface.y - top.height) <= 1 && surface.y + surface.height >= 899);
+      const url = new URL(await page.locator('.console-frame').getAttribute('src'));
+      const console = url.origin;
+      assert.equal(url.pathname, '/reconstruct.html');
       const consoleFrame = page.frames().find(item => item.url().startsWith(console));
+      await frame.getByRole('button', {name: /이전 지도/}).click();
+      await frame.locator('main[data-state="partial"]').waitFor();
+      assert.equal(await frame.locator('#file-name').textContent(), saved.name);
+      await frame.locator('#change').click();
+      const video = {name: job.name, mimeType: 'video/mp4', buffer: Buffer.from('fixture')};
+      await frame.locator('#video').setInputFiles(video);
+      await frame.getByText('깊이 모델 준비 중', {exact: true}).waitFor();
+      assert.equal(await frame.getByRole('button', {name: '3D 지도 만들기'}).count(), 0);
+      assert.equal(await frame.locator('#file-name').textContent(), job.name);
+      job.stage = 'initial_pose';
+      await frame.getByText('카메라의 초기 위치와 방향 찾는 중', {exact: true}).waitFor();
+      job.stage = 'mapping'; job.progress = {completed_timestamp_s: 1, alignment: 'pose_held'};
+      await frame.getByText('마지막 위치를 기준으로 지도에 합치는 중', {exact: true}).waitFor();
+      await frame.locator('#progressive-tracking-note').filter({hasText: '마지막으로 확인한 위치에 합쳤습니다.'}).waitFor();
+      await frame.locator('progress[value="22"]').waitFor();
       await page.getByRole('link', {name: '실시간 감독', exact: true}).click();
+      job.stage = 'integration'; job.progress = {integrated_frames: 1, integration_total: 2};
       await page.getByRole('link', {name: '지도 콘솔', exact: true}).click();
       assert.equal(page.frames().find(item => item.url().startsWith(console)), consoleFrame);
-      assert.ok(consoleFrame.url().endsWith('#live'));
-      await frame.getByRole('tab', {name: '저장 지도'}).click();
-
-      const bytes = (await readFile(video)).toString('base64');
-      await frame.locator('#import-drop').evaluate((drop, {bytes, name}) => {
-        const buffer = Uint8Array.from(atob(bytes), char => char.charCodeAt(0));
-        const transfer = new DataTransfer();
-        transfer.items.add(new File([buffer], name, {type: 'video/mp4'}));
-        drop.dispatchEvent(new DragEvent('drop', {bubbles: true, cancelable: true, dataTransfer: transfer}));
-      }, {bytes, name: basename(video)});
-      await frame.locator('#import-start').waitFor();
-      assert.match(await frame.locator('#import-info').textContent(), /\d+×\d+/);
-      await frame.locator('#saved-new').click();
-      await frame.locator('.saved-record').filter({hasText: 'saved_editor_fixture'}).click();
-      const savedPopup = page.waitForEvent('popup');
-      await frame.locator('#result-editor').click();
-      const saved = await savedPopup;
-      await saved.locator('#workspace').waitFor();
-      assert.match(await saved.locator('#source-info').textContent(), /저장 복원/);
-      await saved.close();
+      await frame.locator('progress[value="94"]').waitFor();
+      await frame.locator('#progressive-viewport[data-point-count="3"] canvas').waitFor();
+      await frame.locator('#progressive-frame').waitFor();
+      const previewView = await frame.locator('main').evaluate(() => window.mappingView);
+      assert.ok(previewView.orthographic && previewView.z > previewView.targetZ);
+      assert.deepEqual(previewView.up, [0, 1, 0]);
+      assert.deepEqual(acknowledgements, []);
+      job.status = 'complete'; job.history_available = true;
+      await frame.locator('main[data-state="partial"] #progressive-viewport[data-point-count="4"]').waitFor();
+      const resultView = await frame.locator('main').evaluate(() => window.mappingView);
+      assert.ok(resultView.orthographic && resultView.z > resultView.targetZ);
+      assert.deepEqual(resultView.up, previewView.up);
+      assert.equal(resultView.targetZ, previewView.targetZ);
+      assert.match(await frame.locator('#notice').textContent(), /2개 구간.*실제 거리 측정/);
+      assert.match(await frame.locator('#notice').textContent(), /1개 장면은 마지막으로 확인한 위치에 합쳤습니다/);
+      assert.equal(await frame.locator('#current-frame').isVisible(), false);
+      assert.match(await frame.locator('#download').getAttribute('href'), /history\.zip/);
+      await frame.locator('#change').click();
+      await frame.locator('#video').setInputFiles(video);
+      await frame.locator('main[data-state="running"]').waitFor();
+      await frame.locator('#cancel').click();
+      await frame.locator('main[data-state="cancelled"]').waitFor();
+      await frame.locator('#change').click();
+      await frame.locator('#video').setInputFiles(video);
+      await frame.locator('main[data-state="running"]').waitFor();
+      job.status = 'failed'; job.error = 'no_valid_depth_map';
+      await frame.locator('main[data-state="failed"]').waitFor();
+      assert.match(await frame.locator('#notice').textContent(), /촬영한 영상/);
 
       const snapshot = {schema_version: 'gateway-map/0.1', kind: 'snapshot', upstream: 'ok', source_url: console,
         source: {kind: 'live', session_id: 'live_fixture', revision: 7}, scale: {unit: 'arbitrary'},

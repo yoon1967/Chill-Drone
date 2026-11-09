@@ -1,0 +1,63 @@
+<!doctype html>
+<html lang="ko">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>영상 복원</title>
+  <link rel="stylesheet" href="/reconstruct.css">
+  <script type="importmap">{"imports":{"three":"/vendor/three.module.js"}}</script>
+  <script type="module" src="/reconstruct.js"></script>
+</head>
+<body>
+  <main>
+    <header>
+      <div class="title">
+        <h1>영상 복원</h1>
+        <p id="file-name" hidden></p>
+      </div>
+      <div class="actions">
+        <button id="change" type="button" hidden>다른 영상</button>
+        <button id="cancel" type="button" hidden>취소</button>
+        <button id="retry" type="button" hidden>다시 시도</button>
+        <a id="download" class="primary" download hidden>지도 저장</a>
+      </div>
+    </header>
+
+    <div id="drop" class="drop" hidden>
+      <button id="choose" class="primary" type="button">영상 선택</button>
+      <input id="video" type="file" accept=".mp4,.mov,.avi,.mkv" hidden>
+      <p>MP4 · MOV · AVI · MKV</p>
+    </div>
+
+    <div id="status-line" hidden>
+      <strong id="status" role="status"></strong>
+      <span id="notice" role="status" hidden></span>
+      <span id="progress-value" hidden></span>
+    </div>
+    <progress id="progress" value="0" max="100" aria-label="영상 복원 진행" hidden></progress>
+
+    <section id="recent" aria-labelledby="recent-title" hidden>
+      <h2 id="recent-title">최근 복원</h2>
+      <p id="recent-empty" role="status"></p>
+      <ul id="recent-list"></ul>
+    </section>
+
+    <section id="visual" class="visual" aria-label="복원 지도" hidden>
+      <section id="current-frame" aria-labelledby="frame-label">
+        <h2 id="frame-label">처리 중인 장면 <span id="progressive-frame-time"></span></h2>
+        <div class="media">
+          <img id="progressive-frame" alt="지도와 같은 시점의 영상 장면" hidden>
+          <span id="progressive-video-empty">장면 대기 중</span>
+        </div>
+      </section>
+      <section aria-labelledby="map-label">
+        <h2 id="map-label">3D 지도</h2>
+        <div id="progressive-viewport" class="media">
+          <span id="progressive-map-empty">지도 생성 대기 중</span>
+        </div>
+        <p id="map-controls" hidden>드래그로 회전 · 스크롤로 확대</p>
+      </section>
+    </section>
+  </main>
+</body>
+</html>

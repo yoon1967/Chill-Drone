@@ -11,7 +11,7 @@ import time
 
 import cv2
 import numpy as np
-from .mapping_limits import DEFAULT_POINT_BUDGET, MAX_POINT_BUDGET, MAX_PREVIEW_POINTS
+from .mapping_limits import DEFAULT_POINT_BUDGET, DEFAULT_VIDEO_SAMPLE_FPS, MAX_POINT_BUDGET, MAX_PREVIEW_POINTS
 
 CLASSES = ('unknown', 'person', 'wall', 'floor', 'ceiling', 'table', 'chair', 'door', 'windowpane')
 PERSON = 1
@@ -21,7 +21,7 @@ DEFAULT_COLOR = '#ff3030'
 
 def mapping_sample_fps(value):
     """Selected depth-map frames per second, independently of pose tracking."""
-    rate = value.get('sample_fps', 5)
+    rate = value.get('sample_fps', DEFAULT_VIDEO_SAMPLE_FPS if value.get('causal_video') is True else 5)
     if type(rate) not in (int, float) or not math.isfinite(rate) or not .1 <= rate <= 15:
         raise ValueError('invalid_sample_fps')
     return rate

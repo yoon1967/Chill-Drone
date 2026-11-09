@@ -16,7 +16,7 @@ const ui = {
   mapBig: loadPref("map-big", "0") === "1",   // 지도 칸을 가장 큰 칸(기본 프리셋은 영상)과 바꿔 크게 본다
   preset: new URLSearchParams(location.search).get("preset") || loadPref("controller.preset", ""),   // 실시간 감독 칸 배치(presets.js)
   edit: null,   // 화면 편집 중이면 { draft: 고치는 배치, from: 시작한 프리셋 id }
-  console: { frame: null, url: null, slot: null, ro: null, loadedUp: null, landing: false },
+  console: { frame: null, url: null, slot: null, ro: null, loadedUp: null },
   autonomy: { connected: false, path: null, people: null, pathRev: 0, peopleRev: 0, loading: false, track: [] },  // 자율 지도(/api/autonomy)
 };
 if (!["2d", "3d"].includes(ui.map3d.mode)) ui.map3d.mode = "3d";   // 지도 콘솔은 따로 화면(#/map)
@@ -471,11 +471,9 @@ async function loadMap() {
   m.loading = false;
 }
 
-// 지도 콘솔 화면(#/map): 저장 지도에서 시작하고 실시간 지도로 전환할 수 있다.
-// 콘솔에서 시작한 드론 지도는 콘솔 화면이 살아 있어야 이어진다(콘솔이 2초마다 하트비트, 45초 끊기면 멈춤).
+// 지도 콘솔 화면(#/map): 촬영 영상 복원 전용 화면을 연다.
 // 그래서 iframe은 #app 밖(body)에 한 번만 만들고 이 화면의 자리(.console-slot) 위에 겹쳐 둔다(placeConsole).
 // 화면을 다시 그리거나 실시간 감독 등 다른 화면으로 가도 콘솔이 새로 열리지 않는다(다른 화면에서는 숨기기만).
-// 별도 브라우저 창은 가려지거나 최소화되면 타이머가 느려져 하트비트가 끊길 수 있어 기본으로 쓰지 않는다.
 const CONSOLE_URL = "http://127.0.0.1:8790/";   // 지도 연결기가 콘솔 주소를 알려 주기 전 기본값(apps/console 기본 포트)
 const DEMO_CONSOLE_URL = "http://127.0.0.1:8796/";
 const LOOPBACK = ["127.0.0.1", "localhost", "[::1]"];
@@ -488,47 +486,25 @@ function consoleTarget(st) {
   if (LOOPBACK.includes(u.hostname) && !LOOPBACK.includes(location.hostname)) {
     return { url: null, note: "지도 콘솔이 드론 PC 안(127.0.0.1)에서만 열려 있어 이 기기에서는 볼 수 없습니다. 드론 PC의 화면에서 보세요." };
   }
-  u.hash = "saved";
-  return { url: u.href, origin: u.origin };
-}
-
-function consolePanel(st) {
-  const head = `<header><h2>지도 콘솔</h2>${src("map")}<span class="muted src-inline">촬영 영상 복원 · 실시간 지도</span>${videoControl(st)}</header>`;
-  const t = consoleTarget(st), m = st.map;
-  const info = !t.url ? ["볼 수 없음", "warning"]
-    : st.mapping_console_url ? ["통합 실행", "success"]
-    : m?.alive && m.upstream === "unreachable" ? ["지도 콘솔 꺼짐", "danger"]
-    : m?.alive && m.upstream && m.upstream !== "unreachable" ? ["지도 콘솔 연결", "success"]
-    : ["로컬 영상 복원", "neutral"];
-  const state = m?.alive ? ` · ${mapInfo(m, ui.map3d.has)[0]}` : "";   // 지도 칸과 같은 상태 이름(영상 기다리는 중 등)
-  return `<section class="panel console-view" aria-label="지도 콘솔">${head}
-    <div class="console-slot">${t.url ? "" : `<div class="map-empty">${esc(t.note)}</div>`}</div>
-    <div class="map3d-info" data-part="console-info">${chip(info[0], info[1])}
-      <span class="muted">${t.url ? esc(`${t.origin}${state}`) : ""}</span>
-      ${t.url ? `<span class="console-tools"><button class="mini" data-console-reload>다시 불러오기</button>
-      <a class="link" href="${esc(t.url)}" target="_blank" rel="noopener">새 창</a></span>
-      <span class="muted keys-hint console-hint">콘솔에서 시작한 지도는 이 관제 화면(또는 콘솔 창)이 열려 있어야 이어집니다 · 다른 화면으로 가도 콘솔은 닫히지 않습니다</span>` : ""}</div></section>`;
+  return { url: new URL("/reconstruct.html", u).href, origin: u.origin };
 }
 
 function placeConsole() {
   const c = ui.console;
-  const slot = ui.live && view() === "map" ? $("#app .console-slot") : null;
+  const slot = view() === "map" ? $("#app .console-slot") : null;
   const t = slot ? consoleTarget(ui.state) : null;
   const up = ui.state?.map?.alive ? ui.state.map.upstream : null;
-  // 콘솔이 꺼진 채로 열었으면(오류 화면) 켜졌을 때 새로 연다. 열린 뒤 잠깐 끊긴 건 콘솔 화면이 알아서 다시 붙고,
-  // 새로 열면 그 화면에서 만들던 지도가 끊길 수 있으므로 그대로 둔다(필요하면 "다시 불러오기").
-  if (c.frame && c.loadedUp === "unreachable" && up && up !== "unreachable") return reloadConsole();
+  if (c.frame && t?.url && c.loadedUp === "unreachable" && up && up !== "unreachable") c.url = null;
   if (!c.frame && t?.url) {   // 콘솔 보기를 처음 고를 때 연다
     c.frame = document.createElement("iframe");
     c.frame.className = "console-frame away";
-    c.frame.title = "지도 콘솔 · 영상 복원과 실시간 지도";
+    c.frame.title = "촬영 영상 복원";
     c.frame.allow = "fullscreen";
     document.body.append(c.frame);
   }
   if (!c.frame) return;
   if (t?.url && c.url !== t.url) {
-    c.url = t.url; c.frame.src = t.url; c.loadedUp = up; c.landing = false;
-    document.body.classList.remove("console-landing");
+    c.url = t.url; c.frame.src = t.url; c.loadedUp = up;
   }
   if (c.slot !== slot) {   // 칸이 다시 그려지면 새 자리의 크기 변화를 따라간다
     c.ro?.disconnect();
@@ -541,20 +517,6 @@ function placeConsole() {
   Object.assign(c.frame.style, { left: `${r.left + scrollX}px`, top: `${r.top + scrollY}px`, width: `${r.width}px`, height: `${r.height}px` });
   c.frame.classList.remove("away");
 }
-
-function reloadConsole() {   // 같은 주소로 src를 다시 넣으면 새로 읽지 않으므로 iframe을 새로 만든다
-  const c = ui.console;
-  c.frame?.remove();
-  c.frame = null; c.url = null; c.landing = false;
-  placeConsole();
-}
-
-window.addEventListener("message", (event) => {
-  const c = ui.console;
-  if (!c.url || event.source !== c.frame?.contentWindow || event.origin !== new URL(c.url).origin ||
-      event.data?.type !== "mapping-console-view" || typeof event.data.landing !== "boolean") return;
-  if (c.landing !== event.data.landing) { c.landing = event.data.landing; render(); }
-});
 
 const CMD_LABEL = {
   takeoff: "이륙", land: "착륙", pause: "일시정지", resume: "다시 시작", takeover: "넘겨받기",
@@ -716,15 +678,9 @@ function renderLive() {  // 모니터 한 화면(1366×768 이상)에 스크롤 
   return `${statusStrip(ctx.st, ctx.events)}${alertBox(ctx.sc, ctx.events)}${board(ctx, livePreset())}${controlBar(ctx.st)}`;
 }
 
-// 지도 콘솔 화면: 콘솔을 크게 보되, 상태 줄과 조작 줄(착륙·비상 정지)은 실시간 감독과 같이 둔다.
-// 콘솔 안을 누르면 키보드 입력이 콘솔로 가서 WASD·L·Esc가 먹지 않으므로 버튼 줄이 꼭 있어야 한다.
 function renderMap() {
-  const { sc, st, events } = current();
-  if (!ui.live) {
-    return `${statusStrip(st, events)}<section class="panel console-view" aria-label="지도 콘솔"><header><h2>지도 콘솔</h2>${src("map")}</header>
-      <div class="map-empty">게이트웨이에 연결되면 촬영 영상 복원과 실시간 지도를 여기서 열 수 있습니다.</div></section>`;
-  }
-  return `${statusStrip(st, events)}${alertBox(sc, events)}${consolePanel(st)}${controlBar(st)}`;
+  const target = consoleTarget(ui.state);
+  return `<div class="console-slot" data-part="video-reconstruction">${target.url ? "" : `<p class="map-empty">${esc(target.note)}</p>`}</div>`;
 }
 
 function renderReview() {
@@ -798,9 +754,6 @@ function view() {
 
 function render() {
   const v = view();
-  const st = ui.state;
-  const onGround = ui.wsOpen && !st?.flight_busy && ["grounded", "disconnected"].includes(st?.mode);
-  document.body.classList.toggle("console-landing", v === "map" && ui.console.landing && onGround);
   const html = { live: renderLive, map: renderMap, review: renderReview, control: renderControl }[v]();
   const app = $("#app");
   const tpl = document.createElement("template");
@@ -945,7 +898,6 @@ document.addEventListener("click", (ev) => {
     savePref("map-big", ui.mapBig ? "1" : "0");
     return render();
   }
-  if (ev.target.closest("[data-console-reload]")) return reloadConsole();
   const rv = ev.target.closest("[data-review]");
   if (rv) {
     const id = rv.closest("[data-event]").dataset.event;
@@ -1048,7 +1000,7 @@ function keyAxes() {
 const typing = (t) => t?.isContentEditable || ["INPUT", "SELECT", "TEXTAREA", "IFRAME"].includes(t?.tagName);
 function controlPageFocused() {
   return ui.wsOpen && !document.hidden && document.hasFocus() && !typing(document.activeElement) &&
-    (view() === "live" || view() === "map");
+    view() === "live";
 }
 function keysActive() {
   return controlPageFocused() && (!ui.state?.mapping_console_url || (keyboardEnabled && ui.state.video?.available));

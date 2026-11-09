@@ -6,7 +6,7 @@ from pathlib import Path
 from unittest.mock import MagicMock, patch
 
 import numpy as np
-from modules.mapping.data.stream_mapping import DepthEstimator, PoseFrames, add_points, camera_intrinsic, write_json
+from modules.mapping.data.stream_mapping import DepthEstimator, PoseFrames, add_points, camera_intrinsic, run, write_json
 
 
 class StreamMappingTests(unittest.TestCase):
@@ -119,6 +119,44 @@ class StreamMappingTests(unittest.TestCase):
             with self.assertRaisesRegex(ValueError, 'bad_video'):
                 producer.take()
 
+    def test_recorded_video_predicts_a_short_gap_in_the_same_map_then_recovers(self):
+        import json
+
+        rgb = np.full((32, 32, 3), 120, np.uint8)
+        stamps = (0., .083, .166, .25, .333, 1.5, 1.584)
+        anchors = [[x, y, 3.] for x in (8, 16, 24, 28) for y in (8, 16)]
+
+        def track(_rgb, stamp):
+            if stamp in (.333, 1.5):
+                return dict(timestamp_s=stamp, tracking_state=3, map_id=0)
+            pose = np.eye(4)
+            pose[0, 3] = -stamp
+            return dict(timestamp_s=stamp, tracking_state=2, map_id=0,
+                        T_cw=pose.tolist(), depth_anchors=anchors)
+
+        tracker = MagicMock()
+        tracker.track.side_effect = track
+        class Estimator:
+            def estimate(self, image):
+                return np.full(image.shape[:2], 2., np.float32)
+        images = [(index, stamp, rgb, (32, 32)) for index, stamp in enumerate(stamps, 1)]
+        previews = []
+        with tempfile.TemporaryDirectory() as folder, patch('modules.mapping.data.stream_mapping.frames', return_value=iter(images)):
+            output = Path(folder) / 'result'
+            progress = run('unused', output, {'frame_fps': 12, 'sample_fps': 12, 'semantic_mapping': False},
+                           estimator_factory=Estimator, tracker_factory=lambda *args: tracker, on_preview=previews.append)
+            self.assertEqual(progress['pose_predicted_frames'], 1)
+            self.assertEqual(progress['completed_frame_number'], len(stamps))
+            by_frame = {snapshot['frame_number']: snapshot for snapshot in previews}
+            self.assertEqual(by_frame[5]['tracking'], 'pose_predicted')
+            self.assertAlmostEqual(by_frame[5]['pose_position'][0], .333)
+            self.assertEqual(by_frame[6]['tracking'], 'lost')
+            self.assertEqual(by_frame[6]['points'], by_frame[5]['points'])
+            self.assertEqual(by_frame[7]['tracking'], 'tracking')
+            scene = json.loads((output / 'scene.json').read_text(encoding='utf-8'))
+            self.assertEqual([c['frame_id'] for c in scene['cameras']],
+                             [f'frame_{n:07d}.jpg' for n in (1, 3, 4, 5, 7)])
+
     def test_video_sampling_preserves_source_numbers_and_geometry(self):
         import av
         from modules.mapping.data.stream_mapping import frames
@@ -137,3 +175,71 @@ class StreamMappingTests(unittest.TestCase):
             self.assertEqual([item[1] for item in selected], [0., .5])
             self.assertEqual(selected[0][2].shape, (128, 256, 3))
             self.assertEqual(selected[0][3], (320, 160))
+
+    def test_full_rate_video_processes_each_frame_before_reading_the_next(self):
+        import json
+
+        image = np.full((32, 32, 3), 120, dtype=np.uint8)
+        later = np.full_like(image, 220)
+        timestamps = [0., 1/30, 2/30, 3/30, 2.]
+        actions = []
+
+        def source(_path, fps, rate, _side):
+            self.assertEqual(fps, 30)
+            self.assertIsNone(rate)
+            for number, stamp in enumerate(timestamps, 1):
+                self.assertEqual(len(actions), max(0, number - 2))
+                yield number, stamp, image if number < 5 else later, (32, 32)
+
+        class Estimator:
+            def prepare(self, _shape):
+                pass
+
+            def estimate(self, rgb):
+                actions.append(int(rgb[0, 0, 0]))
+                return np.full(rgb.shape[:2], 3. if actions[-1] == 220 else 2., np.float32)
+
+        tracker = MagicMock()
+        def track(_rgb, stamp):
+            if stamp == timestamps[1]:
+                return dict(timestamp_s=stamp, tracking_state=2, map_id=0, T_cw=np.eye(4),
+                            depth_anchors=[[x, y, 2.] for x in (8, 12, 16, 24) for y in (8, 16)])
+            return dict(timestamp_s=stamp, tracking_state=1 if stamp == 0. else 3, map_id=0)
+
+        tracker.track.side_effect = track
+        previews = []
+        with tempfile.TemporaryDirectory() as folder, patch('modules.mapping.data.stream_mapping.frames', side_effect=source):
+            output = Path(folder) / 'result'
+            run('unused', output, {'frame_fps': 30, 'sample_fps': 2, 'all_video_frames': True},
+                estimator_factory=Estimator, tracker_factory=lambda *args: tracker, on_preview=previews.append)
+            self.assertEqual(actions, [120, 120, 120, 220])
+            self.assertEqual([frame['frame_number'] for frame in previews], [1, 2, 3, 4, 5])
+            self.assertEqual([frame['tracking'] for frame in previews], ['initializing', 'tracking', 'pose_reused', 'pose_reused', 'pose_held'])
+            self.assertIsNone(previews[0]['pose_position'])
+            self.assertFalse(previews[0]['points'])
+            self.assertTrue(previews[-1]['estimated_alignment'])
+            self.assertEqual(previews[-1]['pose_position'], previews[-2]['pose_position'])
+            scene = json.loads((output / 'scene.json').read_text(encoding='utf-8'))
+            self.assertEqual(scene['quality']['coverage']['integrated_frames'], 4)
+            self.assertEqual(scene['quality']['coverage']['held_pose_frames'], 1)
+            self.assertEqual(scene['cameras'][-1]['pose_source'], 'last_observed_pose')
+            self.assertTrue(any(point[3] == -3 for point in scene['points']))
+
+    def test_video_mapping_rate_samples_the_source_clock_without_skipping_pose_input(self):
+        image = np.zeros((32, 32, 3), dtype=np.uint8)
+        for rate, selected in [(3, [1, 11, 21, 31]), (4, [1, 9, 16, 24, 31])]:
+            with self.subTest(rate=rate), patch('modules.mapping.data.stream_mapping.frames') as source:
+                source.return_value = iter((index + 1, index / 30, image, (32, 32)) for index in range(33))
+                tracker = MagicMock()
+                tracker.track.side_effect = lambda _rgb, stamp: dict(timestamp_s=stamp,
+                    tracking_state=1 if .2 <= stamp < .25 else 2, map_id=0)
+                producer = PoseFrames('unused', 30, rate, Path('unused'), tracker_factory=lambda *args: tracker)
+                producer.track_all_frames = True
+                try:
+                    items = list(iter(producer.take, None))
+                    self.assertEqual([item[0] for item in items], selected)
+                    self.assertEqual([item[5]['tracking_epoch'] for item in items], [0] + [1] * (len(items) - 1))
+                    self.assertEqual(tracker.track.call_count, 33)
+                    source.assert_called_once_with('unused', 30, None, 640)
+                finally:
+                    producer.close()

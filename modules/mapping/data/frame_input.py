@@ -62,17 +62,24 @@ def inspect_input(source):
         width, height = first.width, first.height
         if rotation in {90, 270}:
             width, height = height, width
+        duration = float(stream.duration * stream.time_base) if stream.duration else (container.duration or 0) / av.time_base
         return {'kind': 'video', 'name': source.name, 'width': width, 'height': height,
-            'frames': stream.frames or None, 'duration_s': float(stream.duration * stream.time_base) if stream.duration else None,
+            'frames': stream.frames or None, 'duration_s': duration or None,
+            'source_fps': float(stream.average_rate) if stream.average_rate else None,
             'rotation': rotation, 'warnings': ['새 복원은 저장된 실시간 지도와 다른 결과가 나올 수 있습니다.'],
             'timestamp_policy': 'source_pts'}
 
 
 def validate_options(options, summary):
+    from modules.mapping.data.mapping_limits import DEFAULT_VIDEO_SAMPLE_FPS
+
     if not isinstance(options, dict) or options.get('confirmed') is not True:
         raise ValueError('confirm_input_order_and_camera')
     result = {}
-    for key, default, lo, hi in [('sample_fps', 2, .1, 30), ('frame_fps', 2, .1, 240)]:
+    causal_video = options.get('causal_video') is True
+    full_video = options.get('all_video_frames') is True
+    for key, default, lo, hi in [('sample_fps', DEFAULT_VIDEO_SAMPLE_FPS if causal_video else 2, .1, 30),
+                                 ('frame_fps', 2, .1, 240)]:
         value = options.get(key, default)
         if type(value) not in (int, float) or not math.isfinite(value) or not lo <= value <= hi:
             raise ValueError('invalid_' + key)
@@ -99,6 +106,11 @@ def validate_options(options, summary):
     if mode not in {'sfm', 'depth_rgbd'}:
         raise ValueError('invalid_reconstruction_mode')
     result['mode'] = mode
+    if causal_video or full_video:
+        if mode != 'depth_rgbd' or summary.get('kind') != 'video':
+            raise ValueError('video_required')
+        result.update(causal_video=True, all_video_frames=full_video)
+        result['frame_fps'] = min(240., max(1., summary.get('source_fps') or 30.))
     if mode == 'depth_rgbd':
         from modules.mapping.data.rescue_mapping import mapping_sample_fps
         result['sample_fps'] = mapping_sample_fps(result)

@@ -125,12 +125,17 @@ def frames(source, fps, rate=None, long_side=256):
             previous = -1.
             for index, frame in enumerate(container.decode(stream)):
                 if frame.pts is None or frame.time_base is None:
-                    raise ValueError('video_frame_timestamp_missing')
-                stamp = float(frame.pts * frame.time_base)
-                first = stamp if first is None else first
-                stamp -= first
+                    if rate:
+                        raise ValueError('video_frame_timestamp_missing')
+                    stamp = max(0., previous + 1 / fps)
+                else:
+                    stamp = float(frame.pts * frame.time_base)
+                    first = stamp if first is None else first
+                    stamp -= first
                 if stamp <= previous:
-                    continue
+                    if rate:
+                        continue
+                    stamp = previous + 1e-6
                 previous = stamp
                 if rate and stamp + 1e-6 < next_stamp:
                     continue
@@ -156,14 +161,19 @@ def scaled_size(width, height, long_side):
 
 class PoseFrames:
     """Pull one fixed pose at a time; callers finish its depth/map before pulling again."""
-    def __init__(self, source, fps, rate, output, camera=None, tracker_factory=None):
-        from modules.mapping.localization.pose_first import OrbPoseTracker
+    def __init__(self, source, fps, rate, output, camera=None, tracker_factory=None, *, predict_pose=True):
+        from modules.mapping.localization.pose_first import ConstantVelocityPose, OrbPoseTracker
         self.source, self.fps, self.rate = source, fps, rate
         self.output, self.camera = output, camera
         self.tracker_factory = tracker_factory or OrbPoseTracker
+        self.motion = ConstantVelocityPose() if predict_pose else None
+        self.on_tracker_ready = None
         self.native = None
         self.iterator = None
         self.next_output = 0.
+        self.track_all_frames = rate is None
+        self.tracking_epoch = 0
+        self.had_native_pose = False
         self.dropped = 0
         self.stop = threading.Event()
         self.cancel_event = None
@@ -171,24 +181,50 @@ class PoseFrames:
     def cancelled(self):
         return self.stop.is_set() or (self.cancel_event is not None and self.cancel_event.is_set())
 
+    def track(self, rgb, stamp):
+        result = self.native.track(rgb, stamp)
+        if self.motion is not None:
+            prediction, first = self.motion.update(result, stamp)
+            if prediction is not None:
+                return {**result, 'predicted_pose': prediction, 'prediction_start': first}
+        return result
+
     def take(self):
         if self.iterator is None:
-            self.iterator = iter(frames(self.source, self.fps, 15, 640))
+            self.iterator = iter(frames(self.source, self.fps, None if self.track_all_frames else 15, 640))
         while not self.cancelled():
             item = next(self.iterator, None)
             if item is None:
                 return None
             number, stamp, rgb, original_size = item
             if self.native is None:
-                self.native = self.tracker_factory(self.output, (rgb.shape[1], rgb.shape[0]), original_size, self.camera, 15)
+                self.native = self.tracker_factory(self.output, (rgb.shape[1], rgb.shape[0]), original_size, self.camera,
+                                                   self.fps if self.track_all_frames else 15)
+                if self.on_tracker_ready:
+                    self.on_tracker_ready()
             if self.cancelled():
                 return None
             received = time.monotonic()
             # Keep all tracking candidates, even if inference or storage was slow.
-            result = self.native.track(rgb, stamp)
-            if stamp + 1e-6 < self.next_output:
+            result = self.track(rgb, stamp)
+            if self.track_all_frames:
+                tracking_state = result.get('tracking_state', 0)
+                if tracking_state == 2:
+                    self.had_native_pose = True
+                elif tracking_state <= 1 and self.had_native_pose:
+                    # ORB can reset its active map without changing the numeric map ID.
+                    self.tracking_epoch += 1
+                    self.had_native_pose = False
+                result = {**result, 'tracking_epoch': self.tracking_epoch}
+            if self.rate is None:
+                return number, stamp, rgb, received, original_size, result
+            if stamp + 1e-6 < self.next_output and not result.get('prediction_start'):
                 continue
-            self.next_output = stamp + 1 / self.rate
+            if self.track_all_frames:
+                # Use absolute source times so timing differences between frames do not accumulate.
+                self.next_output = (math.floor((stamp + 1e-6) * self.rate) + 1) / self.rate
+            else:
+                self.next_output = stamp + 1 / self.rate
             return number, stamp, rgb, received, original_size, result
         return None
 
@@ -207,9 +243,7 @@ class LivePoseFrames(PoseFrames):
     """Request fresh live input only after the preceding output was presented."""
     def __init__(self, receive, fps, rate, output, camera, tracker_factory=None, *, continuous=False,
                  predict_pose=False, prefer_sensor_pose=False):
-        super().__init__('live', fps, rate, output, camera, tracker_factory)
-        from modules.mapping.localization.pose_first import ConstantVelocityPose
-        self.motion = ConstantVelocityPose() if predict_pose else None
+        super().__init__('live', fps, rate, output, camera, tracker_factory, predict_pose=predict_pose)
         self.receive = receive
         width, height = camera['width'], camera['height']
         self.size = scaled_size(width, height, min(640, max(width, height)))
@@ -247,12 +281,7 @@ class LivePoseFrames(PoseFrames):
             return {'tello_telemetry': telemetry or (None, None, False), 'map_id': 0}
         if self.native is None:
             self._start_visual_tracker()
-        result = self.native.track(rgb, stamp)
-        if self.motion is not None:
-            prediction, first = self.motion.update(result, stamp)
-            if prediction is not None:
-                result = {**result, 'predicted_pose': prediction, 'prediction_start': first}
-        return result
+        return self.track(rgb, stamp)
 
     def _track_live(self):
         try:
@@ -409,6 +438,9 @@ def run(source, output, options, estimator_factory=DepthEstimator, tracker_facto
         stop_event=None, on_preview=None, live_receive=None, semantic_factory=None):
     from modules.mapping.data.rescue_mapping import mapping_options, mapping_sample_fps
     options = {**options, **mapping_options(options), 'sample_fps': mapping_sample_fps(options)}
+    offline = live_receive is None
+    full_video = offline and options.get('all_video_frames') is True
+    causal_video = full_video or (offline and options.get('causal_video') is True)
     output = Path(output)
     output.mkdir(parents=True, exist_ok=False)
     (output / 'frames').mkdir()
@@ -416,7 +448,7 @@ def run(source, output, options, estimator_factory=DepthEstimator, tracker_facto
     run_id = options.get('run_id', output.parent.name + '_' + output.name)
     status = {'status': 'running', 'stage': 'model', 'backend': 'depth_rgbd', 'processed': 0,
               'registered': 0, 'dropped': 0, 'revision': 0, 'points': 0, 'timestamp_s': 0.,
-              'tracking': 'initializing', 'processing_policy':
+              'tracking': 'initializing', 'all_video_frames': full_video, 'causal_video': causal_video, 'processing_policy':
                   'continuous' if live_receive is not None and options['live_policy'] == 'continuous' else 'sequential'}
     producer = history = None
     rescue = semantics_estimator = None
@@ -435,7 +467,7 @@ def run(source, output, options, estimator_factory=DepthEstimator, tracker_facto
         write_json(output / 'progress.json', status)
     try:
         from modules.mapping.data.mapping_history import HistoryWriter
-        history = HistoryWriter(output, write_json, render_window_s, synchronous=True)
+        history = HistoryWriter(output, write_json, render_window_s, synchronous=True, compress=causal_video)
         publish()
         model_started = time.perf_counter()
         estimator = estimator_factory()
@@ -460,23 +492,35 @@ def run(source, output, options, estimator_factory=DepthEstimator, tracker_facto
             status['semantic_mapping'] = True
             status['depth_resolution'] = options['depth_resolution']
         check_cancelled()
-        publish(stage='tracking', device=getattr(estimator, 'device', 'test'),
+        publish(stage='tracking_setup' if offline else 'tracking', device=getattr(estimator, 'device', 'test'),
                 model_preparation_ms=round((time.perf_counter() - model_started) * 1000, 2))
         if live_receive is not None:
             producer = LivePoseFrames(live_receive, options['frame_fps'], options['sample_fps'],
                 output, options['camera'], tracker_factory, continuous=options['live_policy'] == 'continuous',
                 predict_pose=tof_calibrations is not None, prefer_sensor_pose=options.get('prefer_sensor_pose', False))
         else:
-            producer = PoseFrames(source, options['frame_fps'], options['sample_fps'],
+            producer = PoseFrames(source, options['frame_fps'], None if full_video else options['sample_fps'],
                 output, options.get('camera'), tracker_factory)
+            producer.on_tracker_ready = lambda: publish(stage='initial_pose')
         producer.cancel_event = stop_event
-        from modules.mapping.localization.pose_first import fixed_camera_pose, depth_in_pose_units
+        from modules.mapping.localization.pose_first import ConstantVelocityPose, fixed_camera_pose, depth_in_pose_units
         from modules.mapping.localization.tello_pose import LINEAR_PREDICTION, TelloMapPose
+        video_pose = None
+        if causal_video:
+            from modules.mapping.localization.depth_pose import VideoMapPose
+            video_pose = VideoMapPose()
+            producer.motion = None
+            producer.track_all_frames = True
         active_map = None
         active_visual_scale = active_tof_scale = None
+        visual_scale_stamp = None
         submaps = []
         while True:
             check_cancelled()
+            if offline and status['processed']:
+                recovering = status['tracking'] in {'lost', 'pose_predicted', 'pose_held'}
+                initial = active_map is None and not status.get('pose_confirmed')
+                publish(stage='initial_pose' if initial else 'recovering_pose' if recovering else 'tracking')
             item = producer.take()
             check_cancelled()
             if item is None:
@@ -485,7 +529,9 @@ def run(source, output, options, estimator_factory=DepthEstimator, tracker_facto
             tof_sample = sensor[0] if sensor else None
             tick = time.monotonic()
             # Admit pose before invoking depth. The returned matrix is immutable here.
-            publish(stage='tracking', frame_number=number, timestamp_s=stamp, dropped=producer.dropped)
+            status.update(frame_number=number, timestamp_s=stamp, dropped=producer.dropped)
+            if not offline:
+                publish(stage='tracking')
             status.update(tracked_frames=getattr(producer, 'tracked', number),
                           mapping_sampled_out=getattr(producer, 'sampled_out', 0))
             telemetry = native_pose.get('tello_telemetry')
@@ -505,7 +551,8 @@ def run(source, output, options, estimator_factory=DepthEstimator, tracker_facto
             map_id = native_pose.get('map_id')
             native_confirmed = pose is not None and not metric_pose
             prediction = native_pose.get('predicted_pose')
-            if pose is None and active_visual_scale is not None and active_map == map_id:
+            fresh_scale = not offline or (visual_scale_stamp is not None and stamp - visual_scale_stamp <= ConstantVelocityPose.max_prediction_s)
+            if not causal_video and pose is None and active_visual_scale is not None and active_map == map_id and fresh_scale:
                 pose = prediction
                 pose_predicted = pose is not None
             status['processed'] += 1
@@ -520,14 +567,25 @@ def run(source, output, options, estimator_factory=DepthEstimator, tracker_facto
             depth_scale = None
             rescue_snapshot = None
             frame_preview = None
+            estimated_alignment = False
             tof_verified = False
             tof = None if tof_calibrations is None else dict(distance_m=tof_sample[0] if tof_sample else None,
                 meters_per_slam_unit=None, corrected=False, surface_supported=False, used=False)
             if native_confirmed or metric_pose:
                 state = 'scale_wait'
+            if causal_video:
+                camera_pose = pose
+                native_map = (map_id, native_pose.get('tracking_epoch', 0))
+                rgb, params = depth_frame(display_rgb, original_size, options)
+                if camera_pose is None and video_pose.last_pose is not None:
+                    publish(stage='visual_registration')
+                pose, state = video_pose.resolve(stamp, rgb, params, camera_pose, native_map)
+                map_id = video_pose.map_id
+                native_confirmed = state == 'tracking'
+                pose_predicted = state == 'pose_predicted'
             if pose is not None or (tof is not None and not sensor_wait):
-                publish(stage='depth', pose_confirmed=native_confirmed)
-                if telemetry is None:
+                publish(stage='depth', pose_confirmed=native_confirmed, pose_estimated=pose_predicted)
+                if telemetry is None and not causal_video:
                     rgb, params = depth_frame(display_rgb, original_size, options)
                 # Metric model estimates are converted only for the legacy SLAM path.
                 depth = estimator.estimate(rgb)
@@ -543,13 +601,31 @@ def run(source, output, options, estimator_factory=DepthEstimator, tracker_facto
                     labels, confidence = validate_semantics(semantics, depth.shape, name, stamp)
                 aligned = None
                 excluded = (labels == PERSON) if semantics is not None else None
-                if metric_pose:
+                usable_depth = np.count_nonzero(depth) > depth.size * .05
+                if causal_video:
+                    if usable_depth:
+                        native_alignment = None
+                        if camera_pose is not None:
+                            publish(stage='depth_alignment')
+                            native_alignment = depth_in_pose_units(depth, native_pose.get('depth_anchors', []), (w, h), excluded=excluded)
+                        scale, state = video_pose.accept_depth(stamp, rgb, depth, params, excluded, pose, state, camera_pose, native_map,
+                            native_alignment[1] if native_alignment is not None else None)
+                        if scale is not None:
+                            estimated_alignment = state in {'pose_predicted', 'pose_reused', 'pose_held', 'scale_reused'}
+                            aligned = (depth * scale, scale)
+                    else:
+                        state = 'invalid_depth'
+                        pose = None
+                        native_confirmed = False
+                elif metric_pose:
                     aligned = (depth, 1.)  # The pose and the metric depth model both use meters.
                 elif native_confirmed:
+                    if offline:
+                        publish(stage='depth_alignment')
                     aligned = depth_in_pose_units(depth, native_pose.get('depth_anchors', []), (w, h), excluded=excluded)
                 elif pose_predicted:
                     aligned = (depth * active_visual_scale, active_visual_scale)
-                if np.count_nonzero(depth) <= depth.size * .05:
+                if not usable_depth:
                     aligned = None
                 visual_scale = aligned[1] if aligned is not None else None
                 supported = None
@@ -587,15 +663,17 @@ def run(source, output, options, estimator_factory=DepthEstimator, tracker_facto
                     active_map = map_id
                     if native_confirmed:
                         active_visual_scale = visual_scale
+                        visual_scale_stamp = stamp
                     if tof_verified:
                         active_tof_scale = depth_scale
                         tof['used'] = True
-                    publish(stage='mapping')
+                    publish(stage='mapping', pose_estimated=pose_predicted, alignment=state if causal_video else None)
                     mapping_semantics = semantics or dict(frame_id=name, timestamp_s=stamp,
                         labels=np.zeros(depth.shape, np.uint8), confidence=np.ones(depth.shape, np.float32),
                         people=[], inference_ms=0.)
                     rescue_snapshot = rescue.update(rgb, depth, pose, params, mapping_semantics,
-                        depth_scale, map_id, name, stamp, tof_verified=tof_verified, pose_predicted=pose_predicted,
+                        depth_scale, map_id, name, stamp, tof_verified=tof_verified,
+                        pose_predicted=pose_predicted or estimated_alignment,
                         depth_classes=depth_classes)
                     # Keep source observations for replay; spatial fusion bounds display size.
                     observation = {'depth': depth, 'rgb': rgb, 'world_from_camera': pose,
@@ -618,7 +696,8 @@ def run(source, output, options, estimator_factory=DepthEstimator, tracker_facto
                     if pose_predicted:
                         status['pose_predicted_frames'] = status.get('pose_predicted_frames', 0) + 1
                     mapped = True
-                    state = 'pose_predicted' if pose_predicted else 'sensor_pose' if metric_pose else 'tracking'
+                    if not causal_video:
+                        state = 'pose_predicted' if pose_predicted else 'sensor_pose' if metric_pose else 'tracking'
                 elif tof is not None:
                     # A temporary projection can use the last scale of this map.
                     # Keep it outside the accumulated cloud and observation history.
@@ -660,6 +739,8 @@ def run(source, output, options, estimator_factory=DepthEstimator, tracker_facto
                 'latency_ms': round((time.monotonic() - received) * 1000)}
             if metric_pose:
                 snapshot['pose_source'] = pose_source
+            if estimated_alignment:
+                snapshot['estimated_alignment'] = True
             if telemetry is not None and active_map is not None:
                 snapshot['map_unit'] = 'm'
             if frame_preview is not None:
@@ -679,6 +760,8 @@ def run(source, output, options, estimator_factory=DepthEstimator, tracker_facto
                     last_nonempty_points = snapshot['points']
             history.append(snapshot, observation)
             check_cancelled()
+            if offline:
+                status.update(completed_frame_number=number, completed_timestamp_s=stamp)
             if on_preview is None:
                 write_json(output / 'preview.json', snapshot)
             else:
@@ -748,17 +831,22 @@ def finalize_history(output, status, run_id, started, publish=lambda **fields: N
             submaps.append({'map_id': group['map_id'], 'file': name, 'points': len(group['rows']), 'frames': len(group['cameras'])})
     rows, cameras = primary['rows'], primary['cameras']
     xyz = np.array([p[1:4] for p in rows] or [c['position'] for c in cameras])
-    partial = len(groups) > 1 or len(cameras) < 2
+    unmapped = sum(not e['observation'] for e in entries)
+    partial_reasons = (['unaligned_map_segments'] if len(groups) > 1 else []) + (['insufficient_camera_baseline'] if len(cameras) < 2 else [])
+    if (status.get('causal_video') or status.get('all_video_frames')) and unmapped:
+        partial_reasons.append('unregistered_video_frames')
+    partial = bool(partial_reasons)
     quality = {'input_frames': len(entries), 'submitted_frames': len(entries),
         'registered_frames': len(cameras), 'registration_ratio': len(cameras) / len(entries),
         'points3D': len(rows), 'excluded_frames': [e['frame_id'] for e in entries if not e['observation']],
         'mean_reprojection_error_px': None, 'processing_seconds': time.monotonic() - started,
         'result_status': 'partial' if partial else 'complete',
-        'partial_reasons': (['unaligned_map_segments'] if len(groups) > 1 else []) + (['insufficient_camera_baseline'] if len(cameras) < 2 else []),
+        'partial_reasons': partial_reasons,
         'bounds': {'min': xyz.min(axis=0).tolist(), 'max': xyz.max(axis=0).tolist()},
         'coverage': {'recorded_frames': len(entries), 'integrated_frames': all_registered,
             'initialization_frames': sum(e['tracking'] == 'initializing' for e in entries),
-            'unmapped_frames': sum(not e['observation'] for e in entries), 'map_count': len(groups),
+            'unmapped_frames': unmapped, 'map_count': len(groups),
+            'held_pose_frames': sum(e['tracking'] == 'pose_held' for e in entries),
             'spatial_completeness_verified': False}}
     sensor_origin = primary['pose_source'] == 'tello_sensor_odometry'
     tello_metric = primary['pose_source'] in METRIC_POSE_SOURCES

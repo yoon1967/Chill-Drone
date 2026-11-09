@@ -8,6 +8,7 @@ test('previous default upgrades once while person preferences and subsequent cho
     const first=await import('../mapping-settings.js?budget-upgrade');
     assert.equal(first.mappingOptions().point_budget,32000);
     assert.equal(first.mappingOptions().sample_fps,2.5);
+    assert.equal(first.mappingOptions({includeSampling:false}).sample_fps,undefined);
     assert.equal(first.mappingOptions().person_color,'#00ccff');
     assert.equal(first.mappingOptions().person_outline,false);
     saved.point_budget=8000;

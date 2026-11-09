@@ -724,6 +724,14 @@ class ViewerHandler(BaseHTTPRequestHandler):
         except (OSError, ValueError, KeyError, TypeError) as error:
             self.json_response({'error': str(error)}, 400)
 
+    def start_import(self, key, body, *, inspected=False):
+        current = self.live.current if self.live else None
+        if current and current.stats().get('session_status') not in {'complete', 'failed', 'stopped_or_disconnected'}:
+            raise ValueError('stop_live_mapping_before_reconstruction')
+        summary = self.imports.job(key).get('summary', {})
+        body = self.profile_config(body, 'file', (summary.get('width'), summary.get('height')))
+        return self.imports.start(key, body, presentation_sync=not inspected, inspected=inspected)
+
     def import_request(self):
         if not self.imports:
             self.json_response({'error': 'imports_not_enabled'}, 404)
@@ -813,18 +821,23 @@ class ViewerHandler(BaseHTTPRequestHandler):
             elif action == 'video-folder':
                 value = video_folder(self.imports.root, body)
             elif action == 'inspect':
-                value = self.imports.inspect(key)
+                options = body.get('auto_reconstruct')
+                if options is None:
+                    value = self.imports.inspect(key)
+                else:
+                    if not isinstance(options, dict):
+                        raise ValueError('invalid_reconstruction_options')
+                    def start_video():
+                        self.start_import(key, {**options, 'mode': 'depth_rgbd', 'confirmed': True,
+                            'causal_video': True}, inspected=True)
+                    value = self.imports.inspect(key, start_video=start_video)
             elif action == 'local':
                 value = self.imports.open_local(body.get('local_id', ''))
             elif action == 'delete':
                 protected = [self.current.path] if self.current and self.current.stats().get('session_status') not in {'complete', 'failed', 'stopped_or_disconnected'} else []
                 value = self.imports.delete_local(body.get('local_id', ''), protected_paths=protected)
             elif action == 'start':
-                if self.current and self.current.stats().get('session_status') not in {'complete', 'failed', 'stopped_or_disconnected'}:
-                    raise ValueError('stop_live_mapping_before_reconstruction')
-                summary = self.imports.job(key).get('summary', {})
-                body = self.profile_config(body, 'file', (summary.get('width'), summary.get('height')))
-                value = self.imports.start(key, body, presentation_sync=True)
+                value = self.start_import(key, body)
             elif action == 'presented':
                 value = self.imports.presented(key, body.get('revision'))
             elif action == 'cancel':
@@ -1207,6 +1220,8 @@ class ViewerHandler(BaseHTTPRequestHandler):
                   '/video-folder.js': APP / 'video-folder.js',
                   '/editor.html': APP / 'editor.html', '/editor.js': APP / 'editor.js',
                   '/editor-data.js': APP / 'editor-data.js', '/editor.css': APP / 'editor.css',
+                  '/reconstruct.html': APP / 'reconstruct.html', '/reconstruct.js': APP / 'reconstruct.js',
+                  '/reconstruct.css': APP / 'reconstruct.css',
                   "/vendor/three.module.js": APP / "node_modules/three/build/three.module.js",
                   "/vendor/three.core.js": APP / "node_modules/three/build/three.core.js",
                   "/vendor/OrbitControls.js": APP / "node_modules/three/examples/jsm/controls/OrbitControls.js"}
