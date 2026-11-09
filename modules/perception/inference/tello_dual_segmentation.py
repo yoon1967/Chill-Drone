@@ -81,7 +81,7 @@ class DualSegmentationProcessor:
         except OSError:
             if getattr(args, 'local_models_only', False):
                 raise RuntimeError('로컬 공간 인식 모델을 읽지 못했습니다. 인터넷 연결 상태에서 '
-                    'scripts/start.cmd prepare로 모델을 준비하세요.') from None
+                    'python -m modules.mapping.data.prepare_models --download로 모델을 준비하세요.') from None
             print('Downloading the scene recognition model for first use. Keep internet available until setup finishes.', flush=True)
             self.processor = SegformerImageProcessor.from_pretrained(args.semantic_model)
             semantic = SegformerForSemanticSegmentation.from_pretrained(args.semantic_model)

@@ -2,7 +2,7 @@
 
 작업: https://ssafy.atlassian.net/browse/S15P31B205-306
 
-`scripts/start.cmd map`을 실행하고 저장 지도 탭에서 **영상·ZIP 선택**을 누르거나 영상을 놓는다.
+지도 콘솔(`.\.venv\Scripts\python.exe -B apps/console/serve.py --enable-camera --port 8790`)을 열고 저장 지도 탭에서 **영상·ZIP 선택**을 누르거나 영상을 놓는다.
 복원 완료 후 **전체 복원 기록 다운로드**로 받은 ZIP도 같은 첫 화면에 드롭하거나 선택한다.
 다운로드는 최종 결과가 저장된 뒤 제공하며, 처리 중 시간 이동 재생은 계속 사용할 수 있다.
 ZIP은 압축을 푼 뒤 결과 지도를 자동으로 열며, **복원 과정 다시 보기**에서 영상 프레임과 당시 지도를

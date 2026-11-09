@@ -6,7 +6,8 @@ import locale
 import re
 import subprocess
 import sys
-from urllib.request import ProxyHandler, build_opener
+from urllib.error import HTTPError
+from urllib.request import ProxyHandler, Request, build_opener
 
 CREATE_NO_WINDOW = 0x08000000
 STILL_ACTIVE = 259
@@ -25,6 +26,22 @@ def get_json(url, timeout=2.0):
     try:
         with _opener.open(url, timeout=timeout) as response:
             return json.load(response)
+    except (OSError, ValueError):
+        return None
+
+
+def post_json(url, body, headers=None, timeout=5.0):
+    """JSON을 POST 해서 응답 JSON을 돌려준다. 오류 응답이면 그 JSON(없으면 {'error': 'http_코드'}), 연결 실패면 None."""
+    request = Request(url, data=json.dumps(body).encode('utf-8'), method='POST',
+                      headers={'Content-Type': 'application/json', **(headers or {})})
+    try:
+        with _opener.open(request, timeout=timeout) as response:
+            return json.load(response)
+    except HTTPError as error:
+        try:
+            return json.load(error)
+        except ValueError:
+            return {'error': f'http_{error.code}'}
     except (OSError, ValueError):
         return None
 

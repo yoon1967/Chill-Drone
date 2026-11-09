@@ -1,19 +1,22 @@
-"""체험(가짜 드론)·실기체 관제 켜기와 모두 끄기.
+"""체험(가짜 드론)·실기체 관제: 묻지 않고 전부 켜고, 실행기 창에서 Enter로 모두 끈다.
 
-프로그램마다 새 창으로 띄운다. 그 창에서 Ctrl+C로 하나씩 끌 수 있고, 모두 끄기는 같은 Ctrl+C를 보내 정상 종료시킨다
-(게이트웨이가 회차 기록의 metrics.json·영상 조각을 마무리하게). 실기체가 공중이면 아무것도 끄지 않는다.
+- 켜기 전에 빠진 패키지·모델·지도 콘솔 웹 의존성을 받는다(prepare.py).
+- 프로그램마다 새 창으로 띄운다(그 창에서 Ctrl+C로 하나씩 끌 수도 있다).
+- 실기체는 게이트웨이 + 사람 탐지 + 지도 콘솔·지도 연결기 + 지도 자동 시작(mapkeeper.py) + MoNA 자율(드론이 붙은 뒤).
+- 실행기 창은 열어 둔다. Enter를 누르면 모두 끈다: 실기체가 공중이면 아무것도 끄지 않고, 땅이면 지도를 저장하고
+  각 창에 Ctrl+C를 보내 정상 종료시킨다(게이트웨이가 회차 metrics.json·영상 조각을 마무리하게).
 """
-import importlib.util
-from pathlib import Path
 import os
+from pathlib import Path
 import re
 import signal
 import subprocess
 import sys
+import threading
 import time
 import webbrowser
 
-from . import winproc
+from . import mapkeeper, prepare, winproc
 
 ROOT = Path(__file__).resolve().parents[2]
 REAL_PORT = 8010        # 실기체 게이트웨이
@@ -28,7 +31,6 @@ MODE_KO = {'disconnected': '연결 끊김', 'grounded': '지상', 'manual': '수
 MONA_RUN = ROOT / 'modules/autonomy/mona_bench/run.ps1'
 MONA_IMAGE = 'ssafy/mona-bench:noetic'
 MONA_MODEL = ROOT / 'data/outputs/mona-bench/models/da_v2_metric_indoor_small_518x686_fp16.onnx'
-PREPARE = r'scripts\start.cmd prepare'
 
 
 def say(text=''):
@@ -82,14 +84,6 @@ def wait_for(check, seconds):
     return None
 
 
-def ask(question, default, allowed):
-    try:
-        answer = input(f'       {question} ').strip().lower()
-    except EOFError:
-        answer = ''
-    return answer if answer in allowed else default
-
-
 # ---------- 띄울 명령(파일 경로는 저장소 기준, 새 창은 저장소 폴더에서 연다) ----------
 def gateway_cmd(port, *, fake=False, phone=False):
     cmd = [sys.executable, '-B', 'modules/autonomy/tello_link/gateway_server.py', '--port', str(port)]
@@ -119,10 +113,10 @@ def bridge_cmd(map_url, gateway):
             '--gateway', gateway]
 
 
-def mona_cmd(hand):
-    cmd = ['powershell.exe', '-NoProfile', '-NoExit', '-ExecutionPolicy', 'Bypass', '-File', str(MONA_RUN),
-           '-Action', 'Live', '-Seconds', '900', '-GoalForwardM', '5']
-    return cmd + (['-AutoStart'] if hand else [])
+def mona_cmd():
+    """MoNA 비행 모드: 경로는 운용자가 이륙 뒤 화면에서 "자율"을 눌러야 시작한다(그 전 속도 명령은 게이트웨이가 무시)."""
+    return ['powershell.exe', '-NoProfile', '-NoExit', '-ExecutionPolicy', 'Bypass', '-File', str(MONA_RUN),
+            '-Action', 'Live', '-Seconds', '3600', '-GoalForwardM', '5']
 
 
 def show_code():
@@ -145,27 +139,27 @@ def owner_lines(owners, procs):
     return [f'       [{proto} {port}] PID {pid}: {by_pid.get(pid, "?")}' for proto, port, pid in owners]
 
 
-# ---------- 보조 프로그램 ----------
-def detect_ready():
-    """사람 탐지를 켤 수 있으면 (YOLO 가중치 경로, None), 아니면 (None, 까닭)."""
-    missing = [m for m in ('torch', 'ultralytics', 'transformers', 'cv2') if importlib.util.find_spec(m) is None]
+def get_ready(console):
+    say('[준비] 패키지·모델' + ('·지도 콘솔 웹 의존성' if console else '') + ' 확인(빠진 것만 받음)')
+    ready = prepare.ensure_all(console=console)
+    missing = [name for name, ok in (('패키지', ready['packages']), ('게이트웨이 패키지', ready['gateway']),
+                                     ('모델', ready['models']), ('지도 콘솔 웹 의존성', ready['web'])) if not ok]
     if missing:
-        return None, f'사람 탐지 패키지가 없습니다({", ".join(missing)}). {PREPARE} 뒤 다시 켜세요.'
-    sys.path.insert(0, str(ROOT))
-    from modules.mapping.data.model_assets import person_checkpoint
-    yolo = person_checkpoint()
-    if not yolo.is_file():
-        return None, f'사람 탐지 모델({yolo.name})이 없습니다. {PREPARE} 뒤 다시 켜세요.'
-    return yolo, None
+        warn('준비 못 한 것: ' + ', '.join(missing) + '. 그것이 필요한 프로그램은 빼고 켭니다. 인터넷을 확인하고 다시 실행하세요.')
+    else:
+        say('       준비됨')
+    return ready
 
 
-def start_detect(procs, gateway, label):
+# ---------- 보조 프로그램 ----------
+def start_detect(procs, gateway, label, ready):
     if match(procs, 'gateway_ai_client', '--gateway ' + gateway):
         return say('       사람 탐지는 이미 켜져 있어요.')
-    yolo, why = detect_ready()
-    if why:
-        return warn(why)
-    winproc.start_window(f'Chill-Drone 사람 탐지 ({label})', ROOT, detect_cmd(gateway, yolo))
+    if not (ready['packages'] and ready['models']):
+        return warn('사람 탐지는 패키지·모델이 없어 켜지 않았어요.')
+    sys.path.insert(0, str(ROOT))
+    from modules.mapping.data.model_assets import person_checkpoint
+    winproc.start_window(f'Chill-Drone 사람 탐지 ({label})', ROOT, detect_cmd(gateway, person_checkpoint()))
     say('       사람 탐지 켬(모델 올리는 데 10~30초). 영상을 켜야 결과가 나와요.')
 
 
@@ -176,47 +170,63 @@ def start_bridge(procs, map_url, gateway, label):
     say('       지도 연결기 켬(작은 창).')
 
 
-def start_console(gateway, *, port=CONSOLE_PORT):
-    """관제 화면에서 영상 복원에 쓸 로컬 지도 콘솔을 준비한다."""
+def start_console(gateway, ready, *, port=CONSOLE_PORT):
+    """게이트웨이에 지도 콘솔을 붙인다(실시간 지도·촬영 영상 복원·기록 열기·3D 지도 편집). 켜졌으면 True."""
     map_url = url(port)
     if winproc.get_json(map_url + '/api/live'):
         say('       지도 콘솔은 이미 켜져 있어요.')
         return True
-    if not (ROOT / 'apps/console/node_modules/three/build/three.module.js').is_file():
-        warn('지도 콘솔 웹 의존성이 없습니다: pnpm --dir apps/console install --frozen-lockfile')
+    if not (ready['packages'] and ready['web']):
+        warn('지도 콘솔은 패키지·웹 의존성이 없어 켜지 않았어요.')
         return False
-    # 영상 선택과 기록 열기는 모델을 불러오기 전에도 사용할 수 있다.
+    # 영상 선택과 기록 열기는 모델을 불러오기 전에도 쓸 수 있어 모델이 없어도 켠다(실시간 지도 시작에는 모델이 필요).
     winproc.start_window(f'Chill-Drone 지도 콘솔 ({port})', ROOT, console_cmd(gateway, port), minimized=True)
-    if wait_for(lambda: winproc.get_json(map_url + '/api/live'), 30):
+    if wait_for(lambda: winproc.get_json(map_url + '/api/live'), 40):
         say(f'       지도 콘솔 켬({map_url}).')
         return True
-    warn('지도 콘솔이 30초 안에 켜지지 않았어요. "Chill-Drone 지도 콘솔" 창을 확인하세요.')
+    warn('지도 콘솔이 40초 안에 켜지지 않았어요. "Chill-Drone 지도 콘솔" 창을 확인하세요.')
     return False
 
 
-def start_mona(hand):
+def mona_problem():
+    """MoNA를 켤 수 없는 까닭(없으면 None)."""
     if not MONA_RUN.is_file():
-        return warn(f'MoNA 실행기가 없습니다: {MONA_RUN}')
+        return f'MoNA 실행기가 없습니다: {MONA_RUN}'
     if not MONA_MODEL.is_file():
-        return warn(f'MoNA 깊이 모델이 없습니다: {MONA_MODEL} (modules/autonomy/mona_bench/README.md)')
+        return f'MoNA 깊이 모델이 없습니다: {MONA_MODEL} (modules/autonomy/mona_bench/README.md)'
     try:
         image = subprocess.run(['docker', 'image', 'inspect', MONA_IMAGE, '--format', '{{.Id}}'],
                                capture_output=True, timeout=15, creationflags=winproc.CREATE_NO_WINDOW)
-        running = subprocess.run(['docker', 'ps', '-q', '--filter', 'name=^mona-live$'], capture_output=True,
-                                 timeout=15, creationflags=winproc.CREATE_NO_WINDOW).stdout.strip()
     except (OSError, subprocess.TimeoutExpired):
-        return warn('Docker를 쓸 수 없습니다. Docker Desktop을 켜고 다시 실행하세요.')
+        return 'Docker를 쓸 수 없습니다(Docker Desktop을 켜세요).'
     if image.returncode:
-        return warn(f'Docker가 꺼져 있거나 MoNA 이미지({MONA_IMAGE})가 없습니다. '
-                    r'modules\autonomy\mona_bench\run.ps1 -Action Build')
-    if running:
-        return warn('MoNA가 이미 돌고 있어요(mona-live).')
-    winproc.start_window('MoNA 자율 (Enter로 멈춤)', ROOT, mona_cmd(hand))
-    say('       MoNA 켬(새 창). 시작 점검 OK → "Running up to …"이 뜬 뒤 화면에서 영상을 켜세요(지상 60초에 꺼짐).')
-    if hand:
-        say('       손에 든 시험: 1.2 m쯤 들고 2~3초 멈춘 뒤 천천히 움직이세요. 땅(손)이라 속도 명령은 게이트웨이가 무시해요.')
-    else:
-        say('       비행: 이륙은 직접 하고, 날고 나서 화면의 "자율"을 눌러야 MoNA 명령이 기체로 가요.')
+        return (f'Docker가 꺼져 있거나 MoNA 이미지({MONA_IMAGE})가 없습니다 '
+                r'(modules\autonomy\mona_bench\run.ps1 -Action Build).')
+    return None
+
+
+def mona_running():
+    try:
+        return bool(subprocess.run(['docker', 'ps', '-q', '--filter', 'name=^mona-live$'], capture_output=True,
+                                   timeout=15, creationflags=winproc.CREATE_NO_WINDOW).stdout.strip())
+    except (OSError, subprocess.TimeoutExpired):
+        return False
+
+
+def start_mona_when_connected(gateway, stop, interval=2.0):
+    """드론이 붙으면 MoNA를 한 번 켠다(MoNA는 시작할 때 게이트웨이의 드론 상태를 확인한다)."""
+    def run():
+        while not stop.is_set():
+            st = state(gateway)
+            if is_gateway(st) and st.get('connected'):
+                if mona_running():
+                    return say('  MoNA는 이미 돌고 있어요(mona-live).')
+                winproc.start_window('MoNA 자율 (Enter로 멈춤)', ROOT, mona_cmd())
+                return say('  MoNA 켬(새 창). 비행 모드라 이륙 뒤 화면에서 "자율"을 눌러야 기체를 움직여요.')
+            stop.wait(interval)
+    thread = threading.Thread(target=run, name='mona-starter', daemon=True)
+    thread.start()
+    return thread
 
 
 def open_page(page, no_browser):
@@ -224,10 +234,27 @@ def open_page(page, no_browser):
         say('       위 주소를 브라우저에서 여세요.')
 
 
+def wait_and_stop(keeper=None, stop_event=None):
+    """실행기 창을 열어 두고, Enter를 누르면 모두 끈다(실기체가 공중이면 끄지 않고 다시 기다린다)."""
+    say()
+    say('이 창을 열어 두세요(지도 유지). Enter를 누르면 모두 끕니다. 실기체가 공중이면 끄지 않아요.')
+    while True:
+        try:
+            input()
+        except (EOFError, KeyboardInterrupt):
+            say('실행기 창만 닫아요. 켠 프로그램은 각자 창에서 계속 돌아요.')
+            return 0
+        if run_stop(keeper=keeper, stop_event=stop_event) == 0:
+            time.sleep(4)   # 끈 결과를 읽을 시간
+            return 0
+        say('착륙한 뒤 다시 Enter를 누르세요.')
+
+
 # ---------- 체험(가짜 드론) ----------
-def run_fake(*, detect=True, map_=True, no_browser=False):
-    say('=== 체험: 가짜 드론으로 관제 화면 ===')
+def run_fake(*, no_browser=False, interactive=None):
+    say('=== 1 체험: 가짜 드론으로 관제 화면(사람 탐지·지도까지 모두) ===')
     show_code()
+    ready = get_ready(console=True)   # 영상 복원용 지도 콘솔(8796)도 켠다
     gateway = url(FAKE_PORT)
     if is_gateway(state(gateway)):
         say(f'[1/4] 가짜 드론 게이트웨이는 이미 켜져 있어요({gateway}).')
@@ -237,6 +264,9 @@ def run_fake(*, detect=True, map_=True, no_browser=False):
             say(f'[1/4] {FAKE_PORT} 포트를 다른 프로그램이 쓰고 있어요. 끄고 다시 실행하세요.')
             say('\n'.join(owner_lines(busy, winproc.processes())))
             return 1
+        if not ready['gateway']:
+            say('[1/4] 게이트웨이 패키지가 없어 켤 수 없어요. 인터넷을 확인하고 다시 실행하세요.')
+            return 1
         winproc.start_window(f'Chill-Drone 가짜 드론 게이트웨이 ({FAKE_PORT})', ROOT, gateway_cmd(FAKE_PORT, fake=True))
         if not wait_for(lambda: is_gateway(state(gateway)), 25):
             say('[1/4] 25초 안에 게이트웨이가 켜지지 않았어요. 게이트웨이 창의 메시지를 확인하세요.')
@@ -244,32 +274,27 @@ def run_fake(*, detect=True, map_=True, no_browser=False):
         say(f'[1/4] 가짜 드론 게이트웨이 켬({gateway}).')
     procs = winproc.processes()
     say('[2/4] 사람 탐지')
-    if detect:
-        start_detect(procs, gateway, '체험')
+    start_detect(procs, gateway, '체험', ready)
+    say('[3/4] 가짜 지도(3D 점군)·지도 콘솔(영상 복원용 8796)')
+    map_url = url(FAKE_MAP_PORT)
+    if winproc.get_json(map_url + '/api/live/state'):
+        say('       가짜 지도 서버는 이미 켜져 있어요.')
     else:
-        say('       켜지 않음')
-    say('[3/4] 가짜 지도(3D 점군)')
-    if map_:
-        map_url = url(FAKE_MAP_PORT)
-        if winproc.get_json(map_url + '/api/live/state'):
-            say('       가짜 지도 서버는 이미 켜져 있어요.')
-        else:
-            winproc.start_window(f'Chill-Drone 가짜 지도 ({FAKE_MAP_PORT})', ROOT, fake_map_cmd(FAKE_MAP_PORT), minimized=True)
-            say('       가짜 지도 서버 켬(작은 창).')
-        start_bridge(procs, map_url, gateway, '체험')
-    else:
-        say('       켜지 않음')
-    start_console(gateway, port=FAKE_CONSOLE_PORT)
+        winproc.start_window(f'Chill-Drone 가짜 지도 ({FAKE_MAP_PORT})', ROOT, fake_map_cmd(FAKE_MAP_PORT), minimized=True)
+        say('       가짜 지도 서버 켬(작은 창).')
+    start_bridge(procs, map_url, gateway, '체험')
+    start_console(gateway, ready, port=FAKE_CONSOLE_PORT)   # 관제 화면 #/map의 영상 복원·3D 지도 편집용
     page = gateway + '/#/live'
     say('[4/4] 화면 열기')
     open_page(page, no_browser)
     say()
     say(f'  실시간 감독  {page}')
+    say(f'  지도 콘솔    {gateway}/#/map (촬영 영상 복원·3D 지도 편집)')
     say(f'  탐색 결과    {gateway}/#/review')
     say(f'  폰 조작      {gateway}/#/control')
-    say()
-    say('사람 탐지: 화면에서 "영상 켜기" 뒤 영상 칸 "AI 합성"(가짜 영상은 색 막대라 사람 0명). 지도: 지도 칸 "3D 점군".')
-    say(r'끄려면 scripts\start.cmd stop (메뉴 0).')
+    say('  사람 탐지: 화면에서 "영상 켜기" 뒤 영상 칸 "AI 합성"(가짜 영상은 색 막대라 사람 0명). 지도: 지도 칸 "3D 점군".')
+    if interactive if interactive is not None else sys.stdin.isatty():
+        return wait_and_stop()
     return 0
 
 
@@ -307,74 +332,72 @@ def phone_lines(port):
     return lines
 
 
-def run_real(*, phone=False, detect=None, map_=None, mona=None, no_browser=False, interactive=True):
-    say('=== 실기체 관제 ===')
+def run_real(*, phone=False, no_browser=False, interactive=None):
+    say('=== 2 실기체 관제: 게이트웨이·사람 탐지·3D 지도·MoNA 자율을 모두 켭니다 ===')
     show_code()
+    ready = get_ready(console=True)
     gateway = url(REAL_PORT)
     drone_wifi = next((s for s in winproc.wifi_ssids() if re.match(r'(TELLO|RMTT)-', s, re.I)), None)
     if drone_wifi:
-        say(f'[1/6] 드론 Wi-Fi: {drone_wifi}')
+        say(f'[1/5] 드론 Wi-Fi: {drone_wifi}')
     else:
-        say('[1/6] 드론 Wi-Fi(TELLO-… / RMTT-…)에 연결돼 있지 않아요. 드론을 켜고 연결하면 게이트웨이가 알아서 붙어요.')
+        say('[1/5] 드론 Wi-Fi(TELLO-… / RMTT-…)에 연결돼 있지 않아요. 드론을 켜고 연결하면 게이트웨이가 알아서 붙어요.')
 
     st = state(gateway)
     reuse = is_gateway(st)
     if reuse and st.get('source') != 'tello':
-        say(f"[2/6] {REAL_PORT}에 실기체가 아닌 게이트웨이(source={st.get('source')})가 켜져 있어요. 끄고 다시 실행하세요.")
+        say(f"[2/5] {REAL_PORT}에 실기체가 아닌 게이트웨이(source={st.get('source')})가 켜져 있어요. 끄고 다시 실행하세요.")
         return 1
     if reuse:
-        say(f"[2/6] 실기체 게이트웨이는 이미 켜져 있어요({MODE_KO.get(st.get('mode'), st.get('mode'))}).")
+        say(f"[2/5] 실기체 게이트웨이는 이미 켜져 있어요({MODE_KO.get(st.get('mode'), st.get('mode'))}).")
         if phone:
             warn('이미 켜진 게이트웨이라 폰 접속(0.0.0.0)으로 바꾸지 못해요. 폰으로 열려면 끄고 다시 켜세요.')
     else:
         owners = winproc.port_owners(udp=DRONE_UDP, tcp=(REAL_PORT,))
         if owners:
-            say('[2/6] 게이트웨이 포트나 드론 포트를 다른 프로그램이 쓰고 있어요(점검 화면 check_server.py, 다른 게이트웨이, '
+            say('[2/5] 게이트웨이 포트나 드론 포트를 다른 프로그램이 쓰고 있어요(점검 화면 check_server.py, 다른 게이트웨이, '
                 '직접 연결 지도 등). Tello는 처음 붙은 쪽에만 답해서 같이 켤 수 없어요. 끄고 다시 실행하세요.')
             say('\n'.join(owner_lines(owners, winproc.processes())))
             return 1
-        say('[2/6] 겹치는 프로그램 없음. 방화벽 확인 중...')
+        if not ready['gateway']:
+            say('[2/5] 게이트웨이 패키지가 없어 켤 수 없어요. 인터넷을 확인하고 다시 실행하세요.')
+            return 1
+        say('[2/5] 겹치는 프로그램 없음. 방화벽 확인 중...')
         firewall_hint()
-
-    if reuse:
-        say('[3/6] 게이트웨이 그대로 사용')
-    else:
-        say(f'[3/6] 실기체 게이트웨이 켜는 중(새 창). 기록: {ROOT / "data/outputs/tello"}')
+        say(f'       실기체 게이트웨이 켜는 중(새 창). 기록: {ROOT / "data/outputs/tello"}')
         winproc.start_window(f'Chill-Drone 실기체 게이트웨이 ({REAL_PORT})', ROOT, gateway_cmd(REAL_PORT, phone=phone))
         if not wait_for(lambda: is_gateway(state(gateway)), 25):
             say('       25초 안에 게이트웨이가 켜지지 않았어요. 게이트웨이 창의 메시지를 확인하세요.')
             return 1
-    say('[4/6] 드론 연결 기다리는 중(최대 30초)...')
+    say('[3/5] 드론 연결 기다리는 중(최대 30초)...')
     connected = wait_for(lambda: (lambda s: s if is_gateway(s) and s.get('connected') else None)(state(gateway)), 30)
     if connected:
         show_drone(connected)
     else:
-        warn('아직 드론이 안 붙었어요. 전원과 Wi-Fi를 확인하세요. 답이 없으면 드론을 껐다 켜면 됩니다(게이트웨이는 그대로 두면 다시 붙어요).')
+        warn('아직 드론이 안 붙었어요. 전원과 Wi-Fi를 확인하세요. 붙으면 나머지(MoNA 등)는 알아서 이어서 켜요.')
 
-    integrated_console = bool(reuse and st.get('mapping_console_url'))
-    standalone_console = not integrated_console and start_console(gateway)
-    say('[5/6] 같이 켤 것' + (' (Enter = 대괄호 안 대문자)' if interactive else ''))
-    if detect is None:
-        detect = ask('사람 탐지(AI 합성·발견 목록)도 켤까요? [Y/n]', 'y', {'y', 'n'}) == 'y' if interactive else True
-    if map_ is None:
-        map_ = ask('실시간 감독에 3D 점군도 연결할까요? [y/N]', 'n', {'y', 'n'}) == 'y' if interactive else False
-    if mona is None:
-        mona = {'h': 'hand', 'f': 'flight'}.get(
-            ask('MoNA 자율도 켤까요? [N = 안 켬 / h = 손에 든 시험 / f = 비행]', 'n', {'n', 'h', 'f'})) if interactive else None
+    say('[4/5] 사람 탐지·3D 지도·MoNA')
     procs = winproc.processes()
-    say('       사람 탐지: ' + ('켬' if detect else '안 켬'))
-    if detect:
-        start_detect(procs, gateway, '실기체')
-    say('       실시간 감독 3D 점군 연결: ' + ('통합 실행 중' if integrated_console else '켬' if map_ and standalone_console else '안 켬'))
-    if map_ and standalone_console:
+    start_detect(procs, gateway, '실기체', ready)
+    keeper = None
+    if start_console(gateway, ready):
         start_bridge(procs, url(CONSOLE_PORT), gateway, '실기체')
-    say('       MoNA 자율: ' + {'hand': '손에 든 시험', 'flight': '비행'}.get(mona, '안 켬'))
-    if mona in ('hand', 'flight'):
-        start_mona(mona == 'hand')
+        if ready['models']:
+            keeper = mapkeeper.MapKeeper(gateway, url(CONSOLE_PORT), say)
+            say('       지도: 영상이 켜지면(이륙하면 자동) 실행기가 지도를 시작하고 유지해요.')
+        else:
+            warn('지도 모델이 없어 실시간 지도 자동 시작은 켜지 않았어요(콘솔의 영상 복원·기록 보기는 돼요).')
+        say('       지도 콘솔의 "1. 드론 연결" 버튼은 누르지 마세요(드론은 게이트웨이가 쥐고 있어요. 이륙 전 "드론 해당 없음"은 정상).')
+    stop_event = threading.Event()
+    problem = mona_problem()
+    if problem:
+        warn(f'MoNA는 켜지 않았어요: {problem}')
+    else:
+        start_mona_when_connected(gateway, stop_event)
+        say('       MoNA: 드론이 붙으면 켜요(비행 모드: 이륙 뒤 화면에서 "자율"을 눌러야 움직임).')
 
-    preset = 'autonomy' if mona in ('hand', 'flight') else 'mapping' if map_ else ''
-    page = gateway + '/' + (f'?preset={preset}' if preset else '') + '#/live'
-    say('[6/6] 화면 열기')
+    page = gateway + '/#/live'
+    say('[5/5] 화면 열기')
     open_page(page, no_browser)
     say()
     say(f'  실시간 감독  {page}')
@@ -385,21 +408,21 @@ def run_real(*, phone=False, detect=None, map_=None, mona=None, no_browser=False
             say(line)
     else:
         say(f'  폰 조작      {gateway}/#/control (이 PC에서만. 폰으로 열려면 start.cmd real --phone)')
-    say()
-    say(r'이 창은 닫아도 돼요(켠 프로그램은 각자 창에서 돌아요). 끄려면 scripts\start.cmd stop (메뉴 0).')
+    if interactive if interactive is not None else sys.stdin.isatty():
+        if keeper:
+            keeper.start()
+        return wait_and_stop(keeper, stop_event)
+    say('  (창 입력이 없어 기다리지 않아요. 지도 자동 시작과 Enter 끄기는 실행기 창에서 실행할 때만 돼요.)')
     return 0
 
 
-# ---------- 모두 끄기 ----------
-STOP_ORDER = [   # (이름, 찾을 글자들, 뺄 글자들, 기다릴 초)
-    ('사람 탐지', ('gateway_ai_client',), (), 10),
-    ('지도 연결기', ('gateway_map_bridge',), (), 10),
-    ('가짜 지도', ('fake_map_server.py',), (), 10),
-    ('지도 콘솔', ('apps/console/serve.py',), (), 15),
-    ('자율비행 웹(ROS 2)', ('autonomy-web/launcher.py',), (), 15),
-    ('3D 지도 촬영 실행기', ('apps.launcher', ' map'), (), 20),
-    ('3D 지도 촬영 실행기(옛 CMD)', ('MAPPING_LAUNCHER',), (), 20),
-    ('게이트웨이', ('gateway_server.py',), (), 15),
+# ---------- 모두 끄기(실행기 창에서 Enter) ----------
+STOP_ORDER = [   # (이름, 찾을 글자들, 기다릴 초)
+    ('사람 탐지', ('gateway_ai_client',), 10),
+    ('지도 연결기', ('gateway_map_bridge',), 10),
+    ('가짜 지도', ('fake_map_server.py',), 10),
+    ('지도 콘솔', ('apps/console/serve.py',), 15),
+    ('게이트웨이', ('gateway_server.py',), 15),
 ]
 
 
@@ -419,7 +442,7 @@ def stop_group(name, procs, wait_s):
     return True
 
 
-def run_stop(*, yes=False):
+def run_stop(*, keeper=None, stop_event=None):
     say('=== 모두 끄기 ===')
     signal.signal(signal.SIGINT, signal.SIG_IGN)   # 같은 콘솔에 보낸 Ctrl+C에 이 프로그램이 멈추지 않게
     me = {os.getpid(), os.getppid()}
@@ -434,44 +457,22 @@ def run_stop(*, yes=False):
             st = states[g]
             busy = f", {st['flight_busy']} 중" if st.get('flight_busy') else ''
             say(f"  드론이 공중에 있어요({g}: {MODE_KO.get(st.get('mode'), st.get('mode'))}{busy}).")
-        say('  먼저 착륙한 뒤 다시 실행하세요. 아무것도 끄지 않았어요.')
+        say('  아무것도 끄지 않았어요.')
         return 1
-    real = [st for st in states.values() if is_gateway(st) and st.get('source') == 'tello' and st.get('connected')]
-    for st in real:
-        show_drone(st)
-    if real and not yes and ask('게이트웨이와 보조 프로그램을 모두 끌까요? [Y/n]', 'y', {'y', 'n'}) != 'y':
-        say('  끄지 않았어요.')
-        return 0
+    if stop_event:
+        stop_event.set()
+    if keeper:
+        keeper.stop()
     stopped = False
-    try:
-        mona = subprocess.run(['docker', 'ps', '-q', '--filter', 'name=^mona-live$'], capture_output=True,
-                              timeout=15, creationflags=winproc.CREATE_NO_WINDOW).stdout.strip()
-        if mona:
-            subprocess.run(['docker', 'stop', 'mona-live'], capture_output=True, timeout=60,
-                           creationflags=winproc.CREATE_NO_WINDOW)
-            say('       MoNA 자율: 껐어요')
-            stopped = True
-    except (OSError, subprocess.TimeoutExpired):
-        pass
-    targets = []
-    for name, tokens, exclude, wait_s in STOP_ORDER:
-        group = match(procs, *tokens, exclude=exclude)
-        targets += group
-        stopped |= stop_group(name, group, wait_s)
-    # 3D 지도 촬영·자율비행 웹은 start.cmd 창 안에서 돈다. Ctrl+C를 받은 그 창의 cmd가
-    # "일괄 작업을 끝내시겠습니까 (Y/N)?"로 남으니, 안의 프로그램이 끝났으면 창도 닫는다.
-    by_pid = {p.pid: p for p in procs}
-    windows = {p.ppid for p in targets} - {p.pid for p in targets}
-    closed = 0
-    for pid in windows:
-        parent = by_pid.get(pid)
-        if parent and 'start.cmd' in norm(parent.cmd).lower() and winproc.alive(pid):
-            winproc.kill_tree(pid)
-            closed += 1
-    if closed:
-        say(f'       실행기 창 {closed}개를 닫았어요.')
+    if mona_running():
+        subprocess.run(['docker', 'stop', 'mona-live'], capture_output=True, timeout=60,
+                       creationflags=winproc.CREATE_NO_WINDOW)
+        say('       MoNA 자율: 껐어요')
+        stopped = True
+    for name, tokens, wait_s in STOP_ORDER:
+        stopped |= stop_group(name, match(procs, *tokens), wait_s)
     if not stopped:
-        say('  켜져 있는 실행기 프로그램이 없어요.')
+        say('  켜져 있는 프로그램이 없어요.')
     runs = sorted((d for d in (ROOT / 'data/outputs/tello').glob('*') if d.is_dir()), key=lambda d: d.stat().st_mtime)
     if runs:
         done = (runs[-1] / 'metrics.json').is_file()
