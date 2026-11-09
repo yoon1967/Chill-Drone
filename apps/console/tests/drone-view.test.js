@@ -205,6 +205,41 @@ test('camera space appears only after connection; explicit disconnect pins the m
   assert.deepEqual(JSON.parse(request.options.body), {session_id: 'drone-session'});
 });
 
+test('gateway mode shows the control gateway link and never offers a second direct connection', async t => {
+  const f = fixture(t);
+  Object.assign(f.state, {owner: 'gateway', selected: null, disconnect_available: false,
+    gateway: {reachable: true, connected: true, battery_pct: 87.4, video_available: false}});
+  await settle();
+  for (const id of ['drone-wifi-results', 'drone-current-network', 'drone-details', 'drone-video-start'])
+    assert.equal(f.get(id).hidden, true, id);
+  assert.equal(f.get('drone-link-state').textContent, '관제 게이트웨이 연결됨 · 배터리 87% · 영상 꺼짐');
+  assert.equal(f.get('drone-disconnect').textContent, '지도 마무리');
+  assert.equal(f.get('drone-camera-panel').hidden, false);
+  assert.equal(f.get('drone-map-start').disabled, true);   // 게이트웨이 영상이 꺼져 있으면 지도를 시작하지 않는다
+  assert.match(f.get('drone-flow-status').textContent, /관제 화면에서 드론 영상을 켜면/);
+  assert.match(f.get('drone-image-status').textContent, /관제 화면에서 봅니다/);
+  f.state.gateway.video_available = true;
+  await f.timers.shift()();
+  assert.equal(f.get('drone-map-start').disabled, false);
+  assert.match(f.get('drone-link-state').textContent, /영상 켜짐/);
+  Object.assign(f.state, {connected: false, mapping_active: true, disconnect_available: true,
+    gateway: {reachable: true, connected: false, battery_pct: null, video_available: false}});
+  await f.timers.shift()();
+  assert.equal(f.get('drone-link-state').textContent, '관제 게이트웨이 · 드론 연결 전');
+  assert.match(f.get('drone-flow-status').textContent, /지도 마무리를 눌러 지도를 마무리하세요/);
+  Object.assign(f.state, {mapping_active: false, disconnect_available: false, gateway: {reachable: false}});
+  await f.timers.shift()();
+  assert.equal(f.get('drone-link-state').textContent, '관제 게이트웨이 연결 안 됨');
+  assert.match(f.get('drone-flow-status').textContent, /관제 게이트웨이에 연결할 수 없습니다/);
+  delete f.state.owner; delete f.state.gateway;   // 직접 연결 모드는 그대로
+  Object.assign(f.state, {connected: true, selected: {ssid: 'TELLO-test'}});
+  await f.timers.shift()();
+  assert.equal(f.get('drone-wifi-results').hidden, false);
+  assert.equal(f.get('drone-current-network').hidden, false);
+  assert.equal(f.get('drone-disconnect').textContent, '드론 연결 해제');
+  assert.equal(f.get('drone-link-state').textContent, '연결됨 · TELLO-test');
+});
+
 test('server outage disables connection actions and reports unknown drone state', async t => {
   const f = fixture(t);
   await settle();

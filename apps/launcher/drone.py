@@ -368,7 +368,7 @@ def run_real(*, phone=False, no_browser=False, interactive=None):
         start_bridge(procs, url(CONSOLE_PORT), gateway)
         keeper = mapkeeper.MapKeeper(gateway, url(CONSOLE_PORT), say)
         say('       지도: 영상이 켜지면(이륙하면 자동) 실행기가 지도를 시작하고 유지해요.')
-        say('       지도 콘솔의 "1. 드론 연결" 버튼은 누르지 마세요(드론은 게이트웨이가 쥐고 있어요. 이륙 전 "드론 해당 없음"은 정상).')
+        say('       지도 콘솔도 이 게이트웨이의 드론 연결을 보여 줘요(직접 연결 버튼 없음, 지도를 끝낼 땐 "지도 마무리").')
     stop_event = threading.Event()
     mona_starter = start_mona_when_connected(gateway, stop_event)
     say('       MoNA: 드론이 붙으면 켜요(비행 모드: 이륙 뒤 화면에서 "자율"을 눌러야 움직임).')

@@ -11,6 +11,9 @@ import unittest
 from unittest.mock import Mock, patch
 import zipfile
 
+from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
+
+from apps.console import serve
 from apps.console.serve import ViewerHandler, ViewerServer
 from modules.autonomy.tello_link.discovery import DroneDiscovery, wifi_candidates
 from modules.mapping.data.session_import import ImportedMap
@@ -237,6 +240,84 @@ class ConsoleAPI(unittest.TestCase):
         self.assertIsNone(read()['mapping_session_id'])
         self.request('/api/drones/disconnect', 'POST', headers)
         self.assertFalse(read()['can_save'])  # old completed map is not this connection's output
+
+
+class GatewayModeConsoleAPI(unittest.TestCase):
+    """--tello-gateway: the control gateway owns the Tello link, so the drone panel reports that link and
+    refuses direct SDK/Wi-Fi actions (they would fail on busy ports or switch the PC Wi-Fi)."""
+
+    def setUp(self):
+        self.gateway_state = {'type': 'drone_state', 'source': 'tello', 'connected': True, 'mode': 'grounded',
+                              'battery_pct': 87, 'video': {'available': False}}
+        test = self
+
+        class Gateway(BaseHTTPRequestHandler):
+            def log_message(self, *args):
+                pass
+
+            def do_GET(self):
+                body = json.dumps(test.gateway_state).encode()
+                self.send_response(200 if self.path == '/api/drone/state' else 404)
+                self.send_header('Content-Type', 'application/json')
+                self.send_header('Content-Length', str(len(body)))
+                self.end_headers()
+                self.wfile.write(body)
+        self.gateway = ThreadingHTTPServer(('127.0.0.1', 0), Gateway)
+        threading.Thread(target=self.gateway.serve_forever, daemon=True).start()
+        self.gateway_url = f'http://127.0.0.1:{self.gateway.server_port}'
+        self.manager = Mock()
+        self.manager.state.side_effect = lambda: {'connected': False, 'owner': 'discovery'}   # 실제처럼 매번 새 dict
+        self.manager.stop_preview.return_value = None
+        self.manager.manual_disconnected = False
+        self.manager.disconnected_session = None
+        self.manager.mapping_session = None
+        self.manager.link = None
+        ttl = serve.GATEWAY_DRONE.ttl_s
+        serve.GATEWAY_DRONE.ttl_s = 0   # 시험마다 게이트웨이 상태를 바로 다시 읽는다
+        self.addCleanup(setattr, serve.GATEWAY_DRONE, 'ttl_s', ttl)
+        self.server = ViewerServer(('127.0.0.1', 0), partial(ViewerHandler, drones=self.manager,
+            live=SimpleNamespace(current=None), tello_map=SimpleNamespace(busy=False, gateway=self.gateway_url)))
+        threading.Thread(target=self.server.serve_forever, daemon=True).start()
+
+    def tearDown(self):
+        self.server.shutdown()
+        self.server.server_close()
+        if self.gateway:
+            self.gateway.shutdown()
+            self.gateway.server_close()
+
+    def request(self, path, method='GET', body=None):
+        connection = HTTPConnection('127.0.0.1', self.server.server_port)
+        connection.request(method, path, json.dumps(body or {}) if method == 'POST' else None,
+                           headers={'X-Mapping-Client': '1'} if method == 'POST' else {})
+        response = connection.getresponse()
+        data = json.loads(response.read())
+        connection.close()
+        return response.status, data
+
+    def test_drone_state_reports_the_control_gateway_link(self):
+        status, state = self.request('/api/drones/state')
+        self.assertEqual((status, state['owner'], state['connected']), (200, 'gateway', True))
+        self.assertEqual(state['gateway'], {'url': self.gateway_url, 'reachable': True, 'connected': True,
+            'source': 'tello', 'battery_pct': 87, 'mode': 'grounded', 'video_available': False})
+        self.gateway_state.update(connected=False, battery_pct='bad', video={'available': True})
+        state = self.request('/api/drones/state')[1]
+        self.assertEqual((state['connected'], state['gateway']['battery_pct'], state['gateway']['video_available']),
+                         (False, None, True))
+        self.gateway.shutdown()
+        self.gateway.server_close()
+        self.gateway = None
+        state = self.request('/api/drones/state')[1]
+        self.assertEqual((state['owner'], state['connected'], state['gateway']['reachable']), ('gateway', False, False))
+
+    def test_direct_drone_actions_are_refused_but_preview_stop_still_works(self):
+        for path in ('scan', 'connect', 'explore', 'preview/start'):
+            self.assertEqual(self.request(f'/api/drones/{path}', 'POST', {'id': 'current-network'}),
+                             (409, {'error': 'gateway_mode_owns_drone'}), path)
+        for name in ('scan', 'connect', 'explore', 'start_preview'):
+            getattr(self.manager, name).assert_not_called()
+        self.assertEqual(self.request('/api/drones/preview/stop', 'POST')[0], 200)
+        self.manager.stop_preview.assert_called_once()
 
 
 if __name__ == '__main__':
