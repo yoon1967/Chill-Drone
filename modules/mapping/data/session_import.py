@@ -356,6 +356,10 @@ class ImportManager:
                     raise ValueError('unknown_import')
                 path = inside(self.root, key)
                 info = read_json(inside(path, 'import.json'))
+                if info.get('status') in {'failed', 'cancelled'}:
+                    self.jobs[key] = {k: info[k] for k in ('name', 'status', 'stage', 'summary', 'error', 'options') if k in info}
+                    self.jobs[key].update(id=key, path=path, cancel=threading.Event(), files=set())
+                    return self.jobs[key]
                 map_root = Path(info.get('map_root', '')).resolve()
                 if info.get('status') not in {'ready', 'complete'} or not map_root.is_relative_to(self.root):
                     raise ValueError('external_import_requires_reselection')
@@ -575,7 +579,9 @@ class ImportManager:
                                 continue
                             if identity:
                                 seen_maps.add(identity)
-                            rows.append({**{k: info[k] for k in ('name', 'summary', 'status')}, 'local_id': folder.name})
+                        if info.get('status') in {'ready', 'complete', 'failed', 'cancelled'}:
+                            fields = ('name', 'summary', 'status', 'stage', 'error')
+                            rows.append({**{k: info[k] for k in fields if k in info}, 'local_id': folder.name})
                 elif any((folder / n).is_file() for n in ('session.json', 'state.json', 'scene.json', 'reconstruction/scene.json')):
                     if folder in seen_maps:
                         continue
@@ -593,14 +599,6 @@ class ImportManager:
             raise ValueError('invalid_local_id')
         folder = inside(self.root, name)
         if name.startswith('import_'):
-            if name in self.jobs:
-                return self.public(name)
-            info = read_json(folder / 'import.json')
-            # Only paths retained by this app, confined to its local data root, are reopened.
-            root = Path(info.get('map_root', '')).resolve()
-            if not root.is_relative_to(self.root):
-                raise ValueError('external_import_requires_reselection')
-            self.job(name)
             return self.public(name)
         if not folder.is_dir():
             raise ValueError('unknown_local_session')

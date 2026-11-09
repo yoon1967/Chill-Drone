@@ -4,6 +4,8 @@ import { connectDrones, renderDroneStages } from '/drone-view.js';
 import {connectWorkflowGuide, liveStep} from '/workflow-guide.js';
 import { connectMapSave } from '/map-save.js';
 import { connectImport } from '/import-view.js';
+import { savedEditorUrl } from '/editor-data.js';
+import { connectVideoFolder } from '/video-folder.js';
 import {connectLiveDepth} from '/live-depth-view.js';
 import { connectProfiles } from '/profile-view.js';
 import { connectCalibration } from '/calibration-view.js';
@@ -17,6 +19,20 @@ import { renderRecording } from '/recording-view.js';
 import { FrameLatency } from '/frame-latency.js';
 import { connectTrackingPreview, liveTrackingNotices, trackingDescription } from '/tracking-preview.js';
 const $ = (id) => document.getElementById(id);
+if (window.parent !== window) {
+  const body = document.body;
+  let previous;
+  const updateLanding = () => {
+    const landing = body.dataset.mapSource === 'saved' && body.dataset.savedPhase === 'input';
+    if (landing === previous) return;
+    previous = landing;
+    body.classList.toggle('embedded-landing', landing);
+    if (landing) window.scrollTo(0, 0);
+    window.parent.postMessage({type: 'mapping-console-view', landing}, '*');
+  };
+  new MutationObserver(updateLanding).observe(body, {attributes: true, attributeFilter: ['data-map-source', 'data-saved-phase']});
+  $('landing-live').addEventListener('click', () => { location.hash = 'live'; window.scrollTo(0, 0); });
+}
 const connections = monitorConnections();
 const number = (n) => Number(n).toLocaleString('ko-KR');
 const timeOf = (c) => c.source_pts_s ?? c.timestamp_s;
@@ -76,6 +92,7 @@ const calibrationTutorial = connectCalibration({profiles, onBusy(value) {
   captureHandle?.update(lastLiveState);
 }});
 imports = connectImport({profiles, onPhase(index) { guide.update('saved', index); }});
+connectVideoFolder();
 const views = new Map();
 const savedCopy = {
   title: document.querySelector('.notes h2').innerHTML,
@@ -161,6 +178,7 @@ function clearMap(title = '지도를 불러오는 중', detail = '잠시 기다�
   $('scale-badge').textContent = source.source === 'live' ? '단안 임의 단위' : '스케일 확인 전';
   $('kind').textContent = '지도 대기';
   $('download').hidden = true;
+  $('result-editor').hidden = true;
   document.querySelectorAll('footer a').forEach((a) => { a.hidden = true; });
   document.querySelector('.object-panel').hidden = true;
   document.querySelector('.capture').hidden = true;
@@ -712,6 +730,8 @@ function applyRun(value) {
   setMode(mode);
   const quality = run.quality;
   if (run.source === 'saved') {
+    $('result-editor').href = savedEditorUrl(source.asset);
+    $('result-editor').hidden = false;
     $('saved-result-status').hidden = false;
     $('saved-result-status').dataset.state = quality.result_status === 'partial' ? 'partial' : 'complete';
     $('saved-result-status').textContent = `${quality.result_status === 'partial' ? '부분 복원' : '복원 결과'} · ${run.slam ? `촬영 시점 ${run.slam.keyframes}개` : `입력 ${quality.input_frames}장 중 ${quality.registered_frames}장 등록`} · ${run.scale.unit === 'm' ? '기준 치수로 스케일 보정 · 독립 치수 정확도 미검증' : '실측 스케일 미보정'}`;

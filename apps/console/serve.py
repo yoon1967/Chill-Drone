@@ -16,6 +16,8 @@ import time
 import zipfile
 from types import SimpleNamespace
 from urllib.parse import parse_qs, unquote, urlsplit
+from urllib.error import HTTPError
+from urllib.request import ProxyHandler, build_opener
 
 APP = Path(__file__).resolve().parent
 os.environ.setdefault('OMP_NUM_THREADS', '2')
@@ -26,6 +28,7 @@ from modules.mapping.data.session_import import ImportManager, ImportedMap, insi
 from modules.mapping.data.camera_profiles import CameraProfiles
 from modules.mapping.data.calibration_tutorial import CalibrationTutorial, board_svg
 from modules.mapping.data.calibration_report import calibration_report_pdf
+from apps.console.video_folder import video_folder
 
 
 def scene_delta(previous, current):
@@ -686,6 +689,8 @@ class ViewerHandler(BaseHTTPRequestHandler):
             if self.command == 'GET':
                 if action == 'library':
                     self.json_response({'items': self.imports.library(), 'initial': getattr(self.imports, 'initial', None)})
+                elif action == 'video-folder':
+                    self.json_response(video_folder(self.imports.root))
                 elif action == 'status':
                     self.json_response(self.imports.status(key))
                 elif action == 'preview':
@@ -758,6 +763,8 @@ class ViewerHandler(BaseHTTPRequestHandler):
             body = json.loads(self.rfile.read(length) or b'{}')
             if action == 'create':
                 value = self.imports.create(body.get('name', '불러온 자료'))
+            elif action == 'video-folder':
+                value = video_folder(self.imports.root, body)
             elif action == 'inspect':
                 value = self.imports.inspect(key)
             elif action == 'local':
@@ -782,6 +789,28 @@ class ViewerHandler(BaseHTTPRequestHandler):
         except (OSError, ValueError, KeyError, TypeError, zipfile.BadZipFile) as error:
             self.close_connection = True
             self.json_response({'error': str(error)[:400]}, 400)
+
+    def supervisor_cloud(self):
+        gateway = self.tello_map.gateway if self.tello_map else None
+        if not gateway:
+            self.json_response({'error': 'supervisor_gateway_disabled'}, 404)
+            return
+        from modules.mapping.localization.tello_input import NoRedirect
+        opener = build_opener(ProxyHandler({}), NoRedirect())
+        limit = 16_010_000  # Gateway snapshot limit plus the receive timestamp.
+        try:
+            with opener.open(gateway + '/api/map', timeout=5) as response:
+                payload = response.read(limit + 1)
+            if len(payload) > limit:
+                raise ValueError('supervisor_cloud_too_large')
+            cloud = json.loads(payload)
+            if not isinstance(cloud, dict) or cloud.get('schema_version') != 'gateway-map/0.1':
+                raise ValueError('invalid_supervisor_cloud')
+            self.json_payload(payload)
+        except (OSError, ValueError) as error:
+            empty = isinstance(error, HTTPError) and error.code == 404
+            self.json_response({'error': 'supervisor_cloud_empty' if empty else 'supervisor_cloud_unavailable'},
+                               404 if empty else 502)
 
     def do_GET(self):
         host = self.headers.get("Host", "").split(":", 1)[0]
@@ -815,6 +844,9 @@ class ViewerHandler(BaseHTTPRequestHandler):
             return
         if path.startswith('/api/import/'):
             self.import_request()
+            return
+        if path == '/api/editor/supervisor':
+            self.supervisor_cloud()
             return
         asset = parse_qs(url.query).get('asset', [None])[0]
         if asset and self.imports and path.startswith('/api/saved/'):
@@ -1125,6 +1157,9 @@ class ViewerHandler(BaseHTTPRequestHandler):
                   '/progressive-replay.js': APP / 'progressive-replay.js',
                   '/axis-gizmo.js': APP / 'axis-gizmo.js',
                   '/map-save.js': APP / 'map-save.js',
+                  '/video-folder.js': APP / 'video-folder.js',
+                  '/editor.html': APP / 'editor.html', '/editor.js': APP / 'editor.js',
+                  '/editor-data.js': APP / 'editor-data.js', '/editor.css': APP / 'editor.css',
                   "/vendor/three.module.js": APP / "node_modules/three/build/three.module.js",
                   "/vendor/three.core.js": APP / "node_modules/three/build/three.core.js",
                   "/vendor/OrbitControls.js": APP / "node_modules/three/examples/jsm/controls/OrbitControls.js"}

@@ -12,11 +12,11 @@ const ui = {
   live: false, ws: null, wsOpen: false, everOpen: false, state: null, timeline: [], seq: 0, cache: {}, view: null,
   findings: new Map(), lastDet: null, newFindingAt: 0,   // 실시간 사람 탐지: finding_id → 발견, 영상 위 윤곽선용 최근 탐지
   feed: loadPref("controller.feed", "raw") === "ai" ? "ai" : "raw",   // 영상 칸: raw(원본) / ai(사람 탐지 합성 영상). 합성이 끊기면 원본을 보여 준다
-  map3d: { mode: loadPref("map-mode", "3d"), host: null, view: null, revision: undefined, loading: false, has: false },  // 3D 점군(지도 연결기)
+  map3d: { mode: loadPref("map-mode", "3d"), host: null, view: null, revision: undefined, loading: false, has: false, editable: false },  // 3D 점군(지도 연결기)
   mapBig: loadPref("map-big", "0") === "1",   // 지도 칸을 가장 큰 칸(기본 프리셋은 영상)과 바꿔 크게 본다
   preset: new URLSearchParams(location.search).get("preset") || loadPref("controller.preset", ""),   // 실시간 감독 칸 배치(presets.js)
   edit: null,   // 화면 편집 중이면 { draft: 고치는 배치, from: 시작한 프리셋 id }
-  console: { frame: null, url: null, slot: null, ro: null, loadedUp: null },   // 지도 콘솔 iframe(placeConsole). loadedUp: 열 때 콘솔 상태
+  console: { frame: null, url: null, slot: null, ro: null, loadedUp: null, landing: false },
   autonomy: { connected: false, path: null, people: null, pathRev: 0, peopleRev: 0, loading: false, track: [] },  // 자율 지도(/api/autonomy)
 };
 if (!["2d", "3d"].includes(ui.map3d.mode)) ui.map3d.mode = "3d";   // 지도 콘솔은 따로 화면(#/map)
@@ -409,10 +409,13 @@ function map3dPanel(st, head, cls = "map") {   // cls: 실시간 감독은 지�
     : m.upstream === "error" ? ["지도 읽기 오류", "danger", ""]
     : ["지도 수신 중", "success", ""];
   const detail = has && m ? `버전 ${m.revision ?? "?"} · 점 ${m.points}${m.points_total > m.points ? `/${m.points_total}` : ""} · ${unit}` : info[2];
+  const target = cls === "map" && ui.map3d.editable && m?.points > 0 ? consoleTarget(st) : null;
+  const editor = target?.url && new URL("/editor.html?source=supervisor", target.url).href;
   return `<section class="panel ${cls}" data-part="map3d" aria-label="3D 지도">${head}
     <div class="map3d-slot">${has ? "" : `<div class="map-empty">${esc(info[2] || "점군을 기다리는 중입니다.")}</div>`}</div>
     <div class="map3d-info">${chip(info[0], info[1])}<span class="muted">${esc(detail)}</span>
-      ${has ? `<span class="muted keys-hint">끌어서 돌리기 · 휠/두 손가락 확대 · 두 번 눌러 처음 시점</span>` : ""}</div></section>`;
+      ${editor ? `<a class="map-open" href="${esc(editor)}" target="_blank" rel="noopener">3D 지도 편집 ↗</a>` : ""}
+      ${has ? `<span class="muted keys-hint">왼쪽 드래그 회전 · 우클릭 드래그 이동 · 휠/두 손가락 확대 · 두 번 눌러 처음 시점</span>` : ""}</div></section>`;
 }
 
 function attachMap3d() {
@@ -440,40 +443,45 @@ async function loadMap() {
       const map = await r.json();
       m.revision = map.source?.revision;
       if (m.view?.ok) m.view.setData(map);
-      const first = !m.has;
+      const editable = map.source?.pose_source !== "fake";   // 체험의 가짜 지도 서버는 편집기를 제공하지 않는다.
+      const changed = !m.has || m.editable !== editable;
       m.has = true;
-      if (first) { ui.cache = {}; render(); }   // 안내 문구 → 캔버스
+      m.editable = editable;
+      if (changed) { ui.cache = {}; render(); }
     }
   } catch (e) { /* 다음 상태 갱신 때 다시 */ }
   m.loading = false;
 }
 
-// 지도 콘솔 화면(#/map): 지도 파트 콘솔(apps/console)의 실시간 지도 화면을 크게 띄운다.
+// 지도 콘솔 화면(#/map): 저장 지도에서 시작하고 실시간 지도로 전환할 수 있다.
 // 콘솔에서 시작한 드론 지도는 콘솔 화면이 살아 있어야 이어진다(콘솔이 2초마다 하트비트, 45초 끊기면 멈춤).
 // 그래서 iframe은 #app 밖(body)에 한 번만 만들고 이 화면의 자리(.console-slot) 위에 겹쳐 둔다(placeConsole).
 // 화면을 다시 그리거나 실시간 감독 등 다른 화면으로 가도 콘솔이 새로 열리지 않는다(다른 화면에서는 숨기기만).
 // 별도 브라우저 창은 가려지거나 최소화되면 타이머가 느려져 하트비트가 끊길 수 있어 기본으로 쓰지 않는다.
 const CONSOLE_URL = "http://127.0.0.1:8790/";   // 지도 연결기가 콘솔 주소를 알려 주기 전 기본값(apps/console 기본 포트)
+const DEMO_CONSOLE_URL = "http://127.0.0.1:8796/";
 const LOOPBACK = ["127.0.0.1", "localhost", "[::1]"];
 
 function consoleTarget(st) {
+  const fallback = st?.source === "fake" && location.port === "8030" ? DEMO_CONSOLE_URL : st?.map?.source_url || CONSOLE_URL;
   let u;
-  try { u = new URL(st?.mapping_console_url || st?.map?.source_url || CONSOLE_URL); } catch (e) { return { url: null, note: "지도 콘솔 주소를 읽을 수 없습니다." }; }
+  try { u = new URL(st?.mapping_console_url || fallback); } catch (e) { return { url: null, note: "지도 콘솔 주소를 읽을 수 없습니다." }; }
+  if (!['http:', 'https:'].includes(u.protocol)) return { url: null, note: "지도 콘솔 주소를 읽을 수 없습니다." };
   if (LOOPBACK.includes(u.hostname) && !LOOPBACK.includes(location.hostname)) {
     return { url: null, note: "지도 콘솔이 드론 PC 안(127.0.0.1)에서만 열려 있어 이 기기에서는 볼 수 없습니다. 드론 PC의 화면에서 보세요." };
   }
-  u.hash = "live";
+  u.hash = "saved";
   return { url: u.href, origin: u.origin };
 }
 
 function consolePanel(st) {
-  const head = `<header><h2>지도 콘솔</h2>${src("map")}<span class="muted src-inline">지도 파트 콘솔(apps/console)의 실시간 지도 화면</span>${videoControl(st)}</header>`;
+  const head = `<header><h2>지도 콘솔</h2>${src("map")}<span class="muted src-inline">촬영 영상 복원 · 실시간 지도</span>${videoControl(st)}</header>`;
   const t = consoleTarget(st), m = st.map;
   const info = !t.url ? ["볼 수 없음", "warning"]
     : st.mapping_console_url ? ["통합 실행", "success"]
     : m?.alive && m.upstream === "unreachable" ? ["지도 콘솔 꺼짐", "danger"]
     : m?.alive && m.upstream && m.upstream !== "unreachable" ? ["지도 콘솔 연결", "success"]
-    : [`지도 연결기 꺼짐 · ${m?.source_url ? "마지막 주소" : "기본 주소"}`, "neutral"];   // 연결기가 꺼져도 게이트웨이는 마지막 콘솔 주소를 기억한다
+    : ["로컬 영상 복원", "neutral"];
   const state = m?.alive && m.mapping_state ? ` · 지도 상태 ${m.mapping_state}` : "";
   return `<section class="panel console-view" aria-label="지도 콘솔">${head}
     <div class="console-slot">${t.url ? "" : `<div class="map-empty">${esc(t.note)}</div>`}</div>
@@ -495,12 +503,15 @@ function placeConsole() {
   if (!c.frame && t?.url) {   // 콘솔 보기를 처음 고를 때 연다
     c.frame = document.createElement("iframe");
     c.frame.className = "console-frame away";
-    c.frame.title = "지도 콘솔(apps/console) 실시간 지도";
+    c.frame.title = "지도 콘솔 · 영상 복원과 실시간 지도";
     c.frame.allow = "fullscreen";
     document.body.append(c.frame);
   }
   if (!c.frame) return;
-  if (t?.url && c.url !== t.url) { c.url = t.url; c.frame.src = t.url; c.loadedUp = up; }
+  if (t?.url && c.url !== t.url) {
+    c.url = t.url; c.frame.src = t.url; c.loadedUp = up; c.landing = false;
+    document.body.classList.remove("console-landing");
+  }
   if (c.slot !== slot) {   // 칸이 다시 그려지면 새 자리의 크기 변화를 따라간다
     c.ro?.disconnect();
     c.slot = slot;
@@ -513,12 +524,19 @@ function placeConsole() {
   c.frame.classList.remove("away");
 }
 
-function reloadConsole() {   // 같은 주소(#live)로 src를 다시 넣으면 새로 읽지 않으므로 iframe을 새로 만든다
+function reloadConsole() {   // 같은 주소로 src를 다시 넣으면 새로 읽지 않으므로 iframe을 새로 만든다
   const c = ui.console;
   c.frame?.remove();
-  c.frame = null; c.url = null;
+  c.frame = null; c.url = null; c.landing = false;
   placeConsole();
 }
+
+window.addEventListener("message", (event) => {
+  const c = ui.console;
+  if (!c.url || event.source !== c.frame?.contentWindow || event.origin !== new URL(c.url).origin ||
+      event.data?.type !== "mapping-console-view" || typeof event.data.landing !== "boolean") return;
+  if (c.landing !== event.data.landing) { c.landing = event.data.landing; render(); }
+});
 
 const CMD_LABEL = {
   takeoff: "이륙", land: "착륙", pause: "일시정지", resume: "다시 시작", takeover: "넘겨받기",
@@ -686,7 +704,7 @@ function renderMap() {
   const { sc, st, events } = current();
   if (!ui.live) {
     return `${statusStrip(st, events)}<section class="panel console-view" aria-label="지도 콘솔"><header><h2>지도 콘솔</h2>${src("map")}</header>
-      <div class="map-empty">게이트웨이에 연결된 화면에서 지도 파트 콘솔(apps/console)의 실시간 지도 화면이 여기에 크게 보입니다.</div></section>`;
+      <div class="map-empty">게이트웨이에 연결되면 촬영 영상 복원과 실시간 지도를 여기서 열 수 있습니다.</div></section>`;
   }
   return `${statusStrip(st, events)}${alertBox(sc, events)}${consolePanel(st)}${controlBar(st)}`;
 }
@@ -762,6 +780,9 @@ function view() {
 
 function render() {
   const v = view();
+  const st = ui.state;
+  const onGround = ui.wsOpen && !st?.flight_busy && ["grounded", "disconnected"].includes(st?.mode);
+  document.body.classList.toggle("console-landing", v === "map" && ui.console.landing && onGround);
   const html = { live: renderLive, map: renderMap, review: renderReview, control: renderControl }[v]();
   const app = $("#app");
   const tpl = document.createElement("template");

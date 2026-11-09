@@ -1,4 +1,4 @@
-"""3D 지도 촬영·저장 지도 열기(지도 파트). scripts/start_3d_mapping.cmd의 내용을 그대로 옮겼다.
+"""3D 지도 촬영과 저장 지도·영상 열기.
 
 - 기본(통합 실행): 이 창 안에서 드론 게이트웨이를 지도 통합 모드로 함께 켜고, 관제 화면의 지도 콘솔(#/map)을 연다.
 - --gateway URL: 이미 켜진 게이트웨이를 쓴다. --direct: 촬영용 직접 연결. --fake: 가짜 드론.
@@ -262,7 +262,8 @@ def run_viewer(args, port, result, source, gateway, combined, scratch):
     page = gateway + '/#/map' if combined else url + ('#saved' if args.input else '#live')
     print(f'화면: {page}\n이 창을 열어 두세요. Ctrl+C로 서버를 끕니다.', flush=True)
     if combined:
-        print('지도 콘솔에서 영상을 켠 뒤 Tello 지도를 시작하세요. 비행은 운용자 확인이 필요합니다.')
+        print('지도 콘솔에 촬영 영상을 놓아 복원하세요. Tello 지도를 만들려면 영상을 켜고 실시간 지도 탭을 선택하세요.')
+        print('비행은 운용자 확인이 필요합니다.')
         print('이 창을 닫으면 게이트웨이도 꺼집니다. 비행 중에는 닫지 마세요.')
     if not args.input:
         print('Tello 지도는 고른 드론 입력에 새 전방 ToF가 있으면 함께 씁니다.')

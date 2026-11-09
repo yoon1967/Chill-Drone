@@ -23,20 +23,32 @@ export function connectProgressiveMap({prefix = 'progressive'} = {}) {
   const camera = new THREE.PerspectiveCamera(55, 1, .02, 100);
   camera.position.set(2, -2, -3); camera.up.set(0, -1, 0);
   const controls = new OrbitControls(camera, renderer.domElement);
+  const mapTarget = controls.target;
   const basePointSize = 2;
   const cameraScene = new THREE.Scene();
   cameraScene.background = scene.background;
   const cameraView = new THREE.PerspectiveCamera(60, 1, .02, 100);
   cameraView.up.copy(camera.up);
-  cameraView.position.set(.16, -.1, -.35);
-  cameraView.lookAt(0, 0, 1.5);
+  const previewOrigin = new THREE.Vector3(.16, -.1, -.35);
+  const previewCenter = new THREE.Vector3(0, 0, 1.5);
+  const previewTarget = previewCenter.clone();
+  cameraView.position.copy(previewOrigin);
+  cameraView.lookAt(previewTarget);
   const frameGeometry = new THREE.BufferGeometry();
   const frameCloud = new THREE.Points(frameGeometry, new THREE.PointsMaterial({size: basePointSize, sizeAttenuation: false, vertexColors: true}));
   frameCloud.frustumCulled = false;
   let frameSpace = null;
   function updateFramePreview(preview) {
     frameSpace = preview?.points?.length ? preview.space : null;
-    controls.enabled = frameSpace !== 'camera';
+    const cameraSpace = frameSpace === 'camera';
+    const view = cameraSpace ? cameraView : camera;
+    if (controls.object !== view) {
+      // The temporary view has its own pivot. A new map frame cannot recenter it.
+      controls.object = view;
+      controls.target = cameraSpace ? previewTarget : mapTarget;
+      controls.enableRotate = controls.enableZoom = !cameraSpace;
+      controls.update();
+    }
     host.dataset.framePreview = frameSpace ?? '';
     if (!frameSpace) { frameCloud.visible = false; delete host.dataset.framePointSize; return; }
     const parent = frameSpace === 'camera' ? cameraScene : scene;
@@ -180,8 +192,8 @@ export function connectProgressiveMap({prefix = 'progressive'} = {}) {
   function fit() {
     if (!geometry.drawRange.count || !geometry.boundingSphere) return;
     const {center, radius} = geometry.boundingSphere;
-    controls.target.copy(center); camera.position.copy(center).add(new THREE.Vector3(1, -.6, -1.3).multiplyScalar(Math.max(radius, .5) * 1.7));
-    controls.update();
+    mapTarget.copy(center); camera.position.copy(center).add(new THREE.Vector3(1, -.6, -1.3).multiplyScalar(Math.max(radius, .5) * 1.7));
+    camera.lookAt(mapTarget);
   }
   const observer = new ResizeObserver(() => {
     const {width, height} = host.getBoundingClientRect();
@@ -192,8 +204,9 @@ export function connectProgressiveMap({prefix = 'progressive'} = {}) {
   }); observer.observe(host);
   renderer.setAnimationLoop(() => {
     if (!disposed && !document.hidden && !host.closest('[hidden]') && host.getBoundingClientRect().width > 0) {
+      controls.update();
       if (frameSpace === 'camera') renderer.render(cameraScene, cameraView);
-      else { controls.update(); renderer.render(scene, camera); }
+      else renderer.render(scene, camera);
       if (pendingPaint) {
         const resolve = pendingPaint; pendingPaint = null;
         requestAnimationFrame(() => resolve(!disposed));
@@ -297,10 +310,11 @@ export function connectProgressiveMap({prefix = 'progressive'} = {}) {
       $('progressive-latency').textContent = `현재 프레임 복원 ${value.processing_ms}ms · 추적 포함 ${value.latency_ms}ms`;
       const fusion = value.rescue?.point_fusion;
       const scope = fusion ? `전체 공간 통합 · 구조물 최대 ${fusion.point_budget.toLocaleString()}점 · 밀도 단계 ${fusion.coarsenings}` : value.render_window_s == null ? '현재 지도 구간의 전체 누적 지도' : `최근 ${value.render_window_s}초 지도`;
-      const detail = frameSpace === 'camera' ? '카메라 기준 임시 점군 · 자세와 배율이 확인되면 누적 지도로 돌아갑니다.' :
-        frameSpace === 'map' ? '현재 프레임 임시 점군 · 누적 지도에는 확인된 관측을 저장합니다.' :
-        !image ? $('progressive-map-empty').textContent : retaining ? '새 점군 대기 · 마지막 유효 지도를 유지합니다.' :
-        `${scope} · 드래그 회전 · 휠 확대${value.submaps > 1 ? ` · 현재 구간 ${value.map_id + 1} · 이전 지도는 위 지도 구간에서 다시 열 수 있습니다. 구간 사이 좌표는 아직 연결되지 않았습니다.` : ''}`;
+      const move = '우클릭 드래그 이동';
+      const detail = frameSpace === 'camera' ? `카메라 기준 임시 점군 · ${move} · 자세와 배율이 확인되면 누적 지도로 돌아갑니다.` :
+        frameSpace === 'map' ? `현재 프레임 임시 점군 · ${move} · 누적 지도에는 확인된 관측을 저장합니다.` :
+        !image ? $('progressive-map-empty').textContent : retaining ? `새 점군 대기 · 마지막 유효 지도를 유지합니다. · ${move}` :
+        `${scope} · 왼쪽 드래그 회전 · 휠 확대 · ${move}${value.submaps > 1 ? ` · 현재 구간 ${value.map_id + 1} · 이전 지도는 위 지도 구간에서 다시 열 수 있습니다. 구간 사이 좌표는 아직 연결되지 않았습니다.` : ''}`;
       const depthLegend = value.map_unit === 'm' ? ' · 작은 점 파란 거리대 · 기본 점 영상 깊이 · 큰 점 ToF' :
         value.front_tof ? ' · 큰 점 ToF · 기본 점 영상 깊이' : '';
       $('progressive-map-detail').textContent = detail + depthLegend;
@@ -334,6 +348,9 @@ export function connectProgressiveMap({prefix = 'progressive'} = {}) {
     if (active !== job.id) { active = job.id; revision = 0; paintedRevision = 0; replay = new ProgressiveReplay(); historyAt = 0; generation++; first = true;
       hasPresentedMap = false;
       updateFramePreview(null);
+      cameraView.position.copy(previewOrigin);
+      previewTarget.copy(previewCenter);
+      cameraView.lookAt(previewTarget);
       trackingNote.hidden = true; trackingNote.textContent = '';
       geometry.setDrawRange(0,0); pointKey = pointValue = null; displayedMap = null; segments.clear(); segmentEntries = 0; rescue.update(null); meshRevision = -1;
       route.geometry.dispose(); route.geometry = new THREE.BufferGeometry(); cameraMarker.visible = false;

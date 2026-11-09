@@ -191,6 +191,12 @@ body[data-view=map] .controls{position:static;padding:8px 12px;border:1px solid 
   body[data-view=map] .console-view{min-height:0}
   body[data-view=map] .console-slot{min-height:0}
 }
+body[data-view=map].console-landing{height:100dvh;overflow:hidden;display:flex;flex-direction:column;background:#080808}
+body[data-view=map].console-landing main{flex:1;min-height:0;max-width:none;width:100%;padding:0;gap:0;grid-template-rows:minmax(0,1fr)}
+.console-landing .console-view,.console-landing .console-slot,.console-landing .console-frame{border:0;border-radius:0;background:#080808;min-height:0}
+.console-landing .console-view{padding:0}
+.console-landing main>.strip,.console-landing main>.alert-slot,.console-landing main>.controls,
+.console-landing .console-view>header,.console-landing .console-view>[data-part=console-info]{display:none}
 /* 자율 지도(2D): 1 m 눈금·찾은 사람(확정/다시 봤는데 없음/미확정)·오래된 위치 */
 .map .grid line{stroke:var(--line);stroke-width:1}
 .mark.gone circle{fill:none;stroke:#e24b4a;stroke-width:2.5;stroke-dasharray:4 3}.mark.gone text{fill:#e24b4a}
