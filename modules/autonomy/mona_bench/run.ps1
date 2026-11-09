@@ -8,6 +8,7 @@ param([ValidateSet('Build','Check','Graph','Smoke','Capture','Infer','Inspect','
       [ValidateRange(0,600)][int]$GatewayWaitS=60,
       [ValidateRange(0.5,10)][double]$MaxSideM=3,
       [ValidateRange(0,90)][int]$ScanDeg=90,
+      [ValidateRange(0,1.4)][double]$SlamStartHeightM=1.0,
       [switch]$RecordDepth,
       [switch]$AutoStart,
       [switch]$NoLandOnFinish)
@@ -45,6 +46,7 @@ elseif ($Action -eq 'Live') {
                    '-e',"MONA_RECORD=$(if ($RecordDepth) { 'full' } else { 'light' })",
                    '-e',"MONA_MAX_SIDE_M=$([string]::Format([cultureinfo]::InvariantCulture,'{0}',$MaxSideM))",
                    '-e',"MONA_SCAN_DEG=$ScanDeg",
+                   '-e',"MONA_SLAM_START_HEIGHT_M=$([string]::Format([cultureinfo]::InvariantCulture,'{0}',$SlamStartHeightM))",
                    '-e',"MONA_LAND_ON_FINISH=$(if ($NoLandOnFinish) { 'false' } else { 'true' })",
                    'ssafy/mona-bench:noetic','/opt/mona_runtime/live.sh')
 }

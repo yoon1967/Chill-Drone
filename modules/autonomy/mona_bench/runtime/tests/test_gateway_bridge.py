@@ -4,7 +4,8 @@ import sys
 import unittest
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
-from gateway_bridge import (DriftMonitor, Mission, RcCompensation, Scan, route_forward_m, scan_yaw,
+from gateway_bridge import (DriftMonitor, Mission, RcCompensation, Scan, SlamHold, SlamStartGate, route_forward_m,
+                            scan_yaw,
                             tello_yaw_ccw, body_command, bottom_tof_m, clamp_xy, classify_gateway, map_to_body,
                             parse_tello_raw, screen_url, status_line, video_action, yaw_of)
 
@@ -192,6 +193,97 @@ class RouteForwardTests(unittest.TestCase):
         for goal in (None, {}, {"forward_m": 0.2}, {"forward_m": 9}, {"forward_m": "4"}, {"forward_m": True},
                      {"x_m": 1.0}, [4]):
             self.assertEqual(route_forward_m(goal, 5.0), 5.0, goal)
+
+
+class SlamStartGateTests(unittest.TestCase):
+    @staticmethod
+    def feed(gate, heights, t0=0.0, dt=0.1):
+        opened_at = None
+        for i, h in enumerate(heights):
+            if gate.add_height(t0 + i * dt, h) and opened_at is None:
+                opened_at = t0 + i * dt
+        return opened_at
+
+    def test_take_off_height_does_not_start_slam(self):
+        gate = SlamStartGate(1.0)
+        self.assertIsNone(self.feed(gate, [None] * 5 + [0.8] * 30))   # Tello take-off hover about 0.8 m
+        self.assertFalse(gate.open)
+
+    def test_opens_after_a_steady_second_at_flight_height(self):
+        gate = SlamStartGate(1.0)
+        climb = [0.8, 0.85, 0.9, 0.95, 0.98]
+        hover = [0.99, 1.0, 0.98, 1.01, 0.99, 1.0, 0.99, 0.98, 1.0, 1.01, 0.99, 1.0]
+        opened = self.feed(gate, climb + hover)
+        self.assertTrue(gate.open)
+        self.assertGreaterEqual(opened, 1.2 - 1e-9)   # about a second (10 samples) after reaching >= 0.93 m at t 0.3
+
+    def test_still_climbing_is_not_steady(self):
+        gate = SlamStartGate(1.0)
+        self.assertIsNone(self.feed(gate, [0.95 + 0.01 * i for i in range(20)]))
+
+    def test_invalid_tof_restarts_the_wait_and_open_stays_open(self):
+        gate = SlamStartGate(1.0)
+        self.feed(gate, [1.0] * 8 + [None] + [1.0] * 8)
+        self.assertFalse(gate.open)
+        self.feed(gate, [1.0] * 12, t0=5.0)
+        self.assertTrue(gate.open)
+        self.feed(gate, [None, 0.5, 0.3], t0=10.0)
+        self.assertTrue(gate.open)
+
+    def test_zero_height_is_off(self):
+        self.assertTrue(SlamStartGate(0.0).open)
+
+
+class SlamHoldTests(unittest.TestCase):
+    def test_flight_jump_holds_then_resumes_when_back(self):
+        """11/09 flight 2: 0.55 m jump for 1.1 s, back to +0.05 m."""
+        hold = SlamHold()
+        t, started = 0.0, []
+        for i in range(30):                      # steady
+            started.append(hold.add_pose(t, 0.0, 0.0))
+            t += 0.1
+        self.assertFalse(any(started))
+        self.assertTrue(hold.add_pose(t, -0.55, -0.1))
+        self.assertEqual((hold.reason, hold.anchor), ("slam_jump", (0.0, 0.0)))
+        self.assertEqual(hold.update(t, (-0.55, -0.1), True), "hold")   # away from the anchor
+        t += 1.1
+        hold.add_pose(t, 0.05, 0.0)
+        self.assertEqual(hold.update(t, (0.05, 0.0), False), "hold")    # back, but the drift window still disagrees
+        t += 3.0
+        self.assertEqual(hold.update(t, (0.05, 0.0), True), "hold")     # agrees: CLEAR_S starts
+        self.assertEqual(hold.update(t + 0.6, (0.05, 0.0), True), "resume")
+        self.assertFalse(hold.active)
+
+    def test_no_return_fails_after_wait(self):
+        hold = SlamHold()
+        hold.start(0.0, (0.0, 0.0), "slam_drift")
+        self.assertEqual(hold.update(5.0, (0.6, 0.0), True), "hold")
+        self.assertEqual(hold.update(SlamHold.WAIT_S + 0.1, (0.6, 0.0), True), "fail")
+
+    def test_normal_flight_speed_is_not_a_jump(self):
+        hold = SlamHold()
+        for i in range(100):                     # 0.25 m/s at 10 Hz
+            self.assertFalse(hold.add_pose(0.1 * i, 0.025 * i, 0.0))
+
+    def test_not_armed_or_after_a_gap_is_not_a_jump(self):
+        hold = SlamHold()
+        hold.add_pose(0.0, 0.0, 0.0)
+        self.assertFalse(hold.add_pose(0.1, 0.5, 0.0, armed=False))     # route not running
+        self.assertFalse(hold.add_pose(1.5, 1.0, 0.0))                  # 1.4 s gap (tracking lost): drift guard's job
+        self.assertEqual(hold.update(2.0, (1.0, 0.0), True), "ok")
+
+    def test_drift_monitor_anchor_and_agreement(self):
+        still, moving = DriftMonitor(), DriftMonitor()
+        self.assertIsNone(still.pose_before(1.0))
+        self.assertFalse(still.agrees())                                 # not enough data yet
+        for i in range(30):
+            still.add_pose(0.1 * i, 0.0, 0.0, 0.0)
+            moving.add_pose(0.1 * i, 0.01 * i, 0.0, 0.0)                 # SLAM 0.1 m/s while the Tello says 0
+            for mon in (still, moving):
+                mon.add_vps(0.1 * i, 0, 0, 0.0)
+        self.assertTrue(still.agrees())
+        self.assertFalse(moving.agrees())
+        self.assertEqual(moving.pose_before(1.05), (0.01 * 10, 0.0))
 
 
 class ScanYawTests(unittest.TestCase):

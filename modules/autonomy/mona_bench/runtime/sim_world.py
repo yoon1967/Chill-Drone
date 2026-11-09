@@ -122,8 +122,9 @@ def ros_main():
     from geometry_msgs.msg import PoseStamped, Twist
     from nav_msgs.msg import Odometry, Path as PathMsg
     from sensor_msgs.msg import Image
+    from std_msgs.msg import Float64
 
-    from gateway_bridge import DriftMonitor, Mission, PATH_BAD_LIMIT_S, Scan
+    from gateway_bridge import DriftMonitor, Mission, PATH_BAD_LIMIT_S, Scan, SlamHold
 
     rospy.init_node("sim_world")
     scenario = json.loads(Path(rospy.get_param("~scenario_file")).read_text())
@@ -147,6 +148,11 @@ def ros_main():
     rng = np.random.default_rng(int(scenario.get("seed", 7)))
     est_offset = np.zeros(3)
     drift_mon = DriftMonitor() if scenario.get("drift_guard", True) else None
+    slam_hold = SlamHold()
+    # SLAM jump (flight 11/09: 0.55 m between two frames, back by itself 1.1 s later): [start s after the route start,
+    # length s, dx, dy] added to the estimate only
+    jump = scenario.get("pose_jump")
+    holds, hold_s, last_est = 0, 0.0, None
     out_path = rospy.get_param("~result")
     floor_z = -height
 
@@ -155,6 +161,7 @@ def ros_main():
     cam_pub = rospy.Publisher("/sync/camera_pose", PoseStamped, queue_size=5)
     odom_pub = rospy.Publisher("/sync/tf_odom", Odometry, queue_size=5)
     goal_pub = rospy.Publisher("/waypoint_generator/waypoints", PathMsg, queue_size=1, latch=True)
+    hold_pub = rospy.Publisher("/mona/slam_hold", Float64, queue_size=1, latch=True)   # like the bridge
     state = dict(cmd=(0.0, 0.0), cmd_t=-1e9, plans=0, plans_bad=0, path=None, bad_since=None, bad_plans=[],
                  plan_shapes=[], t0=time.monotonic(), plan_min_clear=math.inf, xtrack=[])
     mission = Mission(side_limit=side)
@@ -232,13 +239,19 @@ def ros_main():
             img.header.stamp, img.header.frame_id = stamp, "camera_link"
             est = drone.p + est_offset + (pose_noise * rng.standard_normal(3) * np.array([1, 1, 0])
                                           if pose_noise > 0 else 0.0)
+            if jump and jump[0] <= elapsed - 2.0 < jump[0] + jump[1]:
+                est = est + np.array([jump[2], jump[3], 0.0])
             pending.append((now + delay, stamp, tuple(est), drone.yaw, img))
         while pending and pending[0][0] <= now:
             _, s, pos, yaw_seen, img = pending.popleft()
             depth_pub.publish(img)
             publish_pose(s, pos, yaw_seen)
+            last_est = pos
             if drift_mon is not None:
                 drift_mon.add_pose(now, pos[0], pos[1], yaw_seen)
+                if slam_hold.add_pose(now, pos[0], pos[1], armed=mission.phase == "running"):
+                    holds += 1
+                    hold_pub.publish(Float64(s.to_sec()))
         if drift_mon is not None and tick % depth_every == 0:   # Tello VPS: true velocity in 0.1 m/s steps
             # Tello convention: velocity angle of flying forward = yaw + 180 deg (yaw given so that it holds)
             drift_mon.add_vps(now, round(drone.v[0] * 10), round(drone.v[1] * 10),
@@ -246,9 +259,29 @@ def ros_main():
         if scan is None and elapsed > 2.0:   # route start: look around first (same Scan as the bridge)
             mission.control("start", True, 0.0)
             scan = Scan(0.0, scan_deg, rate=0.29)   # develop gateway rc limit 30: about 0.29 rad/s (bridge rc compensation)
+        # SLAM jump / drift: hover and wait (same SlamHold as the bridge; also while looking around)
+        if drift_mon is not None and mission.phase == "running" and not slam_hold.active and drift_mon.drifting(now):
+            slam_hold.start(now, drift_mon.pose_before(now - DriftMonitor.HOLD_S - DriftMonitor.CHORD_S), "slam_drift")
+            holds += 1
+            hold_pub.publish(Float64(stamp.to_sec() - DriftMonitor.HOLD_S - DriftMonitor.CHORD_S))
+        was_holding = slam_hold.active
+        if mission.phase != "running":
+            slam_hold.clear()
+        verdict = (slam_hold.update(now, last_est, drift_mon.agrees())
+                   if slam_hold.active and drift_mon is not None else "ok")
+        holding = verdict == "hold"
+        if was_holding and not slam_hold.active and verdict != "hold":
+            hold_pub.publish(Float64(0.0))
+        if holding:
+            hold_s += 1.0 / rate_hz
+        if verdict == "fail":
+            mission.fail(slam_hold.reason)
+            slam_hold.clear()
+        elif verdict == "resume" and state["bad_since"] is not None:
+            state["bad_since"] = now
         scanning = scan is not None and not scan.done and mission.phase == "running"
-        yaw_cmd = scan.yaw_rate(drone.yaw) if scanning else 0.0
-        if scan is not None and scan.done and not goal_sent:
+        yaw_cmd = scan.yaw_rate(drone.yaw) if scanning and not holding else 0.0
+        if scan is not None and scan.done and not goal_sent and not holding:
             goal = PathMsg()
             goal.header.stamp, goal.header.frame_id = stamp, "map"
             g = PoseStamped()
@@ -260,18 +293,16 @@ def ros_main():
             mission.goal, mission.start = [goal_forward, 0.0, 0.0], [0.0, 0.0, 0.0]
             goal_sent = True
             scan_s = round(elapsed - 2.0, 1)
-        if goal_sent:
-            est_now = tuple(drone.p + est_offset)   # the bridge only knows the SLAM estimate
+        if goal_sent and not holding:
+            est_now = tuple(last_est) if last_est is not None else tuple(drone.p + est_offset)   # bridge: SLAM only
             mission.update(est_now, state["path"][-1] if state["path"] else None)
             mission.check_progress(est_now, now)
-        if drift_mon is not None and mission.phase == "running" and drift_mon.drifting(now):
-            mission.fail("slam_drift")   # also while looking around, like the bridge
-        if (mission.phase == "running" and state["bad_since"] is not None
+        if (mission.phase == "running" and not holding and state["bad_since"] is not None
                 and now - state["bad_since"] > PATH_BAD_LIMIT_S):
             mission.fail("no_flyable_plan")
         cmd = (0.0, 0.0)
-        if scanning:
-            pass                                 # hovering while looking around, like the bridge
+        if scanning or holding:
+            pass                                 # hovering while looking around or holding, like the bridge
         elif mission.phase == "running" and now - state["cmd_t"] < 0.3 and state["bad_since"] is None:
             cmd = state["cmd"]
             moving_ticks += 1
@@ -299,7 +330,7 @@ def ros_main():
                 min_clearance_m=None if math.isinf(min_clear) else round(min_clear, 3), closest_at=closest,
                 collision=bool(min_clear < radius), max_side_m=round(max(abs(p[2]) for p in track), 3) if track else 0,
                 plans=state["plans"], plans_not_flown=state["plans_bad"], not_flown=state["bad_plans"][:20],
-                plan_shapes=state["plan_shapes"], scan_s=scan_s,
+                plan_shapes=state["plan_shapes"], scan_s=scan_s, slam_holds=holds, slam_hold_s=round(hold_s, 1),
                 slam_offset_end_m=[round(v, 3) for v in est_offset[:2]],
                 plan_min_clearance_m=None if math.isinf(state["plan_min_clear"]) else round(state["plan_min_clear"], 3),
                 cross_track_max_m=round(max(state["xtrack"]), 3) if state["xtrack"] else None,

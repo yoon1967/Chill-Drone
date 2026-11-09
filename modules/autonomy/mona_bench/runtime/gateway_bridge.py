@@ -69,6 +69,41 @@ def bottom_tof_m(fields):
     return tof / 100.0
 
 
+class SlamStartGate:
+    """Holds frames back from SLAM until the bottom ToF shows the drone steady at the flight height.
+
+    SLAM's first frame is the map origin, and the planner ceiling/floor (+-0.5 m), the floor filter and the start check
+    (ORIGIN_HEIGHT_TOL_M) all take that origin as the flight height. The develop gateway turns video on right after
+    take-off (about 0.8 m); a route at 1 m then started 0.2 m above the origin, and with video already on the ground
+    (11/09) 0.94 m above it, so the route was refused. With this gate the operator climbs to the flight height first and
+    SLAM starts there. Once open it stays open. height_m <= 0 turns it off (frames go to SLAM at once)."""
+
+    HOLD_S = 1.0       # ToF steady this long
+    STEADY_M = 0.08    # max - min ToF over HOLD_S (hover wobble and cm rounding stay inside)
+    BELOW_M = 0.07     # lowest ToF over HOLD_S may be this much under height_m
+
+    def __init__(self, height_m):
+        self.height_m = float(height_m)
+        self.open = self.height_m <= 0
+        self._h = []
+
+    def add_height(self, t, height):
+        """One bottom ToF sample (m), or None when invalid (on the ground). Returns True when this sample opened it."""
+        if self.open:
+            return False
+        if height is None:
+            self._h = []
+            return False
+        self._h = [s for s in self._h if t - s[0] <= self.HOLD_S + 0.5] + [(t, height)]
+        if self._h[0][0] > t - self.HOLD_S + 0.05:
+            return False
+        recent = [h for ts, h in self._h if t - ts <= self.HOLD_S]
+        if min(recent) >= self.height_m - self.BELOW_M and max(recent) - min(recent) <= self.STEADY_M:
+            self.open = True
+            return True
+        return False
+
+
 def yaw_of(qx, qy, qz, qw):
     return math.atan2(2 * (qw * qz + qx * qy), 1 - 2 * (qy * qy + qz * qz))
 
@@ -293,8 +328,80 @@ class DriftMonitor:
             self._over_since = now
         return now - self._over_since >= self.HOLD_S
 
+    def agrees(self):
+        """True when there is enough data and the mismatch is within LIMIT_MPS (None counts as not yet)."""
+        m = self.mismatch()
+        return m is not None and m <= self.LIMIT_MPS
+
+    def pose_before(self, t):
+        """(x, y) of the last pose at or before t (the oldest kept pose if none), or None."""
+        older = [p for p in self.poses if p[0] <= t]
+        p = older[-1] if older else (self.poses[0] if self.poses else None)
+        return None if p is None else (p[1], p[2])
+
     def reset(self):
         self.poses, self.vps, self._over_since = [], [], None
+
+
+class SlamHold:
+    """SLAM jumps or disagrees with the Tello -> hover in place and wait, instead of failing the route at once.
+
+    11/09 flight 2: during the look-around the SLAM position jumped 0.55 m between two frames and came back by itself
+    1.1 s later (Tello speed 0, ToF steady); the drift guard failed the route and the drone landed. Now:
+    - a pose step over JUMP_M within JUMP_DT_S (faster than the Tello flies, 0.25 m/s) or the drift guard
+      (DriftMonitor.drifting) starts a hold at the last pose before it (anchor);
+    - while holding the drone hovers (no horizontal speed, the look-around pauses) and nothing is judged from the pose
+      (no arrival, progress or plan checks);
+    - the hold ends when the pose is back within BACK_M of the anchor and SLAM agrees with the Tello for CLEAR_S;
+    - after WAIT_S it fails with its reason (slam_jump or slam_drift) and the gateway lands, as before.
+    The drift window (2.5 s) still holds the jump for a while, so a 1 s jump ends in about 4-5 s."""
+
+    JUMP_M, JUMP_DT_S = 0.2, 0.5
+    BACK_M = 0.2
+    CLEAR_S = 0.5
+    WAIT_S = 10.0
+
+    def __init__(self):
+        self.since = self.anchor = self.reason = None
+        self._last = None
+        self._clear_since = None
+
+    @property
+    def active(self):
+        return self.since is not None
+
+    def add_pose(self, t, x, y, armed=True):
+        """Every SLAM pose. Starts a hold on a jump when armed (route running). Returns True if it started one."""
+        last, self._last = self._last, (t, x, y)
+        if (armed and self.since is None and last is not None and 0 < t - last[0] <= self.JUMP_DT_S
+                and math.hypot(x - last[1], y - last[2]) > self.JUMP_M):
+            self.start(t, (last[1], last[2]), "slam_jump")
+            return True
+        return False
+
+    def start(self, t, anchor, reason):
+        self.since, self.anchor, self.reason, self._clear_since = t, anchor, reason, None
+
+    def update(self, now, position, agrees):
+        """'ok' (no hold), 'hold', 'resume' (hold just ended) or 'fail' (WAIT_S passed)."""
+        if self.since is None:
+            return "ok"
+        if now - self.since > self.WAIT_S:
+            return "fail"
+        back = (position is not None and self.anchor is not None
+                and math.hypot(position[0] - self.anchor[0], position[1] - self.anchor[1]) <= self.BACK_M)
+        if back and agrees:
+            self._clear_since = self._clear_since or now
+            if now - self._clear_since >= self.CLEAR_S:
+                self.clear()
+                return "resume"
+        else:
+            self._clear_since = None
+        return "hold"
+
+    def clear(self):
+        self.since = self.anchor = self.reason = None
+        self._clear_since = None
 
 
 def wrap_angle(a):
@@ -557,6 +664,7 @@ def ros_main():
     from geometry_msgs.msg import PoseStamped, Twist
     from nav_msgs.msg import Odometry, Path as PathMsg
     from sensor_msgs.msg import Image, Range
+    from std_msgs.msg import Float64
 
     from send_goal import forward_goal
 
@@ -584,6 +692,8 @@ def ros_main():
     stats = Stats()
     mission = Mission(side_limit=float(rospy.get_param("~max_side_m", PATH_SIDE_LIMIT_M)))
     drift = DriftMonitor()
+    slam_hold = SlamHold()
+    slam_gate = SlamStartGate(float(rospy.get_param("~slam_start_height_m", 0.0)))
     drift_guard = bool(rospy.get_param("~drift_guard", True))
     rc_comp_on = bool(rospy.get_param("~rc_compensation", True))   # see TELLO_RC_MIN_LIN
     # develop gateway: an arrived/failed route leaves the drone hovering (paused); ask it to land (autonomy request)
@@ -595,6 +705,8 @@ def ros_main():
                   route_start=None, scan_t=0.0, rc=RcCompensation(), scan_rate=0.35, land_sent=False,
                   tello_yaw=None, tello_yaw_t=None, scan_source=None, route_forward_m=forward_m)
     image_pub = rospy.Publisher("/tello/image_raw", Image, queue_size=1)
+    # SlamHold for floor_filter: ROS stamp from which SLAM is not trusted (0 = none); it keeps that depth off the map
+    hold_pub = rospy.Publisher("/mona/slam_hold", Float64, queue_size=1, latch=True)
     tof_pub = rospy.Publisher("/tello/tof_btm", Range, queue_size=5)
     goal_pub = rospy.Publisher("/waypoint_generator/waypoints", PathMsg, queue_size=1, latch=True)
 
@@ -671,6 +783,9 @@ def ros_main():
             if isinstance(fields.get("yaw"), float):
                 shared["tello_yaw"], shared["tello_yaw_t"] = tello_yaw_ccw(fields["yaw"]), time.monotonic()
             height = bottom_tof_m(fields)
+            if slam_gate.add_height(time.monotonic(), height):
+                rospy.loginfo("bottom ToF steady at %.2f m (>= %.2f m): frames now go to SLAM (map origin here)",
+                              height, slam_gate.height_m)
             if height is None:
                 stats.count("tof_invalid")
                 return
@@ -738,6 +853,9 @@ def ros_main():
                     payload = response.read()
                 if frame_id is not None and frame_id == last_id:
                     stats.count("video_duplicate")
+                elif not slam_gate.open:
+                    stats.count("video_held_for_height")   # SLAM would start below the flight height
+                    last_id = frame_id
                 else:
                     image = cv2.imdecode(np.frombuffer(payload, dtype=np.uint8), cv2.IMREAD_COLOR)
                     if image is None:
@@ -770,6 +888,13 @@ def ros_main():
         shared["odom"], shared["odom_t"] = msg, time.monotonic()
         q = msg.pose.pose.orientation
         drift.add_pose(shared["odom_t"], msg.pose.pose.position.x, msg.pose.pose.position.y, yaw_of(q.x, q.y, q.z, q.w))
+        if slam_hold.add_pose(shared["odom_t"], msg.pose.pose.position.x, msg.pose.pose.position.y,
+                              armed=drift_guard and mission.phase == "running"):
+            shared["hold_stamp"] = msg.header.stamp.to_sec()
+            hold_pub.publish(Float64(shared["hold_stamp"]))
+            rospy.logwarn("SLAM position jumped over %.1f m between frames; hovering until it comes back",
+                          SlamHold.JUMP_M)
+            stats.count("slam_jump")
         stats.lag("image_to_odom_s", stamp_lag(msg.header.stamp.to_sec(), rospy.Time.now().to_sec()))
 
     def on_candidate(msg):
@@ -807,6 +932,9 @@ def ros_main():
         frame_t = shared["frame_t"]
         line = status_line(time.monotonic() - started, shared["gateway_state"], stats.summary()["counts"],
                            None if frame_t is None else time.monotonic() - frame_t, pose_ready(), mission.phase, screen)
+        if not slam_gate.open:
+            line += ("\n        -> SLAM starts when the bottom ToF is steady at >= %.2f m for %.0f s (climb there first)"
+                     % (slam_gate.height_m - slam_gate.BELOW_M, slam_gate.HOLD_S))
         try:
             Path(status_path + ".tmp").write_text(line + "\n")
             Path(status_path + ".tmp").replace(status_path)
@@ -831,44 +959,81 @@ def ros_main():
             rospy.loginfo("autostart: route started without a gateway start (bench mode)")
         scan = shared["scan"]
         scanning = mission.phase == "running" and scan is not None and not scan.done
-        if not scanning:
+        # SLAM jump or drift: hover and wait for it to come back (SlamHold); also while looking around, where the
+        # drone hovers and the guard sees drift best
+        if mission.phase == "running" and drift_guard and not slam_hold.active and drift.drifting(now):
+            slam_hold.start(now, drift.pose_before(now - DriftMonitor.HOLD_S - DriftMonitor.CHORD_S), "slam_drift")
+            shared["hold_stamp"] = rospy.Time.now().to_sec() - DriftMonitor.HOLD_S - DriftMonitor.CHORD_S
+            hold_pub.publish(Float64(shared["hold_stamp"]))
+            rospy.logwarn("SLAM speed and the Tello's own speed disagree by %.2f m/s; hovering until they agree",
+                          drift.mismatch() or 0.0)
+            stats.count("slam_drift_hold")
+        if mission.phase != "running":
+            slam_hold.clear()
+        if slam_hold.active and mission.state != "HOLD_SLAM":
+            shared["state_before_hold"], mission.state = mission.state, "HOLD_SLAM"
+        verdict = slam_hold.update(now, position, drift.agrees()) if slam_hold.active else "ok"
+        holding = verdict == "hold"
+        if verdict == "fail":
+            reason = slam_hold.reason
+            mission.state = shared.get("state_before_hold") or mission.state
+            mission.fail(reason)
+            slam_hold.clear()
+            rospy.logwarn("SLAM did not come back in %.0f s (%s); route failed", SlamHold.WAIT_S, reason)
+            stats.count(reason + "_stop")
+            scanning = False
+        elif verdict == "resume":
+            held = now - shared.get("hold_t", now)
+            mission.state = shared.get("state_before_hold") or mission.state
+            shared["scan_t"] += held                     # the look-around limit does not count the hold
+            if shared["path_bad_since"] is not None:
+                shared["path_bad_since"] = now
+            mission._progress = None
+            rospy.loginfo("SLAM back near where it was and agrees with the Tello; continuing")
+            stats.count("slam_hold_resumed")
+        if holding and "hold_t" not in shared:
+            shared["hold_t"] = now
+        if not holding:
+            shared.pop("hold_t", None)
+        if not slam_hold.active and shared.get("hold_stamp"):
+            shared["hold_stamp"] = 0.0
+            hold_pub.publish(Float64(0.0))
+        if not scanning and not holding:
             mission.update(position, shared["path"][-1] if shared["path"] else None)
             mission.check_progress(position, now)
         bad_since = shared["path_bad_since"]
-        if mission.phase == "running" and bad_since is not None and now - bad_since > PATH_BAD_LIMIT_S:
+        if (mission.phase == "running" and not holding and bad_since is not None
+                and now - bad_since > PATH_BAD_LIMIT_S):
             mission.fail("no_flyable_plan")
             rospy.logwarn("only off-height or off-route plans for %.0f s; route failed", PATH_BAD_LIMIT_S)
-        # also while looking around: the drone hovers there, which is where the guard sees drift best
-        if mission.phase == "running" and drift_guard and drift.drifting(now):
-            mission.fail("slam_drift")
-            rospy.logwarn("SLAM speed and the Tello's own speed disagree by %.2f m/s; route failed", drift.mismatch())
-            stats.count("slam_drift_stop")
-        if scanning and now - shared["scan_t"] > SCAN_LIMIT_S:   # e.g. pose lost while turning
+        if scanning and not holding and now - shared["scan_t"] > SCAN_LIMIT_S:   # e.g. pose lost while turning
             mission.fail("scan_timeout")
             rospy.logwarn("look-around did not finish in %.0f s; route failed", SCAN_LIMIT_S)
             scanning = False
         if scanning:
             steer = scan_yaw(shared["scan_source"], shared["tello_yaw"], now - (shared["tello_yaw_t"] or -1e9),
                              yaw, now - (shared["odom_t"] or -1e9))
-            fresh = steer is not None
+            fresh = steer is not None and not holding
             rate_cmd = scan.yaw_rate(steer) if fresh else 0.0
-            if scan.done:   # back facing the start direction: the map has the sides now, plan the route
+            if scan.done and not holding:   # back facing the start direction: the map has the sides now, plan the route
                 mission.state = "FOLLOW"
                 publish_goal(shared["route_start"])
                 rospy.loginfo("look-around done")
             stats.count("scan_ticks")
         if mission.phase == "running" and scanning:
             cmd = {"vx_mps": 0.0, "vy_mps": 0.0, "vz_mps": 0.0, "yaw_rate_rps": round(rate_cmd, 3)}
-            hold = None if fresh else "pose_stale"
+            hold = None if fresh else ("slam_hold" if holding else "pose_stale")
             seq += 1
             if send({"type": "cmd_vel", **shared["rc"].apply(cmd), "frame": "body", "seq": seq}):
                 stats.count("cmd_sent")
-                stats.count("cmd_scan" if fresh else "cmd_hold_pose_stale")
+                stats.count("cmd_scan" if fresh else "cmd_hold_" + hold)
         elif mission.phase == "running":
             cmd, hold = body_command(shared["cmd"], now - (shared["cmd_t"] or -1e9),
                                      now - (shared["odom_t"] or -1e9), yaw, shared["limit"])
             if bad_since is not None:   # current plan goes over/under something: hover until a level replan
                 cmd, hold = {"vx_mps": 0.0, "vy_mps": 0.0, "vz_mps": 0.0, "yaw_rate_rps": 0.0}, "path_off_height"
+            if holding:                 # SLAM jumped or drifts: the pose (and the PID output) cannot be trusted
+                cmd, hold = {"vx_mps": 0.0, "vy_mps": 0.0, "vz_mps": 0.0, "yaw_rate_rps": 0.0}, "slam_hold"
             seq += 1
             if send({"type": "cmd_vel", **shared["rc"].apply(cmd), "frame": "body", "seq": seq}):
                 stats.count("cmd_sent")

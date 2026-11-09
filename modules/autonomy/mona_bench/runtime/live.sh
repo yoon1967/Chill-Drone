@@ -71,7 +71,8 @@ record_pid=$!
 python3 -u /opt/mona_runtime/gateway_bridge.py _gateway:="$gateway" _goal_forward_m:="$forward_m" \
     _autostart:="$autostart" _summary:="$run_dir/bridge-summary.json" _status:="$run_dir/status.txt" \
     _inputs_dir:="$run_dir/inputs" _max_side_m:="${MONA_MAX_SIDE_M:-3.0}" _scan_deg:="${MONA_SCAN_DEG:-90}" \
-    _land_on_finish:="${MONA_LAND_ON_FINISH:-true}" > "$run_dir/bridge.log" 2>&1 &
+    _land_on_finish:="${MONA_LAND_ON_FINISH:-true}" _slam_start_height_m:="${MONA_SLAM_START_HEIGHT_M:-1.0}" \
+    > "$run_dir/bridge.log" 2>&1 &
 bridge_pid=$!
 echo "Running up to ${seconds}s. Gateway: $gateway. Recording: $record_mode. Press Enter to stop. Status every 5 s:"
 stop=0
