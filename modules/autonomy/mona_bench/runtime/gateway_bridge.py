@@ -30,6 +30,7 @@ BACK_LIMIT_M = 0.5                     # plan going farther behind the route sta
                                        # behind (the +-90 deg look-around maps the sides). Sim 11/08, 2.5 m corridor:
                                        # back 0.7-1.2 m round a wall it had not seen -> collision before this rule;
                                        # normal avoidance dips back 0.14-0.44 m.
+BACK_END_M = 0.3                       # a plan ending farther behind the start is not flown either
 MAX_SPEED_MPS = 0.3                    # horizontal cap; the gateway hello lowers it to the real reachable speed
 SCAN_LIMIT_S = 45.0                    # look-around must finish in this time (+-90 deg at 0.24 rad/s takes about 30 s)
 # The develop gateway turns cmd_vel into rc with assumed gains (hello k_lin 100, k_yaw 57, rc_limit 30), but the Tello
@@ -128,6 +129,7 @@ class Mission:
 
     def __init__(self, side_limit=PATH_SIDE_LIMIT_M):
         self.phase, self.state, self.reason, self.goal = "idle", "WAIT_POSE", None, None
+        self.goal_shortened = False   # Unstick moved the goal closer: arrival is reported as shortened_goal_reached
         self.start = None   # route start position (map), for the sideways limit
         self.side_limit = side_limit
         self._progress = None   # ((x, y), time) of the last NO_PROGRESS_M step
@@ -169,10 +171,12 @@ class Mission:
         if self.phase != "running" or self.goal is None or position is None:
             return
         if math.hypot(self.goal[0] - position[0], self.goal[1] - position[1]) < ARRIVE_M:
-            self.phase, self.state, self.reason = "arrived", "ARRIVED", "goal_reached"
+            self.phase, self.state = "arrived", "ARRIVED"
+            self.reason = "shortened_goal_reached" if self.goal_shortened else "goal_reached"
         elif (path_end is not None
               and math.hypot(path_end[0] - self.goal[0], path_end[1] - self.goal[1]) <= GOAL_MOVED_MAX_M
-              and math.hypot(path_end[0] - position[0], path_end[1] - position[1]) < ARRIVE_M):
+              and self.along(path_end) >= 0.5 * self.along(self.goal)   # sim 11/10: a goal moved behind the start
+              and math.hypot(path_end[0] - position[0], path_end[1] - position[1]) < ARRIVE_M):   # counted at -0.25 m
             self.phase, self.state, self.reason = "arrived", "ARRIVED", "moved_goal_reached"
 
     def side_offset(self, point):
@@ -207,6 +211,9 @@ class Mission:
             return False
         if self.start is not None and min(self.along(p) for p in points) < -BACK_LIMIT_M:
             return False   # behind the start: never seen by the forward camera
+        if self.start is not None and self.along(end) < -BACK_END_M:
+            return False   # ends behind the start: the planner moved the goal backwards (sim 11/10, noisy depth: the
+                           # drone flew 0.58 m back); a side step ends level with where it began
         return max(self.side_offset(p) for p in points) <= self.side_limit
 
     def along(self, point):
@@ -263,6 +270,14 @@ class DriftMonitor:
     # Stationary SLAM jitter in replays was about 0.006 m/s.
     WINDOW_S, LIMIT_MPS, HOLD_S, CHORD_S = 2.5, 0.06, 1.0, 1.0
     VEC_BAND_MPS = 0.07          # whole dm/s on both axes: up to 0.05 each, about 0.07 on a rotated component
+    # SLAM distance scale in flight: 11/10 SLAM saw forward distance 24% (2 m route) and about 50% (4 m route, 2-5 s:
+    # SLAM 0.32 m/s, Tello 0.21 m/s) longer than the Tello; at 0.25 m/s that alone tripped the guard (0.07 m/s) and
+    # stopped the route before the object. A moving speed is compared with the band widened by this factor; hovering
+    # (band 0) and the sideways part keep the absolute check, so SLAM moving while the drone stands (11/06) still trips.
+    # Only while the Tello clearly moves (band low end over the window >= MOVING_MPS): slow side drift (0.08 m/s,
+    # under the sideways rounding band) is caught when the drone slows or hovers, and with the tolerance there too the
+    # sim drone drifted into a wall.
+    SCALE_TOL, MOVING_MPS = 0.5, 0.1
     TELLO_HEADING_DEG = 180.0    # Tello: velocity angle (atan2(vgy, vgx)) of flying forward = yaw + about 180
 
     def __init__(self):
@@ -312,7 +327,8 @@ class DriftMonitor:
             return None
         n = len(self.vps)
         lo, hi = sum(v[1] for v in self.vps) / n, sum(v[2] for v in self.vps) / n
-        out = max(0.0, slam - hi, lo - slam)
+        tol = self.SCALE_TOL if lo >= self.MOVING_MPS else 0.0
+        out = max(0.0, slam - hi * (1 + tol), lo * (1 - tol) - slam)
         if slam_side is not None and all(v[3] is not None for v in self.vps):
             side_lo, side_hi = sum(v[3][0] for v in self.vps) / n, sum(v[3][1] for v in self.vps) / n
             out = max(out, slam_side - side_hi, side_lo - slam_side)
@@ -343,6 +359,120 @@ class DriftMonitor:
         self.poses, self.vps, self._over_since = [], [], None
 
 
+class Unstick:
+    """No flyable plan after take-off -> try a side step or a shorter goal instead of hovering into a failure.
+
+    Most real flights that failed took off and never went forward. Sim 11/10 (3 m forward, object 1.5 m ahead, 4 m
+    room) reproduced it: with depth seen nearer (0.7-0.8x, as hand-held 11/09) or noisy, the front wall looked closer,
+    the goal fell inside its margin, the planner moved the goal past the wall and the plan swung 1.3-1.8 m behind the
+    start (behind-start rule) -> hovering -> no_flyable_plan 5 s after the look-around; with an object 0.7-1 m ahead
+    every plan first backed 0.6-0.8 m. Fast-Planner sends no new plan for an unchanged goal, so the drone waited.
+    - stuck: STUCK_S without a flyable plan for the current target (rejected plans or none at all);
+    - first try: a goal shortened by SHORTEN_M (not under MIN_FORWARD_M ahead) when the rejected plan ended away from
+      the route goal (the planner moved it), else a side step SIDE_M left, then right, of the current position
+      (route frame, the look-around mapped the sides); the remaining tries follow;
+    - reaching a side step sends the route goal again (from there the object is no longer straight ahead);
+    - a shortened goal is the route's new goal (the caller marks the arrival as shortened_goal_reached);
+    - no plan at all for NO_PLAN_S since the route goal: the planner cannot start (start inside an obstacle margin,
+      sim 11/10 with the old 0.45 m margin, 0.5 m from a wall: "open set empty" until no_progress) -> 'no_plan', the
+      caller fails at once."""
+
+    STUCK_S = 2.0
+    SIDE_M = 1.0       # 0.8 m from an object 0.7 m ahead (seen 0.8x nearer) stayed inside its margin (sim 11/10)
+    SHORTEN_M = 1.0
+    MIN_FORWARD_M = 1.0
+    TRY_LIMIT_S = 8.0
+    NO_PLAN_S = 6.0
+    MOVED_M = 0.3
+
+    def __init__(self):
+        self.mode = None   # None (no route), route, side_left, side_right, short, exhausted
+        self.start = self.goal = self.target = None
+        self.since = 0.0
+        self.plan_ok = None
+        self.plans = 0
+        self.moved = False
+        self.done = []
+        self.bad_since = None   # first unflyable plan for the current target
+
+    def begin(self, t, start, goal):
+        """Route goal sent (after the look-around)."""
+        self.start, self.goal, self.target = list(start), list(goal), list(goal)
+        self.mode, self.since, self.plan_ok, self.plans, self.moved, self.done = "route", t, None, 0, False, []
+        self.bad_since = None
+
+    def on_plan(self, t, ok, end=None):
+        if self.mode is None:
+            return
+        self.plans += 1
+        self.plan_ok = bool(ok)
+        if ok:
+            self.bad_since = None
+        elif self.bad_since is None:
+            self.bad_since = t
+        if not ok and end is not None and self.target is not None and \
+                math.hypot(end[0] - self.target[0], end[1] - self.target[1]) > self.MOVED_M:
+            self.moved = True
+
+    def can_try(self):
+        return self.mode not in (None, "exhausted")
+
+    def _heading(self):
+        dx, dy = self.goal[0] - self.start[0], self.goal[1] - self.start[1]
+        n = math.hypot(dx, dy) or 1.0
+        return dx / n, dy / n
+
+    def _next(self, position):
+        order = ["short", "side_left", "side_right"] if self.moved else ["side_left", "side_right", "short"]
+        hx, hy = self._heading()
+        for kind in order:
+            if kind in self.done:
+                continue
+            self.done.append(kind)
+            if kind == "short":
+                forward = math.hypot(self.goal[0] - self.start[0], self.goal[1] - self.start[1]) - self.SHORTEN_M
+                if forward < self.MIN_FORWARD_M:
+                    continue
+                return kind, [self.start[0] + hx * forward, self.start[1] + hy * forward, self.goal[2]]
+            if position is None:
+                continue
+            sign = 1.0 if kind == "side_left" else -1.0   # left of the heading (counter-clockwise)
+            return kind, [position[0] - hy * self.SIDE_M * sign, position[1] + hx * self.SIDE_M * sign, self.goal[2]]
+        return None
+
+    def update(self, t, position):
+        """None, ('no_plan', None), or (kind, goal xyz) to send now; kind 'route' = the route goal again."""
+        if self.mode in (None, "exhausted"):
+            return None
+        if self.plans == 0 and self.mode == "route" and not self.done and t - self.since >= self.NO_PLAN_S:
+            self.mode = "exhausted"
+            return "no_plan", None
+        if self.mode in ("side_left", "side_right") and position is not None and \
+                math.hypot(position[0] - self.target[0], position[1] - self.target[1]) < ARRIVE_M:
+            self.mode, self.target, self.since, self.plan_ok, self.moved = "route", list(self.goal), t, None, False
+            self.bad_since = None
+            return "route", list(self.goal)
+        # tries only help when plans come but cannot be flown; none at all is the no_plan case above
+        # counted from the first unflyable plan (flight 11/10: counting from the route start tried a shorter goal
+        # 0.05 s after the first refused plan), or from the new target while its first plan is still awaited
+        if self.plan_ok is False:
+            stuck = t - self.bad_since >= self.STUCK_S
+        else:
+            stuck = self.plans > 0 and self.plan_ok is None and t - self.since >= self.STUCK_S
+        too_long = self.mode in ("side_left", "side_right") and t - self.since > self.TRY_LIMIT_S
+        if not (stuck or too_long):
+            return None
+        nxt = self._next(position)
+        if nxt is None:
+            self.mode = "exhausted"
+            return None
+        kind, goal = nxt
+        self.mode, self.target, self.since, self.plan_ok, self.bad_since = kind, goal, t, None, None
+        if kind == "short":
+            self.goal = list(goal)
+        return kind, goal
+
+
 class SlamHold:
     """SLAM jumps or disagrees with the Tello -> hover in place and wait, instead of failing the route at once.
 
@@ -352,7 +482,9 @@ class SlamHold:
       (DriftMonitor.drifting) starts a hold at the last pose before it (anchor);
     - while holding the drone hovers (no horizontal speed, the look-around pauses) and nothing is judged from the pose
       (no arrival, progress or plan checks);
-    - the hold ends when the pose is back within BACK_M of the anchor and SLAM agrees with the Tello for CLEAR_S;
+    - a jump ends when the pose is back within BACK_M of the anchor and SLAM agrees with the Tello for CLEAR_S;
+      a drift hold ends on agreement alone (flight 11/10: the guard tripped while flying forward, the drone went on
+      for the 2 s the guard needs and never came back to that anchor, so a hovering, agreeing SLAM still failed);
     - after WAIT_S it fails with its reason (slam_jump or slam_drift) and the gateway lands, as before.
     The drift window (2.5 s) still holds the jump for a while, so a 1 s jump ends in about 4-5 s."""
 
@@ -388,8 +520,9 @@ class SlamHold:
             return "ok"
         if now - self.since > self.WAIT_S:
             return "fail"
-        back = (position is not None and self.anchor is not None
-                and math.hypot(position[0] - self.anchor[0], position[1] - self.anchor[1]) <= self.BACK_M)
+        back = self.reason != "slam_jump" or (
+            position is not None and self.anchor is not None
+            and math.hypot(position[0] - self.anchor[0], position[1] - self.anchor[1]) <= self.BACK_M)
         if back and agrees:
             self._clear_since = self._clear_since or now
             if now - self._clear_since >= self.CLEAR_S:
@@ -413,20 +546,31 @@ class Scan:
 
     The camera sees about +-27 deg; the planner treats unseen space as free, so indoors it planned the way round a
     person into a side wall it had never seen (sim 11/08, 3 m corridor: 0.25 m from the wall). Turning +-60 deg first
-    puts walls up to about +-87 deg in the map before the first plan. Yaw is counter-clockwise positive (map frame)."""
+    puts walls up to about +-87 deg in the map before the first plan. Yaw is counter-clockwise positive (map frame).
+
+    Targets are angles turned from the start, unwrapped (+a, -a, 0), compared with the turn so far summed from yaw
+    steps. Flight 11/10: the Tello overshot +90 deg by a few degrees, the wrapped error to -90 deg then passed -180 and
+    flipped to the short way round, so the drone kept turning left to 181 deg, faced the unseen back, SLAM lost
+    tracking and the route failed. The sim stopped just short of +90 deg and never showed it."""
 
     TOL = math.radians(3.0)
 
     def __init__(self, start_yaw, angle_deg=90.0, rate=0.35, gain=1.5):
         a = math.radians(angle_deg)
-        self.targets = [wrap_angle(start_yaw + a), wrap_angle(start_yaw - a), wrap_angle(start_yaw)] if a > 0 else []
+        self.targets = [a, -a, 0.0] if a > 0 else []
+        self.start, self.last, self.turned = start_yaw, None, 0.0
         self.rate, self.gain = rate, gain
         self.done = not self.targets
 
     def yaw_rate(self, yaw):
         """Yaw rate (rad/s) toward the current target; advances through the targets; 0 when done."""
+        if self.last is None:
+            self.turned = wrap_angle(yaw - self.start)
+        else:
+            self.turned += wrap_angle(yaw - self.last)   # one step is far below 180 deg (10 Hz, <= 0.35 rad/s)
+        self.last = yaw
         while self.targets:
-            err = wrap_angle(self.targets[0] - yaw)
+            err = self.targets[0] - self.turned
             if abs(err) > self.TOL:
                 return math.copysign(max(0.1, min(self.rate, self.gain * abs(err))), err)
             self.targets.pop(0)
@@ -442,10 +586,11 @@ class RcCompensation:
         ok = all(isinstance(v, (int, float)) and math.isfinite(v) and v > 0 for v in (k_lin, k_yaw, rc_limit))
         self.active = ok
         self.k_lin, self.k_yaw, self.rc_limit = (float(k_lin), float(k_yaw), float(rc_limit)) if ok else (None, None, None)
+        self.rc_min_lin = TELLO_RC_MIN_LIN   # rc at which the Tello starts to move (StallBoost may raise it)
 
     def max_speed(self):
         """Highest real horizontal speed per axis (m/s) the gateway's rc limit allows, or None."""
-        return (self.rc_limit - TELLO_RC_MIN_LIN) / TELLO_K_LIN if self.active else None
+        return (self.rc_limit - self.rc_min_lin) / TELLO_K_LIN if self.active else None
 
     def max_yaw_rate(self):
         return (self.rc_limit - TELLO_RC_MIN_YAW) / TELLO_K_YAW if self.active else None
@@ -460,8 +605,8 @@ class RcCompensation:
         if not self.active:
             return cmd
         return dict(cmd,
-                    vx_mps=self._axis(cmd["vx_mps"], TELLO_RC_MIN_LIN, TELLO_K_LIN, MIN_CMD_MPS, self.k_lin),
-                    vy_mps=self._axis(cmd["vy_mps"], TELLO_RC_MIN_LIN, TELLO_K_LIN, MIN_CMD_MPS, self.k_lin),
+                    vx_mps=self._axis(cmd["vx_mps"], self.rc_min_lin, TELLO_K_LIN, MIN_CMD_MPS, self.k_lin),
+                    vy_mps=self._axis(cmd["vy_mps"], self.rc_min_lin, TELLO_K_LIN, MIN_CMD_MPS, self.k_lin),
                     yaw_rate_rps=self._axis(cmd["yaw_rate_rps"], TELLO_RC_MIN_YAW, TELLO_K_YAW, MIN_CMD_RPS, self.k_yaw))
 
 
@@ -693,6 +838,7 @@ def ros_main():
     mission = Mission(side_limit=float(rospy.get_param("~max_side_m", PATH_SIDE_LIMIT_M)))
     drift = DriftMonitor()
     slam_hold = SlamHold()
+    unstick = Unstick()
     slam_gate = SlamStartGate(float(rospy.get_param("~slam_start_height_m", 0.0)))
     drift_guard = bool(rospy.get_param("~drift_guard", True))
     rc_comp_on = bool(rospy.get_param("~rc_compensation", True))   # see TELLO_RC_MIN_LIN
@@ -743,9 +889,7 @@ def ros_main():
         else:
             rospy.loginfo("looking around +-%.0f deg before the route (yaw from %s)", scan_deg, shared["scan_source"])
 
-    def publish_goal(odom):
-        p, q = odom.pose.pose.position, odom.pose.pose.orientation
-        goal, _ = forward_goal((p.x, p.y, p.z), (q.x, q.y, q.z, q.w), shared["route_forward_m"])
+    def send_goal(goal):
         message = PathMsg()
         message.header.stamp = rospy.Time.now()
         message.header.frame_id = "map"
@@ -755,8 +899,15 @@ def ros_main():
         pose.pose.orientation.w = 1.0
         message.poses.append(pose)
         goal_pub.publish(message)
+
+    def publish_goal(odom):
+        p, q = odom.pose.pose.position, odom.pose.pose.orientation
+        goal, _ = forward_goal((p.x, p.y, p.z), (q.x, q.y, q.z, q.w), shared["route_forward_m"])
+        send_goal(goal)
         mission.goal = [round(v, 3) for v in goal]
         mission.start = [round(p.x, 3), round(p.y, 3), round(p.z, 3)]
+        mission.goal_shortened = False
+        unstick.begin(time.monotonic(), mission.start, mission.goal)
         rospy.loginfo("route goal %.2f m ahead at %s (map)", shared["route_forward_m"], mission.goal)
 
     def on_gateway(msg):
@@ -905,6 +1056,7 @@ def ros_main():
         shared["path"] = [[round((a[i] + 4 * b[i] + c[i]) / 6, 3) for i in range(3)] for a, b, c in zip(q, q[1:], q[2:])]
         stats.count("plans")
         ok = mission.path_ok(shared["path"])
+        unstick.on_plan(time.monotonic(), ok, shared["path"][-1] if shared["path"] else None)
         if not ok:
             stats.count("plans_off_height")
             rospy.logwarn("plan leaves flight height (> %.2f m) or the route line (> %.1f m sideways); hovering "
@@ -1001,8 +1153,22 @@ def ros_main():
         if not scanning and not holding:
             mission.update(position, shared["path"][-1] if shared["path"] else None)
             mission.check_progress(position, now)
+        if mission.phase == "running" and not holding and not scanning:
+            action = unstick.update(now, position)
+            if action is not None and action[0] == "no_plan":
+                mission.fail("no_plan")
+                rospy.logwarn("no plan at all %.0f s after the route goal: the start is probably inside an obstacle "
+                              "margin (0.35 m); keep the drone 1 m or more from walls and objects", Unstick.NO_PLAN_S)
+            elif action is not None:
+                kind, goal = action
+                send_goal(goal)
+                shared["path_bad_since"] = None
+                if kind == "short":
+                    mission.goal, mission.goal_shortened = [round(v, 3) for v in goal], True
+                rospy.logwarn("no flyable plan: trying %s -> goal %s", kind, [round(v, 2) for v in goal])
+                stats.count("unstick_" + kind)
         bad_since = shared["path_bad_since"]
-        if (mission.phase == "running" and not holding and bad_since is not None
+        if (mission.phase == "running" and not holding and bad_since is not None and not unstick.can_try()
                 and now - bad_since > PATH_BAD_LIMIT_S):
             mission.fail("no_flyable_plan")
             rospy.logwarn("only off-height or off-route plans for %.0f s; route failed", PATH_BAD_LIMIT_S)

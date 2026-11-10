@@ -88,15 +88,22 @@ def cross_track(point_xy, path):
 class Drone:
     """Horizontal first-order velocity response; height and yaw stay (the PID sends neither)."""
 
-    def __init__(self, tau=0.3, limit=0.2, gain=1.0):
+    def __init__(self, tau=0.3, limit=0.2, gain=1.0, axis_map=None, yaw_delay_steps=0):
         self.p = np.zeros(3)
+        # the Tello keeps turning at the old rate for a while (flight 11/10: about 0.5 s, the look-around overshot
+        # +90 deg and a wrapped target flipped its direction); a pure delay on the yaw command
+        self.yaw_queue = [0.0] * yaw_delay_steps
         self.gain = gain   # real speed / commanded (rc calibration error: Tello slower or faster than asked)
+        self.axis_map = axis_map   # commanded axis speed -> real axis speed (rc model), replaces gain when set
         self.v = np.zeros(3)
         self.yaw, self.yaw_rate = 0.0, 0.0
         self.tau, self.limit = tau, limit
 
     def step(self, cmd_xy, dt, yaw_rate_cmd=0.0):
         a = min(1.0, dt / self.tau)
+        if self.yaw_queue:
+            self.yaw_queue.append(yaw_rate_cmd)
+            yaw_rate_cmd = self.yaw_queue.pop(0)
         self.yaw_rate += (yaw_rate_cmd - self.yaw_rate) * a
         self.yaw = math.atan2(math.sin(self.yaw + self.yaw_rate * dt), math.cos(self.yaw + self.yaw_rate * dt))
         self.step_xy(cmd_xy, dt)
@@ -106,7 +113,10 @@ class Drone:
         speed = math.hypot(cx, cy)
         if speed > self.limit:
             cx, cy = cx * self.limit / speed, cy * self.limit / speed
-        cx, cy = cx * self.gain, cy * self.gain
+        if self.axis_map is not None:
+            cx, cy = self.axis_map(cx), self.axis_map(cy)
+        else:
+            cx, cy = cx * self.gain, cy * self.gain
         a = min(1.0, dt / self.tau)
         self.v[0] += (cx - self.v[0]) * a
         self.v[1] += (cy - self.v[1]) * a
@@ -124,7 +134,8 @@ def ros_main():
     from sensor_msgs.msg import Image
     from std_msgs.msg import Float64
 
-    from gateway_bridge import DriftMonitor, Mission, PATH_BAD_LIMIT_S, Scan, SlamHold
+    from gateway_bridge import (DriftMonitor, MIN_CMD_MPS, Mission, PATH_BAD_LIMIT_S, RcCompensation, Scan, SlamHold,
+                                TELLO_K_LIN, Unstick)
 
     rospy.init_node("sim_world")
     scenario = json.loads(Path(rospy.get_param("~scenario_file")).read_text())
@@ -178,7 +189,10 @@ def ros_main():
         if len(state["plan_shapes"]) < 12:
             state["plan_shapes"].append(dict(t=round(time.monotonic() - state["t0"], 1), ctrl=len(q),
                                              pts=[[round(p[0], 2), round(p[1], 2)] for p in pts[::2]]))
-        if mission.path_ok(pts):
+        ok = mission.path_ok(pts)
+        if scenario.get("unstick", True):
+            unstick.on_plan(time.monotonic(), ok, pts[-1] if pts else None)
+        if ok:
             state["bad_since"] = None
         else:
             state["plans_bad"] += 1
@@ -196,7 +210,20 @@ def ros_main():
     except ImportError:
         rospy.logwarn("no Bspline message; plan guards not applied")
 
-    drone = Drone(limit=float(rospy.get_param("~max_speed", 0.2)), gain=float(scenario.get("speed_gain", 1.0)))
+    # rc model (scenario rc_true_min): the bridge's rc compensation (develop gateway hello 100/57/30) picks the rc,
+    # the simulated Tello starts moving only above rc_true_min (11 = as calibrated 11/09; heavier drone or weak battery
+    # needs more) with the calibrated slope
+    rc_true_min = scenario.get("rc_true_min")
+    rc_comp = RcCompensation(100.0, 57.0, 30.0)
+
+    def rc_axis(v):
+        gateway_v = rc_comp._axis(v, rc_comp.rc_min_lin, TELLO_K_LIN, MIN_CMD_MPS, rc_comp.k_lin)
+        rc = min(round(abs(gateway_v) * rc_comp.k_lin), rc_comp.rc_limit)
+        return math.copysign(max(0.0, rc - float(rc_true_min)) / TELLO_K_LIN, v)
+
+    drone = Drone(limit=float(rospy.get_param("~max_speed", 0.2)), gain=float(scenario.get("speed_gain", 1.0)),
+                  axis_map=rc_axis if rc_true_min is not None else None,
+                  yaw_delay_steps=round(float(scenario.get("yaw_delay_s", 0.5)) * 20))   # physics runs at 20 Hz
     pending = deque()   # (release time, stamp, position, yaw, depth) to delay pose like SLAM
 
     def publish_pose(stamp, pos, yaw):
@@ -214,6 +241,18 @@ def ros_main():
         odom_pub.publish(odom)
 
     rate_hz, depth_every = 20.0, 2           # physics 20 Hz, depth + pose 10 Hz
+    unstick = Unstick()
+    unstick_tries = []
+
+    def send_goal(xyz):
+        msg = PathMsg()
+        msg.header.stamp, msg.header.frame_id = rospy.Time.now(), "map"
+        g = PoseStamped()
+        g.header = msg.header
+        g.pose.position.x, g.pose.position.y, g.pose.position.z = xyz
+        g.pose.orientation.w = 1.0
+        msg.poses.append(g)
+        goal_pub.publish(msg)
     rate = rospy.Rate(rate_hz)
     rospy.sleep(3.0)                         # let the planner subscribe
     t0 = time.monotonic()
@@ -291,13 +330,25 @@ def ros_main():
             goal.poses.append(g)
             goal_pub.publish(goal)
             mission.goal, mission.start = [goal_forward, 0.0, 0.0], [0.0, 0.0, 0.0]
+            if scenario.get("unstick", True):
+                unstick.begin(now, mission.start, mission.goal)
             goal_sent = True
             scan_s = round(elapsed - 2.0, 1)
         if goal_sent and not holding:
             est_now = tuple(last_est) if last_est is not None else tuple(drone.p + est_offset)   # bridge: SLAM only
             mission.update(est_now, state["path"][-1] if state["path"] else None)
             mission.check_progress(est_now, now)
-        if (mission.phase == "running" and not holding and state["bad_since"] is not None
+        if goal_sent and mission.phase == "running" and not holding and scenario.get("unstick", True):
+            action = unstick.update(now, tuple(last_est) if last_est is not None else None)
+            if action is not None and action[0] == "no_plan":
+                mission.fail("no_plan")
+            elif action is not None:
+                send_goal(action[1])
+                state["bad_since"] = None
+                if action[0] == "short":
+                    mission.goal, mission.goal_shortened = list(action[1]), True
+                unstick_tries.append([round(elapsed - 2.0, 1), action[0], [round(v, 2) for v in action[1]]])
+        if (mission.phase == "running" and not holding and state["bad_since"] is not None and not unstick.can_try()
                 and now - state["bad_since"] > PATH_BAD_LIMIT_S):
             mission.fail("no_flyable_plan")
         cmd = (0.0, 0.0)
@@ -331,6 +382,7 @@ def ros_main():
                 collision=bool(min_clear < radius), max_side_m=round(max(abs(p[2]) for p in track), 3) if track else 0,
                 plans=state["plans"], plans_not_flown=state["plans_bad"], not_flown=state["bad_plans"][:20],
                 plan_shapes=state["plan_shapes"], scan_s=scan_s, slam_holds=holds, slam_hold_s=round(hold_s, 1),
+                unstick=unstick_tries,
                 slam_offset_end_m=[round(v, 3) for v in est_offset[:2]],
                 plan_min_clearance_m=None if math.isinf(state["plan_min_clear"]) else round(state["plan_min_clear"], 3),
                 cross_track_max_m=round(max(state["xtrack"]), 3) if state["xtrack"] else None,
