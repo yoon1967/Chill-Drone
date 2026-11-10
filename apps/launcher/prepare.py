@@ -148,7 +148,7 @@ def ensure_all(*, mona=False):
                 and ensure_gateway_environment(True)
                 and ensure_console_web()
                 and ensure_models()
-                and docker_assets.ensure_image(docker_assets.ORB_IMAGE, ROOT / 'modules/mapping/localization/orbslam3')
+                and docker_assets.ensure_image(docker_assets.ORB_IMAGE, docker_assets.ORB_SOURCE)
                 and (not mona or docker_assets.ensure_mona()))
     except OSError as error:
         print(f'[오류] 프로젝트 준비 중 파일 또는 프로그램에 접근하지 못했습니다. {error}', flush=True)
