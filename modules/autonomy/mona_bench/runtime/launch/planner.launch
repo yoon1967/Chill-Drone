@@ -41,8 +41,11 @@
        0.2 -> one collision (corner cut), 0.1 -> 6/6 arrived, no collision. 0.1 m is a 0.5 s interval. -->
   <arg name="ctrl_pt_dist" default="0.1"/>
   <param name="fast_planner_node/manager/control_points_distance" value="$(arg ctrl_pt_dist)"/>
-  <!-- Keep conservative inflation; the upstream example's 0.009m is not used. -->
-  <param name="fast_planner_node/sdf_map/obstacles_inflation" value="0.45"/>
+  <!-- Obstacle margin (the upstream example's 0.009 m is not used). 0.45 until 11/10: indoors the drone hovered without a
+       flyable plan (start 0.5 m from a wall: no plan at all; 3 m rooms and corridors round an object: no way through;
+       object 0.7-1 m ahead: every plan backed behind the start). 0.35 (Tello with guards about 0.15 m radius) passed
+       those and the 4 m indoor set in sim, closest approach 0.50 m to a person in a 3 m corridor, no collision. -->
+  <param name="fast_planner_node/sdf_map/obstacles_inflation" value="0.35"/>
   <!-- The PID sends no vertical speed, so a path over or under an obstacle would be flown level, into it.
        A ceiling and a floor 0.5 m from the start height (map z 0, where SLAM starts) leave no room around
        anything reaching flight height plus the 0.45 m inflation, so the planner must go around sideways.

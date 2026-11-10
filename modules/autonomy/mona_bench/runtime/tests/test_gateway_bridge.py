@@ -4,8 +4,8 @@ import sys
 import unittest
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
-from gateway_bridge import (DriftMonitor, Mission, RcCompensation, Scan, SlamHold, SlamStartGate, route_forward_m,
-                            scan_yaw,
+from gateway_bridge import (DriftMonitor, Mission, RcCompensation, Scan, SlamHold, SlamStartGate, Unstick,
+                            route_forward_m, scan_yaw,
                             tello_yaw_ccw, body_command, bottom_tof_m, clamp_xy, classify_gateway, map_to_body,
                             parse_tello_raw, screen_url, status_line, video_action, yaw_of)
 
@@ -86,7 +86,18 @@ class DriftMonitorTests(unittest.TestCase):
     def test_drone_moving_while_slam_holds(self):
         m = DriftMonitor()                                   # controller holding a drifting estimate
         self.assertTrue(self.feed(m, 4.0, 0.0, 2))           # vgx 2 = at least 0.15 m/s
-        self.assertAlmostEqual(m.mismatch(), 0.15, places=2)
+        self.assertAlmostEqual(m.mismatch(), 0.15 * (1 - DriftMonitor.SCALE_TOL), places=2)   # still over 0.06
+
+    def test_slam_scale_error_while_flying_passes(self):
+        """Flight 11/10: SLAM 0.32 m/s while the Tello read vgx 2 (0.15-0.25 m/s) tripped the guard."""
+        m = DriftMonitor()
+        for i in range(60):
+            t = i * 0.1
+            m.add_pose(t, 0.32 * t, 0.0)
+            m.add_vps(t, 2, 0)
+            self.assertFalse(m.drifting(t))
+        far = DriftMonitor()                                 # twice as fast as the band: still a drift
+        self.assertTrue(self.feed(far, 4.0, 0.5, 2))
 
     def test_whole_dms_rounding_at_flight_speed_passes(self):
         # 0.3 m/s diagonal: vgx/vgy read (3, 1) while the true speed is 0.287 m/s (sim 11/09 false slam_drift)
@@ -234,6 +245,101 @@ class SlamStartGateTests(unittest.TestCase):
         self.assertTrue(SlamStartGate(0.0).open)
 
 
+class UnstickTests(unittest.TestCase):
+    START, GOAL = [0.0, 0.0, 0.0], [3.0, 0.0, 0.0]
+
+    def started(self):
+        u = Unstick()
+        u.begin(0.0, self.START, self.GOAL)
+        return u
+
+    def test_flyable_plan_needs_nothing(self):
+        u = self.started()
+        u.on_plan(0.5, True, [3.0, 0.0, 0.0])
+        self.assertIsNone(u.update(10.0, (0.0, 0.0, 0.0)))
+
+    def test_backing_plans_try_a_side_step_then_the_route_again(self):
+        """Object close ahead: every plan backs behind the start but ends at the goal."""
+        u = self.started()
+        u.on_plan(0.3, False, [3.0, 0.0, 0.0])
+        self.assertIsNone(u.update(1.0, (0.0, 0.0, 0.0)))
+        self.assertIsNone(u.update(2.1, (0.0, 0.0, 0.0)))               # 1.8 s after the refused plan
+        kind, goal = u.update(2.4, (0.0, 0.0, 0.0))
+        self.assertEqual(kind, "side_left")
+        self.assertAlmostEqual(goal[1], Unstick.SIDE_M)
+        u.on_plan(2.3, True, goal)
+        self.assertIsNone(u.update(4.0, (0.0, 0.4, 0.0)))               # on the way
+        self.assertEqual(u.update(5.0, (0.0, 0.75, 0.0)), ("route", self.GOAL))
+
+    def test_moved_goal_tries_a_shorter_goal_first(self):
+        """Front wall seen nearer: the planner moved the goal past it."""
+        u = self.started()
+        u.on_plan(0.3, False, [3.87, -0.5, 0.0])
+        kind, goal = u.update(2.4, (0.0, 0.0, 0.0))
+        self.assertEqual((kind, goal), ("short", [2.0, 0.0, 0.0]))
+        self.assertTrue(u.can_try())
+
+    def test_side_steps_then_shorter_then_exhausted(self):
+        u = self.started()
+        u.on_plan(0.3, False, [3.0, 0.0, 0.0])
+        kinds, t = [], 2.4
+        while True:
+            action = u.update(t, (0.0, 0.0, 0.0))
+            if action is None:
+                break
+            kinds.append(action[0])
+            u.on_plan(t + 0.1, False, action[1])
+            t += Unstick.STUCK_S + 0.2
+        self.assertEqual(kinds, ["side_left", "side_right", "short"])
+        self.assertFalse(u.can_try())
+
+    def test_no_plan_at_all_is_reported_not_tried(self):
+        """Start inside an obstacle margin (sim 11/10, 0.5 m from a wall): no plan ever comes."""
+        u = self.started()
+        self.assertIsNone(u.update(Unstick.STUCK_S + 1.0, (0.0, 0.0, 0.0)))
+        self.assertEqual(u.update(Unstick.NO_PLAN_S + 0.1, (0.0, 0.0, 0.0)), ("no_plan", None))
+        self.assertFalse(u.can_try())
+
+    def test_short_route_is_not_shortened_below_the_minimum(self):
+        u = Unstick()
+        u.begin(0.0, self.START, [1.5, 0.0, 0.0])
+        u.on_plan(0.3, False, [2.5, 0.0, 0.0])
+        kind, _ = u.update(2.4, (0.0, 0.0, 0.0))
+        self.assertEqual(kind, "side_left")                               # 1.5 - 1.0 < 1.0 m: no shorter goal
+
+    def test_stuck_counts_from_the_refused_plan(self):
+        """Flight 11/10: a plan refused 4 s into the route was answered 0.05 s later with a shorter goal."""
+        u = self.started()
+        u.on_plan(0.5, True, [3.0, 0.0, 0.0])
+        u.on_plan(4.0, False, [5.7, -1.8, 0.0])
+        self.assertIsNone(u.update(4.05, (1.0, 0.0, 0.0)))
+        self.assertIsNone(u.update(5.9, (1.0, 0.0, 0.0)))
+        u.on_plan(5.95, True, [2.6, -0.9, 0.0])                              # a flyable replan clears it
+        self.assertIsNone(u.update(8.5, (1.2, 0.0, 0.0)))
+
+    def test_moved_goal_behind_is_not_an_arrival(self):
+        m = Mission()
+        m.control("start", True, 0.0)
+        m.goal, m.start = [1.0, 0.0, 0.0], [0.0, 0.0, 0.0]
+        m.update((-0.25, 0.0, 0.0), path_end=[-0.25, 0.0, 0.0])        # sim 11/10: counted as arrived before
+        self.assertEqual(m.phase, "running")
+        m.update((0.9, 0.5, 0.0), path_end=[0.9, 0.5, 0.0])
+        self.assertEqual((m.phase, m.reason), ("arrived", "moved_goal_reached"))
+
+    def test_plan_ending_behind_the_start_is_not_flown(self):
+        m = Mission()
+        m.goal, m.start = [2.0, 0.0, 0.0], [0.0, 0.0, 0.0]
+        self.assertFalse(m.path_ok([[0.0, 0.0, 0.0], [-0.2, 0.0, 0.0], [-0.49, 0.01, 0.0]]))
+        self.assertTrue(m.path_ok([[0.0, 0.0, 0.0], [0.0, 0.5, 0.0], [0.0, 1.0, 0.0]]))    # side step
+
+    def test_shortened_arrival_is_reported(self):
+        m = Mission()
+        m.control("start", True, 0.0)
+        m.goal, m.start, m.goal_shortened = [2.0, 0.0, 0.0], [0.0, 0.0, 0.0], True
+        m.update((1.9, 0.0, 0.0))
+        self.assertEqual((m.phase, m.reason), ("arrived", "shortened_goal_reached"))
+
+
 class SlamHoldTests(unittest.TestCase):
     def test_flight_jump_holds_then_resumes_when_back(self):
         """11/09 flight 2: 0.55 m jump for 1.1 s, back to +0.05 m."""
@@ -253,6 +359,18 @@ class SlamHoldTests(unittest.TestCase):
         self.assertEqual(hold.update(t, (0.05, 0.0), True), "hold")     # agrees: CLEAR_S starts
         self.assertEqual(hold.update(t + 0.6, (0.05, 0.0), True), "resume")
         self.assertFalse(hold.active)
+
+    def test_drift_hold_resumes_on_agreement_without_going_back(self):
+        """Flight 11/10: guard tripped while flying forward; hovering 0.4 m past the anchor, SLAM agreed again."""
+        hold = SlamHold()
+        hold.start(0.0, (1.0, 0.0), "slam_drift")
+        self.assertEqual(hold.update(1.0, (1.43, 0.0), False), "hold")
+        self.assertEqual(hold.update(3.0, (1.43, 0.0), True), "hold")
+        self.assertEqual(hold.update(3.6, (1.43, 0.0), True), "resume")
+        jump = SlamHold()
+        jump.start(0.0, (1.0, 0.0), "slam_jump")                             # a jump still has to come back
+        jump.update(3.0, (1.43, 0.0), True)
+        self.assertEqual(jump.update(3.6, (1.43, 0.0), True), "hold")
 
     def test_no_return_fails_after_wait(self):
         hold = SlamHold()
@@ -324,6 +442,26 @@ class ScanTests(unittest.TestCase):
         self.assertTrue(scan.done)
         self.assertLess(abs(math.atan2(math.sin(yaw - math.radians(170)), math.cos(yaw - math.radians(170)))),
                         math.radians(3.5))
+
+    def test_overshoot_turns_back_not_round(self):
+        """Flight 11/10: the Tello lags and overshoots +90 deg; the scan must turn back right, not on round the back."""
+        for start in (math.radians(-5), math.radians(170), math.radians(-178)):
+            scan, yaw, turned, seen = Scan(start, 90.0, rate=0.29), start, 0.0, []
+            lag = [0.0] * 5                                   # the Tello keeps the old rate for 0.5 s: overshoots
+            for _ in range(3000):                             # (the wrapped version turned 358 deg here)
+                cmd = scan.yaw_rate(yaw)
+                if scan.done:
+                    break
+                lag.append(cmd)
+                turned += lag.pop(0) * 0.1
+                yaw = math.atan2(math.sin(start + turned), math.cos(start + turned))
+                seen.append(turned)
+            self.assertTrue(scan.done, start)
+            self.assertGreater(max(seen), math.radians(88))
+            self.assertLess(max(seen), math.radians(110))         # never on towards the back
+            self.assertLess(min(seen), math.radians(-88))
+            self.assertGreater(min(seen), math.radians(-110))
+            self.assertLess(abs(turned), math.radians(4))
 
     def test_zero_angle_is_off(self):
         scan = Scan(0.3, 0.0)

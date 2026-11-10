@@ -59,7 +59,49 @@ indoor4m = [   # MONA_SIM_SET=indoor4m: 4 m forward in a 6 x 4 m room (goal 1 m 
     dict(name="room6x4_person_1m_jump_scan", boxes=room(front=5.0) + [person(1.0)], pose_jump=[20.0, 1.1, -0.55, -0.1]),
     dict(name="room6x4_person_1m_jump_route", boxes=room(front=5.0) + [person(1.0)], pose_jump=[38.0, 1.1, -0.55, -0.1]),
 ]
-sets = {"person": people, "indoor": indoor, "indoor4m": indoor4m}
+practice = [   # MONA_SIM_SET=practice: indoor avoidance practice 11/10 (tall object 0.5 m wide, 1.5 m high from the floor;
+               # front wall 1 m past the goal; room 4 m or 3 m wide)
+    dict(name="p2_room4w_no_obstacle", goal_forward_m=2.0, boxes=room(front=3.0)),
+    dict(name="p2_room4w_box_1m", goal_forward_m=2.0, boxes=room(front=3.0) + [box(1.0, 0.5)]),
+    dict(name="p2_room4w_box_1m_offset_0.3", goal_forward_m=2.0, boxes=room(front=3.0) + [box(1.0, 0.5, y=0.3)]),
+    dict(name="p2_room4w_box_1m_depth_near_x0.8", goal_forward_m=2.0, boxes=room(front=3.0) + [box(1.0, 0.5)],
+         depth_scale=0.8),
+    dict(name="p2_room4w_box_1m_depth_far_x1.3", goal_forward_m=2.0, boxes=room(front=3.0) + [box(1.0, 0.5)],
+         depth_scale=1.3),
+    dict(name="p2_room3w_box_1m", goal_forward_m=2.0, boxes=room(front=3.0, half=1.5) + [box(1.0, 0.5)]),
+    dict(name="p4_room4w_box_2m", goal_forward_m=4.0, boxes=room(front=5.0) + [box(2.0, 0.5)]),
+    dict(name="p4_room3w_box_2m", goal_forward_m=4.0, boxes=room(front=5.0, half=1.5) + [box(2.0, 0.5)]),
+    # depth seen nearer (hand-held 11/09: a person 1 m away seen at about 0.7 m): how much room it needs
+    dict(name="p2_room4w_front2m_box_1m", goal_forward_m=2.0, boxes=room(front=4.0) + [box(1.0, 0.5)]),
+    dict(name="p2_room4w_front2m_box_1m_depth_near_x0.8", goal_forward_m=2.0, boxes=room(front=4.0) + [box(1.0, 0.5)],
+         depth_scale=0.8),
+    dict(name="p2_room5w_box_1m_depth_near_x0.8", goal_forward_m=2.0, boxes=room(front=3.0, half=2.5) + [box(1.0, 0.5)],
+         depth_scale=0.8),
+    dict(name="p2_room5w_front2m_box_1m_depth_near_x0.8", goal_forward_m=2.0,
+         boxes=room(front=4.0, half=2.5) + [box(1.0, 0.5)], depth_scale=0.8),
+    # object farther ahead: room to turn while moving forward
+    dict(name="p3_room4w_box_1.5m_depth_near_x0.8", goal_forward_m=3.0, boxes=room(front=4.0) + [box(1.5, 0.5)],
+         depth_scale=0.8),
+    dict(name="p4_room4w_box_2m_depth_near_x0.8", goal_forward_m=4.0, boxes=room(front=5.0) + [box(2.0, 0.5)],
+         depth_scale=0.8),
+    # 11/10: why a drone that took off does not go forward. Base: 3 m forward, object 1.5 m ahead, 4 m room
+    dict(name="x3_base", goal_forward_m=3.0, boxes=room(front=4.0) + [box(1.5, 0.5)]),
+    dict(name="x3_rc_start_16", goal_forward_m=3.0, boxes=room(front=4.0) + [box(1.5, 0.5)], rc_true_min=16),
+    dict(name="x3_rc_start_20", goal_forward_m=3.0, boxes=room(front=4.0) + [box(1.5, 0.5)], rc_true_min=20),
+    dict(name="x3_start_0.5m_from_wall", goal_forward_m=3.0,
+         boxes=[wall(-1.2, -1.0, -3.7, 0.7), wall(4.0, 4.2, -3.7, 0.7), wall(-1.0, 4.0, 0.5, 0.7),
+                wall(-1.0, 4.0, -3.7, -3.5), box(1.5, 0.5)]),
+    dict(name="x3_depth_noise_0.2", goal_forward_m=3.0, boxes=room(front=4.0) + [box(1.5, 0.5)], depth_noise=0.2,
+         pose_noise_m=0.03),
+    dict(name="x3_depth_near_x0.7", goal_forward_m=3.0, boxes=room(front=4.0) + [box(1.5, 0.5)], depth_scale=0.7),
+    dict(name="x3_box_0.7m", goal_forward_m=3.0, boxes=room(front=4.0) + [box(0.7, 0.5)]),
+    dict(name="x3_box_0.7m_depth_near_x0.8", goal_forward_m=3.0, boxes=room(front=4.0) + [box(0.7, 0.5)], depth_scale=0.8),
+    dict(name="x3_depth_far_x1.3", goal_forward_m=3.0, boxes=room(front=4.0) + [box(1.5, 0.5)], depth_scale=1.3),
+    dict(name="x3_box_0.7m_depth_far_x1.3", goal_forward_m=3.0, boxes=room(front=4.0) + [box(0.7, 0.5)], depth_scale=1.3),
+    dict(name="x3_room3w_depth_far_x1.3", goal_forward_m=3.0, boxes=room(front=4.0, half=1.5) + [box(1.5, 0.5)],
+         depth_scale=1.3),
+]
+sets = {"person": people, "indoor": indoor, "indoor4m": indoor4m, "practice": practice}
 scenarios = sets[os.environ["MONA_SIM_SET"]] if os.environ.get("MONA_SIM_SET") in sets else [
     dict(name="no_obstacle", boxes=[]),
     dict(name="box_0.5m_at_2m", boxes=[box(2.0, 0.5)]),
