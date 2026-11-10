@@ -20,6 +20,12 @@ const messages = {
   slam_docker_unavailable: 'Docker Desktop을 실행한 뒤 다시 시도하세요.',
   slam_docker_timeout: 'Docker Desktop이 준비된 뒤 다시 시도하세요.',
   slam_image_missing: '카메라 위치 모델을 준비한 뒤 다시 시도하세요.',
+  pose_gpu_unavailable: '이 위치 모델에는 NVIDIA GPU와 드라이버가 필요합니다.',
+  pose_worker_start_failed: '카메라 위치 모델을 시작하지 못했습니다. Docker와 NVIDIA GPU 상태를 확인하세요.',
+  pose_worker_stopped: '카메라 위치 추적기가 중단되었습니다. Docker와 NVIDIA GPU 상태를 확인하세요.',
+  pose_worker_timeout: '카메라 위치 모델의 응답 시간이 초과되었습니다.',
+  'ValueError: pose_frame_limit': '이 위치 모델이 처리할 수 있는 영상 길이를 초과했습니다.',
+  no_valid_camera_trajectory: '카메라가 이동하며 촬영한 영상에서 위치를 다시 추정해 주세요.',
   reconstruction_models_not_ready: '두 모델의 준비 상태를 확인하세요.',
   depth_mapping_dependencies_missing: '3D 매핑 실행기를 다시 열어 복원 환경을 준비하세요.',
 };
@@ -154,6 +160,7 @@ async function showResult() {
 function phaseLabel({stage, progress}) {
   if (stage === 'pose_wait' && progress?.tracking === 'initializing') return '카메라의 초기 위치와 방향 찾는 중';
   if (stage === 'pose_wait' && progress?.tracking === 'scale_wait') return '다음 장면의 깊이 기준 찾는 중';
+  if (stage === 'pose_scan' && progress?.pose_processed > 0) return `카메라 위치와 방향을 추정 중 · ${progress.pose_processed}장 처리`;
   if (stage === 'depth' && progress?.alignment === 'pose_dpvo') return 'DPVO로 이어 찾은 자세로 장면 깊이 계산 중';
   if (stage === 'mapping' && progress?.alignment === 'pose_dpvo') return 'DPVO로 이어 찾은 위치와 방향을 지도에 반영 중';
   if (progress?.pose_estimated && stage === 'depth') return '예측한 위치로 장면 깊이 계산 중';
@@ -164,6 +171,8 @@ function phaseLabel({stage, progress}) {
   return {
     inspect: '영상 형식과 촬영 정보 확인 중', preflight: '복원 환경과 설정 확인 중', input: '복원 시작 준비 중',
     model: '깊이 모델 준비 중', semantic_model: '사람·구조물 인식 모델 준비 중',
+    pose_scan: '영상 전체의 카메라 위치와 방향을 추정 중',
+    pose_optimization: '점군을 만들기 전에 카메라 경로를 정리 중',
     tracking_setup: '카메라 위치 추적기 준비 중', initial_pose: '카메라의 초기 위치와 방향 찾는 중',
     tracking: '카메라 위치와 방향 추적 중', recovering_pose: '카메라 위치와 방향 다시 찾는 중',
     depth: '장면의 깊이 계산 중', semantics: '사람과 구조물 구분 중', depth_alignment: '깊이와 지도 크기 맞추는 중',

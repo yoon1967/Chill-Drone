@@ -85,6 +85,96 @@ class StreamMappingTests(unittest.TestCase):
         np.testing.assert_allclose(camera_intrinsic((180, 320, 3), (1920, 1080), camera),
                                    (1000 / 6, 1100 / 6, 160, 90))
 
+    def test_selected_learned_poses_use_the_final_trajectory_before_loading_depth(self):
+        import json
+        from modules.mapping.localization.pose_models import BATCH_POSE_MODELS
+
+        image = np.full((64, 64, 3), 120, np.uint8)
+        stamps = (0., .2, .4)
+        anchors = [[x, y, 2.] for x in (12, 20, 28, 36) for y in (12, 24)]
+
+        def frames_at_rate(_source, fps, rate, long_side):
+            self.assertEqual((fps, rate, long_side), (30, 5, 512))
+            yield from ((i, stamp, image, (64, 64)) for i, stamp in enumerate(stamps, 1))
+
+        def result(stamp):
+            pose = np.eye(4)
+            pose[0, 3] = -stamp
+            return dict(timestamp_s=stamp, tracking_state=1 if stamp == .2 else 2,
+                        map_id=0, T_cw=pose, depth_anchors=anchors)
+
+        for model in sorted(BATCH_POSE_MODELS):
+            with self.subTest(model=model), tempfile.TemporaryDirectory() as folder, \
+                    patch('modules.mapping.data.stream_mapping.frames', side_effect=frames_at_rate) as frames, \
+                    patch('modules.mapping.data.stream_mapping.start_learned_tracker') as start:
+                worker = start.return_value
+                worker.finish.return_value = {stamp: result(stamp) for stamp in stamps}
+                estimator = MagicMock(device='test')
+                estimator.estimate.side_effect = lambda rgb: np.full(rgb.shape[:2], 2., np.float32)
+
+                def load_depth():
+                    worker.close.assert_called_once()
+                    return estimator
+
+                output = Path(folder) / 'result'
+                orb = MagicMock()
+                run('unused', output, {'frame_fps': 30, 'sample_fps': 5, 'semantic_mapping': False,
+                    'pose_model': model, 'pose_model_location': folder}, estimator_factory=load_depth,
+                    tracker_factory=orb)
+                orb.assert_not_called()
+                self.assertEqual(start.call_args.args[0], model)
+                self.assertEqual(frames.call_count, 2)
+                worker.finish.assert_called_once_with(list(stamps))
+                scene = json.loads((output / 'scene.json').read_text(encoding='utf-8'))
+                self.assertEqual(scene['depth_mapping']['pose_model'], model)
+                self.assertEqual(scene['cameras'][-1]['pose_source'], model)
+                self.assertAlmostEqual(scene['cameras'][-1]['position'][0], .4)
+
+    def test_explicit_pose_selection_uses_dpvo_only_for_hybrid(self):
+        import json
+        from modules.mapping.localization.dpvo_pose import DPVO_POSE_SOURCE
+        from modules.mapping.localization.pose_models import HYBRID, ORB
+
+        image = np.full((64, 64, 3), 120, np.uint8)
+        anchors = [[x, y, 2.] for x in (12, 20, 28, 36) for y in (12, 24)]
+        stamps = (0., .2, .4, .6)
+
+        def pose(stamp, scale):
+            matrix = np.eye(4)
+            matrix[0, 3] = -stamp * scale
+            return dict(timestamp_s=stamp, tracking_state=2, map_id=0, T_cw=matrix, depth_anchors=anchors)
+
+        orb = MagicMock()
+        orb.track.side_effect = lambda _, stamp: (dict(timestamp_s=stamp, tracking_state=3, map_id=0)
+            if stamp == .6 else pose(stamp, 2))
+        dpvo = MagicMock()
+        dpvo.track.side_effect = lambda _, stamp: pose(stamp, 1)
+        estimator = MagicMock(device='test')
+        estimator.estimate.side_effect = lambda rgb: np.full(rgb.shape[:2], 2., np.float32)
+        inputs = [(i, stamp, image, (64, 64)) for i, stamp in enumerate(stamps, 1)]
+        with tempfile.TemporaryDirectory() as folder, \
+                patch('modules.mapping.data.stream_mapping.frames', side_effect=lambda *args: iter(inputs)), \
+                patch('modules.mapping.localization.pose_first.OrbPoseTracker', return_value=orb), \
+                patch('modules.mapping.localization.dpvo_pose.DpvoPoseTracker.start') as legacy_dpvo, \
+                patch('modules.mapping.data.stream_mapping.start_learned_tracker', return_value=dpvo) as learned_dpvo:
+            options = {'frame_fps': 30, 'sample_fps': 5, 'semantic_mapping': False}
+            output = Path(folder) / 'result'
+            run('unused', output, dict(options, pose_model=HYBRID), estimator_factory=lambda: estimator)
+            scene = json.loads((output / 'scene.json').read_text(encoding='utf-8'))
+            self.assertEqual(scene['cameras'][-1]['pose_source'], DPVO_POSE_SOURCE)
+            self.assertEqual(scene['depth_mapping']['dpvo'], dict(status='active', integrated_frames=1))
+            self.assertAlmostEqual(scene['cameras'][-1]['position'][0], 1.2)
+
+            output = Path(folder) / 'orb-only'
+            run('unused', output, dict(options, pose_model=ORB), estimator_factory=lambda: estimator)
+            scene = json.loads((output / 'scene.json').read_text(encoding='utf-8'))
+            self.assertNotIn('dpvo', scene['depth_mapping'])
+            self.assertNotIn(DPVO_POSE_SOURCE, [camera.get('pose_source') for camera in scene['cameras']])
+            legacy_dpvo.assert_not_called()
+            learned_dpvo.assert_called_once()
+            dpvo.close.assert_called_once()
+            self.assertEqual(orb.close.call_count, 2)
+
     def test_cloud_rejects_invalid_depth_and_limits_voxel_count(self):
         rgb = np.full((16, 16, 3), 200, dtype=np.uint8)
         depth = np.full((16, 16), np.nan, dtype=np.float32)

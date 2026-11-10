@@ -11,7 +11,8 @@ const sizes = new Intl.NumberFormat('ko-KR', {minimumFractionDigits: 1, maximumF
 const errors = {
   slam_docker_unavailable: 'Docker Desktop을 실행한 후 다시 확인하세요.',
   slam_docker_timeout: 'Docker Desktop이 준비되면 다시 확인하세요.',
-  slam_build_failed: 'ORB-SLAM3 설치에 실패했습니다. 인터넷과 Docker 상태를 확인하세요.',
+  pose_gpu_unavailable: '이 위치 모델에는 NVIDIA GPU와 드라이버가 필요합니다.',
+  slam_build_failed: '카메라 위치 모델 설치에 실패했습니다. 인터넷과 Docker 상태를 확인하세요.',
   model_download_failed: '다운로드에 실패했습니다. 인터넷과 저장 공간을 확인하세요.',
 };
 
@@ -104,7 +105,8 @@ export function showModelPicker() {
       const options = models.filter(model => model.kind === kind).map(model => {
         const size = sizes.format(model.size_bytes / 1e6) + ' MB';
         const memory = model.vram_gb ? `권장 VRAM ${model.vram_gb} GB` : 'VRAM 0 GB · CPU';
-        return new Option(`${model.name} (${size} · ${memory})`, model.id);
+        const modelSize = kind === 'pose' ? `모델 파일 ${size}` : size;
+        return new Option(`${model.name} (${modelSize} · ${memory})`, model.id);
       });
       row.select.replaceChildren(new Option('모델을 선택하세요', ''), ...options);
       render(row);

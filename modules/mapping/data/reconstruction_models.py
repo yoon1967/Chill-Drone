@@ -11,10 +11,14 @@ from urllib.request import urlopen
 from zipfile import ZipFile
 
 from .model_assets import DEPTH_MODEL
+from modules.mapping.localization.pose_models import (
+    ORB, DPVO, HYBRID, DPV, DPV_PLUS_PLUS, VISTA, POSE_IMAGES, BUILD_TARGETS, VISTA_CHECKPOINT, VISTA_VOCABULARY,
+)
 
 ROOT = Path(__file__).resolve().parents[3]
 MODEL_ROOT = ROOT / 'data/models/reconstruction'
-ORB = 'orb-slam3'
+POSE_SOURCE = ROOT / 'modules/mapping/localization/learned_pose'
+POSE_PREPARATION = threading.Lock()
 DEPTH_V2 = 'depth-anything-v2-metric-indoor-small'
 VIDEO_DEPTH = 'metric-video-depth-anything-small'
 MOGE = 'moge-2-small'
@@ -66,6 +70,14 @@ MOGE_REPO = 'Ruicheng/moge-2-vits-normal'
 MOGE_REVISION = '26b477f41595707c5db6770294c0d1721e8ed4ed'
 VIDEO_WEIGHT = 'metric_video_depth_anything_vits.pth'
 MOGE_WEIGHT = 'model.pt'
+VISTA_REPO = 'zhangganlin/vista_slam'
+VISTA_REVISION = '734e79548d29adf930903bb87d2fcaff8f05b60b'
+VISTA_ASSETS = (
+    weights(VISTA_REPO, VISTA_REVISION, VISTA_CHECKPOINT, 1754072333,
+            '8b8cc1c49172731f8c8de928810aa969502411b7f263d6013951207d27fa06a3'),
+    weights(VISTA_REPO, VISTA_REVISION, VISTA_VOCABULARY, 145250924,
+            'f8dd027f7a6cb88129821341194d7f2c75b77b3394257ddd0d2229863d1a3570'),
+)
 EINOPS = Asset('einops.whl',
     'https://files.pythonhosted.org/packages/2a/09/f8d8f8f31e4483c10a906437b4ce31bdf3d6d417b73fe33f1a8b59e34228/einops-0.8.2-py3-none-any.whl',
     65638, '54058201ac7087911181bfec4af6091bb59380360f069276601256a76af08193', ('einops',))
@@ -76,6 +88,12 @@ EASYDICT = Asset('easydict.whl',
 # allow headroom above the CUDA FP16 384 px benchmark and are recommendations.
 CATALOG = {
     ORB: Model('pose', 'ORB-SLAM3', 145250924, 0),
+    DPVO: Model('pose', 'DPVO', 14167743, 3),
+    HYBRID: Model('pose', 'ORB-SLAM3 + DPVO', 159418667, 3),
+    DPV: Model('pose', 'DPV-SLAM', 14167743, 3),
+    DPV_PLUS_PLUS: Model('pose', 'DPV-SLAM++', 211405341, 4),
+    VISTA: Model('pose', 'ViSTA-SLAM', sum(asset.size for asset in VISTA_ASSETS),
+                 6, VISTA_REPO, VISTA_REVISION, VISTA_ASSETS),
     DEPTH_V2: Model('depth', 'Depth Anything V2 Metric Indoor Small', 99173660, 1, DEPTH_MODEL, V2_REVISION, (
         weights(DEPTH_MODEL, V2_REVISION, 'model.safetensors', 99173660,
                 'e990eb82fbf11b05b7813261196a2b841bdcf5a05f64396724a8987fa90504a3'),
@@ -138,7 +156,15 @@ def ready_install(folder, model):
 
 
 def depth_location(key, root=MODEL_ROOT):
-    model = model_for(key, 'depth')
+    return asset_location(key, model_for(key, 'depth'), root)
+
+
+def pose_location(key, root=MODEL_ROOT):
+    model = model_for(key, 'pose')
+    return asset_location(key, model, root) if model.assets else None
+
+
+def asset_location(key, model, root):
     folder = root / key / model.install_version
     if ready_install(folder, model):
         return folder
@@ -183,8 +209,8 @@ def extract_packages(archive, runtime, asset):
             target.write_bytes(zipped.read(member))
 
 
-def install_depth(key, root, progress):
-    model = model_for(key, 'depth')
+def install_assets(key, root, progress):
+    model = model_for(key)
     target = root / key / model.install_version
     target.parent.mkdir(parents=True, exist_ok=True)
     total = sum(asset.size for asset in model.assets)
@@ -220,13 +246,44 @@ def install_depth(key, root, progress):
                     raise
 
 
-def install_orb(progress):
+def require_pose_image(image):
     from apps.launcher import docker_assets
-    source_path = docker_assets.ORB_SOURCE
+    from modules.mapping.localization.orbslam3_live import require_slam_image
+    if image == docker_assets.ORB_IMAGE:
+        require_slam_image()
+        return
+    require_slam_image(image)
+    if docker_assets.image_source(image) != docker_assets.source_hash(POSE_SOURCE):
+        raise RuntimeError('slam_image_missing')
+
+
+def install_pose(key, root, progress):
+    from apps.launcher import docker_assets
+    model = model_for(key, 'pose')
+    images = POSE_IMAGES[key]
+    total = len(images) + bool(model.assets)
+    with POSE_PREPARATION:
+        for index, image in enumerate(images):
+            try:
+                require_pose_image(image)
+            except RuntimeError as error:
+                if str(error) != 'slam_image_missing':
+                    raise
+                target = BUILD_TARGETS.get(image)
+                build_pose_image(image, POSE_SOURCE if target else docker_assets.ORB_SOURCE, target,
+                                 lambda percent: progress((index * 100 + percent) // total))
+            progress(min(99, (index + 1) * 100 // total))
+        if model.assets and pose_location(key, root) is None:
+            install_assets(key, root, lambda percent: progress((len(images) * 100 + percent) // total))
+
+
+def build_pose_image(image, source_path, target, progress):
+    from apps.launcher import docker_assets
     total = sum(line.startswith(('COPY ', 'RUN ')) for line in (source_path / 'Dockerfile').read_text().splitlines())
     operations, completed = set(), set()
-    command = docker_assets.image_build_command(docker_assets.ORB_IMAGE, source_path,
-                                              docker_assets.source_hash(source_path))
+    command = docker_assets.image_build_command(image, source_path, docker_assets.source_hash(source_path))
+    if target:
+        command[-1:-1] = ['--target', target]
     with subprocess.Popen(command, cwd=ROOT, stdout=subprocess.PIPE, stderr=subprocess.STDOUT,
                           text=True, encoding='utf-8', errors='replace',
                           creationflags=getattr(subprocess, 'CREATE_NO_WINDOW', 0)) as build:
@@ -253,11 +310,16 @@ class ReconstructionModels:
     def local_status(self, key):
         model = model_for(key)
         if model.kind == 'pose':
-            from modules.mapping.localization.orbslam3_live import require_slam_image
+            from apps.launcher.docker_assets import probe
+            if key != ORB and not probe(['nvidia-smi', '--query-gpu=name', '--format=csv,noheader'], timeout=4):
+                return dict(status='blocked', error='pose_gpu_unavailable')
             try:
-                require_slam_image()
+                for image in POSE_IMAGES[key]:
+                    require_pose_image(image)
             except RuntimeError as error:
                 return dict(status='missing') if str(error) == 'slam_image_missing' else dict(status='blocked', error=str(error))
+            if model.assets and pose_location(key, self.root) is None:
+                return dict(status='missing')
         elif depth_location(key, self.root) is None:
             return dict(status='missing')
         return dict(status='ready', percent=100)
@@ -304,9 +366,9 @@ class ReconstructionModels:
                             self.update(key, status='downloading', percent=percent, method=method)
                 try:
                     if method == 'build':
-                        install_orb(report)
+                        install_pose(key, self.root, report)
                     else:
-                        install_depth(key, self.root, report)
+                        install_assets(key, self.root, report)
                     if self.local_status(key)['status'] != 'ready':
                         raise OSError('model_runtime_incomplete')
                 except Exception:

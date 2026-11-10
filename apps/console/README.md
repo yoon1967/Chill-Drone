@@ -5,8 +5,14 @@
 `scripts/start.cmd`의 메뉴 1(체험), 2(실기체 관제)에서 **지도 콘솔**을 열면 영상 드롭과 최근 복원부터 나온다. 메뉴 2는 실시간 지도 점군을 실시간 감독에도 늘 보낸다.
 MP4·MOV·AVI·MKV를 드롭 영역에 놓거나 선택한 뒤 **카메라 위치 모델**과 **영상 깊이 모델**을 고른다.
 선택한 모델이 PC에 없으면 **모델 다운받기**를 누른다. 두 모델이 준비되면 **영상 복원하기**로 시작한다.
-깊이 가중치와 실행 코드는 `data/models/reconstruction/<모델>/<버전>/`에 보관하며, 준비된 Hugging Face 캐시도 재사용한다.
-ORB-SLAM3는 기존 로컬 Docker 이미지를 사용하며, 최초 설치의 진행률은 완료한 빌드 단계 기준이다.
+위치 모델은 ORB-SLAM3, DPVO, ORB-SLAM3 + DPVO, DPV-SLAM, DPV-SLAM++, ViSTA-SLAM 중 고른다.
+ORB-SLAM3는 CPU로 실행되고 다른 위치 모델에는 NVIDIA GPU와 Docker의 GPU 지원이 필요하다.
+DPVO, 결합 방식, DPV-SLAM, DPV-SLAM++의 기본 이미지는 CUDA 컴퓨팅 기능 8.6 이상을 대상으로 한다.
+DPVO·DPV-SLAM 계열과 ViSTA-SLAM은 먼저 영상의 카메라 경로를 확정한 뒤 같은 프레임으로 깊이를 복원한다.
+ViSTA-SLAM은 복원당 최대 4,096개의 위치 추정 입력 프레임을 처리한다.
+결합 방식은 ORB-SLAM3로 추적하고, 검증된 DPVO 자세로 짧은 추적 공백을 보완한다.
+깊이 및 ViSTA-SLAM 가중치는 `data/models/reconstruction/<모델>/<버전>/`에 보관하며, 준비된 Hugging Face 캐시도 재사용한다.
+위치 모델의 선택 목록에는 모델 파일 용량이 표시된다. 최초 설치 시 Docker 이미지와 실행 패키지도 내려받으며, 진행률은 완료한 빌드와 다운로드 단계 기준이다.
 아래 **최근 복원**에서 최근 시도와 저장 지도를 다시 연다.
 **영상 폴더 열기**는 Windows 탐색기를 연다. 기본 위치는 이 작업의 녹화·지도 회차가 저장되는 `output/phone_mapping/`이며,
 회차별 영상은 `live_<id>/recordings/`에 있다. **폴더 변경**에 이미 존재하는 로컬 폴더의 전체 경로를 입력하면 다음 실행에서도 사용한다.

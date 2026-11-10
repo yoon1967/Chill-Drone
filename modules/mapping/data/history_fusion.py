@@ -75,6 +75,8 @@ def integrate_history(output, progress=lambda **fields: None):
                 group['cameras'][-1]['pose_source'] = 'previous_frame_pnp'
             elif entry['tracking'] == 'pose_held':
                 group['cameras'][-1]['pose_source'] = 'last_observed_pose'
+            elif entry.get('pose_source'):
+                group['cameras'][-1]['pose_source'] = entry['pose_source']
         done += 1
         progress(integrated_frames=done, integration_total=total, integrated_maps=len(groups),
             integrated_points=sum(len(g['surface'].cells) if 'surface' in g else len(g['cells']) for g in groups.values()))
