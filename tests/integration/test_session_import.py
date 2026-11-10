@@ -548,6 +548,19 @@ class SessionImportTests(unittest.TestCase):
             with self.subTest(invalid=invalid), self.assertRaisesRegex(ValueError, 'invalid_reconstruction_model'):
                 validate_options({**options, **invalid}, summary)
 
+    def test_six_pose_choices_keep_the_existing_saved_video_and_depth_options(self):
+        from modules.mapping.data.reconstruction_models import DEPTH_V2, catalog
+        choices = [model['id'] for model in catalog() if model['kind'] == 'pose']
+        self.assertEqual(choices, ['orb-slam3', 'dpvo', 'orb-slam3-dpvo', 'dpv-slam',
+                                   'dpv-slam-plus-plus', 'vista-slam'])
+        for key in choices:
+            with self.subTest(key=key):
+                options = validate_options(dict(confirmed=True, mode='depth_rgbd',
+                    pose_model=key, depth_model=DEPTH_V2), dict(kind='video', source_fps=24))
+                self.assertEqual((options['pose_model'], options['depth_model']), (key, DEPTH_V2))
+                self.assertTrue(options['causal_video'])
+                self.assertEqual(options['sample_fps'], 5)
+
     def test_default_depth_import_preserves_cumulative_preview_option(self):
         options = {'confirmed': True, 'mode': 'depth_rgbd'}
         self.assertIsNone(validate_options(options, {})['render_window_s'])

@@ -16,9 +16,9 @@ from .orbslam3 import IMAGE, SessionPublisher, atomic_json, read_json, write_set
 from modules.mapping.data.live_recording import SessionRecording
 
 
-def require_slam_image():
+def require_slam_image(image=IMAGE):
     """Retry transient engine startup delays without pulling or building images."""
-    inspect = ["docker", "image", "inspect", "--format", "{{.Id}}", IMAGE]
+    inspect = ["docker", "image", "inspect", "--format", "{{.Id}}", image]
     timed_out = False
     for attempt in range(3):
         if attempt:
@@ -29,7 +29,7 @@ def require_slam_image():
                 if image_id:
                     return image_id
             except subprocess.CalledProcessError:
-                listed = subprocess.check_output(["docker", "image", "ls", "--no-trunc", "--quiet", IMAGE],
+                listed = subprocess.check_output(["docker", "image", "ls", "--no-trunc", "--quiet", image],
                                                  stderr=subprocess.DEVNULL, text=True, timeout=4).strip()
                 if not listed:
                     raise RuntimeError("slam_image_missing")

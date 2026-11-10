@@ -675,16 +675,17 @@ class ImportManager:
         from modules.mapping.data.frame_input import validate_options
         job = self.job(key)
         options = validate_options(options, job.get('summary', {}))
-        depth_location = None
+        depth_location = pose_assets = None
         if options['mode'] == 'depth_rgbd':
             import importlib.util
             if any(importlib.util.find_spec(name) is None for name in ('torch', 'transformers')):
                 raise ValueError('depth_mapping_dependencies_missing')
             if 'pose_model' in options:
-                from modules.mapping.data.reconstruction_models import depth_location as locate_depth
+                from modules.mapping.data.reconstruction_models import depth_location as locate_depth, pose_location
                 pose_status = self.models.status(options['pose_model'])
                 if pose_status['status'] != 'ready':
                     raise ValueError(pose_status.get('error', 'reconstruction_models_not_ready'))
+                pose_assets = pose_location(options['pose_model'], self.models.root)
                 depth_location = locate_depth(options['depth_model'], self.models.root)
                 if depth_location is None:
                     raise ValueError('reconstruction_models_not_ready')
@@ -725,6 +726,8 @@ class ImportManager:
                     worker_options = dict(options)
                     if depth_location is not None:
                         worker_options['depth_model_location'] = str(depth_location)
+                    if pose_assets is not None:
+                        worker_options['pose_model_location'] = str(pose_assets)
                     if summary.get('width') and summary.get('height'):
                         worker_options['input_size'] = (summary['width'], summary['height'])
                     self.depth_worker.run(source, output, worker_options, stop_event=job['cancel'], on_preview=published)

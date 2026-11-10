@@ -7,6 +7,7 @@ from __future__ import annotations
 
 import argparse
 from collections import OrderedDict
+from contextlib import closing
 import csv
 from datetime import datetime, timezone
 import json
@@ -26,6 +27,8 @@ from .model_assets import DEPTH_MODEL as MODEL, cached_snapshot, ModelAssetsMiss
 from .mapping_limits import MAX_FRAME_PREVIEW_POINTS
 from .point_fusion import BLUE_DEPTH_MIN_M, FAR_DEPTH, STANDARD_DEPTH, TOF_DEPTH
 from .tof_depth import TofDepth, match_front_surface
+
+LEARNED_TRACKING_LONG_SIDE = 512
 
 
 def write_json(path, value):
@@ -175,9 +178,12 @@ class PoseFrames:
         self.iterator = None
         self.next_output = 0.
         self.track_all_frames = rate is None
+        self.tracking_rate = None
+        self.tracking_size = 640
+        self.trajectory = None
         self.tracking_epoch = 0
         self.had_native_pose = False
-        self.dpvo_factory = self.dpvo = self.dpvo_alignment = None
+        self.legacy_dpvo_factory = self.dpvo = self.dpvo_alignment = None
         self.dpvo_status = None
         self.dropped = 0
         self.stop = threading.Event()
@@ -187,6 +193,8 @@ class PoseFrames:
         return self.stop.is_set() or (self.cancel_event is not None and self.cancel_event.is_set())
 
     def track(self, rgb, stamp):
+        if self.trajectory is not None:
+            return self.trajectory.pop(stamp)
         result = self.native.track(rgb, stamp)
         if self.motion is not None:
             prediction, first = self.motion.update(result, stamp)
@@ -195,17 +203,22 @@ class PoseFrames:
         return result
 
     def _start_dpvo(self, rgb, original_size):
-        from modules.mapping.localization.dpvo_pose import DpvoAlignment
+        from modules.mapping.localization.pose_models import HYBRID
         try:
-            self.dpvo = self.dpvo_factory(rgb.shape[1::-1], camera_intrinsic(rgb.shape, original_size, self.camera),
-                                          (self.camera or {}).get('distortion', []), self.cancelled)
+            if self.legacy_dpvo_factory is None:
+                self.dpvo = start_learned_tracker(HYBRID, rgb, original_size, self.camera, self.cancelled)
+            else:
+                self.dpvo = self.legacy_dpvo_factory(rgb.shape[1::-1],
+                    camera_intrinsic(rgb.shape, original_size, self.camera),
+                    (self.camera or {}).get('distortion', []), self.cancelled)
         except InterruptedError:
             raise
         except (OSError, RuntimeError, ValueError, subprocess.SubprocessError):
+            if self.legacy_dpvo_factory is None:
+                raise
             self.dpvo_status = 'failed'
         else:
             self.dpvo_status = 'active' if self.dpvo is not None else 'unavailable'
-            self.dpvo_alignment = DpvoAlignment() if self.dpvo is not None else None
 
     def _track_dpvo(self, rgb, stamp, result):
         from modules.mapping.localization.pose_first import fixed_camera_pose
@@ -214,10 +227,14 @@ class PoseFrames:
         except InterruptedError:
             raise
         except (OSError, RuntimeError, ValueError, subprocess.SubprocessError):
+            if self.legacy_dpvo_factory is None:
+                raise
             dpvo, self.dpvo = self.dpvo, None
             self.dpvo_status = 'failed'
             dpvo.close()
             return result
+        if self.legacy_dpvo_factory is None:
+            pose = fixed_camera_pose(pose, stamp)
         if pose is None:
             return result
         native_pose = fixed_camera_pose(result, stamp)
@@ -228,16 +245,17 @@ class PoseFrames:
 
     def take(self):
         if self.iterator is None:
-            self.iterator = iter(frames(self.source, self.fps, None if self.track_all_frames else 15, 640))
+            rate = self.tracking_rate if self.track_all_frames else 15
+            self.iterator = iter(frames(self.source, self.fps, rate, self.tracking_size))
         while not self.cancelled():
             item = next(self.iterator, None)
             if item is None:
                 return None
             number, stamp, rgb, original_size = item
-            if self.native is None:
-                self.native = self.tracker_factory(self.output, (rgb.shape[1], rgb.shape[0]), original_size, self.camera,
-                                                   self.fps if self.track_all_frames else 15)
-                if self.dpvo_factory is not None:
+            if self.native is None and self.trajectory is None:
+                self.native = self.tracker_factory(self.output, rgb.shape[1::-1], original_size, self.camera,
+                                                   self.tracking_rate or (self.fps if self.track_all_frames else 15))
+                if self.dpvo_alignment is not None:
                     self._start_dpvo(rgb, original_size)
                 if self.on_tracker_ready:
                     self.on_tracker_ready()
@@ -250,7 +268,7 @@ class PoseFrames:
                 tracking_state = result.get('tracking_state', 0)
                 if tracking_state == 2:
                     self.had_native_pose = True
-                elif tracking_state <= 1 and self.had_native_pose:
+                elif tracking_state <= 1 and self.had_native_pose and self.trajectory is None:
                     # ORB can reset its active map without changing the numeric map ID.
                     self.tracking_epoch += 1
                     self.had_native_pose = False
@@ -411,6 +429,51 @@ def camera_intrinsic(shape, original_size, camera):
     return w * .8660254, w * .8660254, w / 2, h / 2
 
 
+def start_learned_tracker(model, rgb, original_size, camera, cancelled, assets=None):
+    from modules.mapping.localization.pose_models import LearnedPoseTracker
+
+    return LearnedPoseTracker(model, rgb.shape[1::-1], camera_intrinsic(rgb.shape, original_size, camera),
+                              (camera or {}).get('distortion', []), cancelled, assets)
+
+
+def scan_trajectory(model, source, fps, rate, options, cancelled, publish):
+    """Finish corrections before any depth observation is fixed in map space."""
+    from modules.mapping.localization.pose_models import VISTA
+
+    assets = options.get('pose_model_location') if model == VISTA else None
+    if model == VISTA and not assets:
+        from .reconstruction_models import pose_location
+        assets = pose_location(model)
+        if assets is None:
+            raise ValueError('reconstruction_models_not_ready')
+    tracker = None
+    stamps = []
+    last_progress = 0.
+    publish(stage='pose_scan', pose_processed=0)
+    try:
+        with closing(frames(source, fps, rate, LEARNED_TRACKING_LONG_SIDE)) as inputs:
+            for _, stamp, rgb, original_size in inputs:
+                if tracker is None:
+                    tracker = start_learned_tracker(model, rgb, original_size, options.get('camera'),
+                                                    cancelled, Path(assets) if assets else None)
+                tracker.track(rgb, stamp)
+                stamps.append(stamp)
+                now = time.monotonic()
+                if now - last_progress >= .25:
+                    publish(stage='pose_scan', pose_processed=len(stamps), pose_timestamp_s=stamp)
+                    last_progress = now
+        if tracker is None:
+            raise ValueError('no_valid_camera_trajectory')
+        publish(stage='pose_optimization', pose_processed=len(stamps))
+        trajectory = tracker.finish(stamps)
+        if not any(result.get('tracking_state') == 2 for result in trajectory.values()):
+            raise ValueError('no_valid_camera_trajectory')
+        return trajectory
+    finally:
+        if tracker is not None:
+            tracker.close()
+
+
 def depth_frame(display_rgb, original_size, options):
     rgb = cv2.resize(display_rgb, scaled_size(*original_size, options['depth_resolution']))
     camera = options.get('camera')
@@ -484,9 +547,16 @@ def run(source, output, options, estimator_factory=DepthEstimator, tracker_facto
         stop_event=None, on_preview=None, live_receive=None, semantic_factory=None):
     from modules.mapping.data.rescue_mapping import mapping_options, mapping_sample_fps
     options = {**options, **mapping_options(options), 'sample_fps': mapping_sample_fps(options)}
+    from modules.mapping.localization.dpvo_pose import DPVO_POSE_SOURCE, DpvoAlignment, DpvoPoseTracker
+    from modules.mapping.localization.pose_models import BATCH_POSE_MODELS, HYBRID, POSE_IMAGES
     offline = live_receive is None
+    pose_model = options.get('pose_model') if offline else None
+    if pose_model is not None and (not isinstance(pose_model, str) or pose_model not in POSE_IMAGES):
+        raise ValueError('invalid_reconstruction_model')
     full_video = offline and options.get('all_video_frames') is True
-    causal_video = full_video or (offline and options.get('causal_video') is True)
+    causal_video = full_video or (offline and (pose_model is not None or options.get('causal_video') is True))
+    learned_pose = pose_model in BATCH_POSE_MODELS or pose_model == HYBRID
+    tracking_rate = options['sample_fps'] if learned_pose and not full_video else None
     output = Path(output)
     output.mkdir(parents=True, exist_ok=False)
     (output / 'frames').mkdir()
@@ -496,6 +566,8 @@ def run(source, output, options, estimator_factory=DepthEstimator, tracker_facto
               'registered': 0, 'dropped': 0, 'revision': 0, 'points': 0, 'timestamp_s': 0.,
               'tracking': 'initializing', 'all_video_frames': full_video, 'causal_video': causal_video, 'processing_policy':
                   'continuous' if live_receive is not None and options['live_policy'] == 'continuous' else 'sequential'}
+    if pose_model is not None:
+        status['pose_model'] = pose_model
     producer = history = None
     rescue = semantics_estimator = None
     cameras = []
@@ -515,6 +587,11 @@ def run(source, output, options, estimator_factory=DepthEstimator, tracker_facto
         from modules.mapping.data.mapping_history import HistoryWriter
         history = HistoryWriter(output, write_json, render_window_s, synchronous=True, compress=causal_video)
         publish()
+        trajectory = None
+        if pose_model in BATCH_POSE_MODELS:
+            trajectory = scan_trajectory(pose_model, source, options['frame_fps'], tracking_rate, options,
+                                         lambda: stop_event is not None and stop_event.is_set(), publish)
+            publish(stage='model')
         model_started = time.perf_counter()
         estimator = estimator_factory()
         check_cancelled()
@@ -548,18 +625,24 @@ def run(source, output, options, estimator_factory=DepthEstimator, tracker_facto
             producer = PoseFrames(source, options['frame_fps'], None if full_video else options['sample_fps'],
                 output, options.get('camera'), tracker_factory)
             producer.on_tracker_ready = lambda: publish(stage='initial_pose')
+            producer.tracking_rate = tracking_rate
+            if learned_pose:
+                producer.tracking_size = LEARNED_TRACKING_LONG_SIDE
+            producer.trajectory = trajectory
         producer.cancel_event = stop_event
         from modules.mapping.localization.pose_first import ConstantVelocityPose, fixed_camera_pose, depth_in_pose_units
         from modules.mapping.localization.tello_pose import LINEAR_PREDICTION, TelloMapPose
         video_pose = None
         if causal_video:
             from modules.mapping.localization.depth_pose import VideoMapPose
-            from modules.mapping.localization.dpvo_pose import DpvoPoseTracker, DPVO_POSE_SOURCE
             video_pose = VideoMapPose()
             producer.motion = None
             producer.track_all_frames = True
-            if tracker_factory is None:
-                producer.dpvo_factory = DpvoPoseTracker.start
+            if pose_model == HYBRID:
+                producer.dpvo_alignment = DpvoAlignment()
+            elif pose_model is None and tracker_factory is None:
+                producer.legacy_dpvo_factory = DpvoPoseTracker.start
+                producer.dpvo_alignment = DpvoAlignment()
         active_map = None
         active_visual_scale = active_tof_scale = None
         visual_scale_stamp = None
@@ -636,8 +719,8 @@ def run(source, output, options, estimator_factory=DepthEstimator, tracker_facto
                 native_confirmed = state == 'tracking'
                 pose_predicted = state == 'pose_predicted'
             if pose is not None or (tof is not None and not sensor_wait):
-                publish(stage='depth', pose_confirmed=native_confirmed,
-                        pose_estimated=pose_predicted or state == 'pose_dpvo', alignment=state if causal_video else None)
+                publish(stage='depth', pose_confirmed=native_confirmed, pose_estimated=pose_predicted or state == 'pose_dpvo',
+                        **({'alignment': state} if causal_video else {}))
                 if telemetry is None and not causal_video:
                     rgb, params = depth_frame(display_rgb, original_size, options)
                 # Metric model estimates are converted only for the legacy SLAM path.
@@ -795,6 +878,8 @@ def run(source, output, options, estimator_factory=DepthEstimator, tracker_facto
                 snapshot['pose_source'] = pose_source
             elif state == 'pose_dpvo':
                 snapshot['pose_source'] = DPVO_POSE_SOURCE
+            elif pose_model in BATCH_POSE_MODELS and state in {'tracking', 'scale_reused'}:
+                snapshot['pose_source'] = pose_model
             if estimated_alignment:
                 snapshot['estimated_alignment'] = True
             if telemetry is not None and active_map is not None:
@@ -924,6 +1009,8 @@ def finalize_history(output, status, run_id, started, publish=lambda **fields: N
             'preview_point_limit_applied': False,
             'spatial_point_budget': primary.get('rescue', {}).get('point_fusion', {}).get('point_budget'),
             'spatial_density_adaptive': primary.get('rescue', {}).get('render_mode') == 'points'}}
+    if 'pose_model' in status:
+        scene['depth_mapping']['pose_model'] = status['pose_model']
     if 'dpvo_status' in status:
         scene['depth_mapping']['dpvo'] = {'status': status['dpvo_status'],
             'integrated_frames': sum(bool(entry['observation']) and entry.get('pose_source') == DPVO_POSE_SOURCE

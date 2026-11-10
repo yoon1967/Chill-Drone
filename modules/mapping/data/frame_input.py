@@ -76,7 +76,7 @@ def validate_options(options, summary):
     if not isinstance(options, dict) or options.get('confirmed') is not True:
         raise ValueError('confirm_input_order_and_camera')
     result = {}
-    causal_video = options.get('causal_video') is True
+    causal_video = options.get('causal_video') is True or 'pose_model' in options
     full_video = options.get('all_video_frames') is True
     for key, default, lo, hi in [('sample_fps', DEFAULT_VIDEO_SAMPLE_FPS if causal_video else 2, .1, 30),
                                  ('frame_fps', 2, .1, 240)]:
