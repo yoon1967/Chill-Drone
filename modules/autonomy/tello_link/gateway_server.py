@@ -31,6 +31,7 @@ import itertools
 import json
 import os
 import sys
+import threading
 import time
 from contextlib import asynccontextmanager
 from urllib.parse import urlsplit
@@ -53,6 +54,42 @@ STATE_PERIOD_S = 0.1
 MAX_EVENT_BYTES = 1_000_000
 MAX_MAP_BYTES = 16_000_000   # 점 6만 개 × 한 줄 약 60바이트 + 여유
 LOCAL_HOSTS = ("127.0.0.1", "::1", "localhost")
+GRACEFUL_STOP_S = 3   # 끄기(Ctrl+C) 뒤 남은 요청을 기다리는 최대 시간. 넘으면 끊고 회차를 닫는다(metrics.json)
+
+
+def mjpeg_frames(request, latest, running, stopping, pose_at=None):
+    """MJPEG 조각을 최신 프레임만 보낸다(쌓지 않는다). 손님이 닫거나 영상이 꺼지거나 게이트웨이를 끌 때 끝난다.
+
+    pose_at이 있으면(지도용) latest()는 (JPEG, 프레임 시각)을 주고, 그 시각의 센서 자세를 조각에 붙인다.
+    """
+    async def gen():
+        last = None
+        while running() and not stopping.is_set() and not await request.is_disconnected():
+            frame = await asyncio.to_thread(latest)
+            data = frame[0] if frame is not None and pose_at else frame
+            if data is not None and data is not last:
+                last = data
+                yield mjpeg_part(data, pose_at(frame[1]) if pose_at else None)
+            await asyncio.sleep(0.04)
+    return gen()
+
+
+def make_server(app, host: str, port: int):
+    """Ctrl+C를 받으면 영상 스트림부터 끝내고, 그래도 남은 요청은 GRACEFUL_STOP_S 뒤에 끊는 uvicorn 서버.
+
+    uvicorn은 끄기 전에 열린 응답이 끝나길 기다리는데 MJPEG(/video.mjpg·/overlay.mjpg)는 손님이 닫을 때까지
+    끝나지 않는다. 그래서 화면이 영상을 보고 있으면 Ctrl+C로 꺼지지 않았고, 실행기가 강제로 꺼서
+    회차의 metrics.json이 남지 않았다(11/10).
+    """
+    import uvicorn
+
+    class GatewayServer(uvicorn.Server):
+        def handle_exit(self, sig, frame):
+            app.state.stopping.set()
+            super().handle_exit(sig, frame)
+
+    return GatewayServer(uvicorn.Config(app, host=host, port=port, log_level="warning",
+                                        timeout_graceful_shutdown=GRACEFUL_STOP_S))
 
 
 class ControllerFiles(StaticFiles):
@@ -128,6 +165,7 @@ def build_app(args) -> FastAPI:
 
     app = FastAPI(title="드론 게이트웨이", lifespan=lifespan)
     app.state.gateway = gw
+    app.state.stopping = threading.Event()   # 끄기(Ctrl+C)를 받으면 켠다 → 영상 스트림이 끝난다(make_server)
 
     @app.get("/api/drone/state")
     def drone_state():
@@ -307,17 +345,9 @@ def build_app(args) -> FastAPI:
         return JSONResponse(out, status)
 
     def mjpeg(request: Request, latest, running, *, mapping=False):
-        async def gen():  # 최신 프레임만 보낸다. 쌓지 않는다.
-            last = None
-            while running() and not await request.is_disconnected():
-                frame = await asyncio.to_thread(latest)
-                data = frame[0] if frame is not None and mapping else frame
-                if data is not None and data is not last:
-                    last = data
-                    pose = gw.link.sensor_pose_at(frame[1]) if mapping else None
-                    yield mjpeg_part(data, pose)
-                await asyncio.sleep(0.04)
-        return StreamingResponse(gen(), media_type="multipart/x-mixed-replace; boundary=frame",
+        frames = mjpeg_frames(request, latest, running, app.state.stopping,
+                              gw.link.sensor_pose_at if mapping else None)
+        return StreamingResponse(frames, media_type="multipart/x-mixed-replace; boundary=frame",
                                  headers={"X-Tello-Sensor-Pose": "1"} if mapping else None)
 
     @app.get("/video.mjpg")
@@ -359,7 +389,6 @@ def main():
                     help="다른 PC의 탐지 결과·3D 지도도 받기 (인증이 없으므로 같은 망 시험에서만)")
     args = ap.parse_args()
 
-    import uvicorn
     app = build_app(args)
     mode = "기록 재생" if args.replay else "가짜" if args.fake else "실제"
     print(f"드론 게이트웨이: http://{args.host}:{args.port}  (모드: {mode})")
@@ -368,7 +397,13 @@ def main():
         print(f"재생: {rec.dir} · {rec.t1 - rec.t0:.0f}초 · 영상 조각 {len(rec.parts)}개 · 탐지 {len(rec.dets)}개 (원래 폴더에는 쓰지 않음)")
     else:
         print(f"회차 로그: {app.state.gateway.link.log.dir}")
-    uvicorn.run(app, host=args.host, port=args.port, log_level="warning")
+    server = make_server(app, args.host, args.port)
+    try:
+        server.run()
+    except KeyboardInterrupt:   # uvicorn은 정상 종료 뒤 받은 Ctrl+C를 다시 일으킨다. uvicorn.run처럼 조용히 끝낸다
+        pass
+    if not server.started:
+        sys.exit(3)   # 포트가 쓰이는 중 등 시작 실패(uvicorn.run과 같은 종료 코드)
 
 
 if __name__ == "__main__":
