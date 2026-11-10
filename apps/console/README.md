@@ -8,7 +8,8 @@ MP4·MOV·AVI·MKV를 드롭 영역에 놓거나 선택한 뒤 **카메라 위�
 위치 모델은 ORB-SLAM3, DPVO, ORB-SLAM3 + DPVO, DPV-SLAM, DPV-SLAM++, ViSTA-SLAM 중 고른다.
 ORB-SLAM3는 CPU로 실행되고 다른 위치 모델에는 NVIDIA GPU와 Docker의 GPU 지원이 필요하다.
 DPVO, 결합 방식, DPV-SLAM, DPV-SLAM++의 기본 이미지는 CUDA 컴퓨팅 기능 8.6 이상을 대상으로 한다.
-DPVO·DPV-SLAM 계열과 ViSTA-SLAM은 먼저 영상의 카메라 경로를 확정한 뒤 같은 프레임으로 깊이를 복원한다.
+영상 복원은 기본 5 FPS로 자세와 깊이를 차례대로 처리한다. 자세와 깊이 기준을 잡으면 복원 중 화면에 현재 프레임과 점군이 갱신된다.
+DPVO·DPV-SLAM 계열과 ViSTA-SLAM은 영상 처리가 끝나면 최종 보정한 카메라 경로를 저장 점군에 반영한다.
 ViSTA-SLAM은 복원당 최대 4,096개의 위치 추정 입력 프레임을 처리한다.
 결합 방식은 ORB-SLAM3로 추적하고, 검증된 DPVO 자세로 짧은 추적 공백을 보완한다.
 깊이 및 ViSTA-SLAM 가중치는 `data/models/reconstruction/<모델>/<버전>/`에 보관하며, 준비된 Hugging Face 캐시도 재사용한다.

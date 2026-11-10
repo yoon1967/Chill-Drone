@@ -1,6 +1,7 @@
 """Run a selected learned tracker locally using the ORB frame transport."""
 
 import json
+from pathlib import Path
 import queue
 import subprocess
 import threading
@@ -27,7 +28,7 @@ GPU_IMAGES = {DPVO: DPVO_IMAGE, HYBRID: DPVO_IMAGE, DPV: DPVO_IMAGE,
 POSE_IMAGES = {model: (image,) for model, image in GPU_IMAGES.items()}
 POSE_IMAGES.update({ORB: (ORB_IMAGE,), HYBRID: (ORB_IMAGE, DPVO_IMAGE)})
 BUILD_TARGETS = {DPVO_IMAGE: 'dpvo', CLASSIC_IMAGE: 'dpv_slam_plus_plus', VISTA_IMAGE: 'vista'}
-BATCH_POSE_MODELS = frozenset(GPU_IMAGES) - {HYBRID}
+LEARNED_POSE_MODELS = frozenset(GPU_IMAGES) - {HYBRID}
 
 
 class LearnedPoseTracker:
@@ -41,6 +42,8 @@ class LearnedPoseTracker:
         command = ['docker', 'run', '--rm', '--pull=never', '-i', '--name', self.name,
                    '--network', 'none', '--cap-drop', 'ALL', '--security-opt', 'no-new-privileges',
                    '--gpus', 'all']
+        worker = Path(__file__).resolve().with_name('learned_pose') / 'worker.py'
+        command += ['--mount', f'type=bind,source={worker},target=/opt/pose-worker.py,readonly']
         if assets is not None:
             # The Hugging Face snapshot may contain links to a separate blobs folder.
             for filename in (VISTA_CHECKPOINT, VISTA_VOCABULARY):

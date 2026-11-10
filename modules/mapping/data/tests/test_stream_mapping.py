@@ -85,9 +85,9 @@ class StreamMappingTests(unittest.TestCase):
         np.testing.assert_allclose(camera_intrinsic((180, 320, 3), (1920, 1080), camera),
                                    (1000 / 6, 1100 / 6, 160, 90))
 
-    def test_selected_learned_poses_use_the_final_trajectory_before_loading_depth(self):
+    def test_selected_learned_poses_preview_before_reading_next_frame_and_correct_final_map(self):
         import json
-        from modules.mapping.localization.pose_models import BATCH_POSE_MODELS
+        from modules.mapping.localization.pose_models import LEARNED_POSE_MODELS
 
         image = np.full((64, 64, 3), 120, np.uint8)
         stamps = (0., .2, .4)
@@ -95,40 +95,50 @@ class StreamMappingTests(unittest.TestCase):
 
         def frames_at_rate(_source, fps, rate, long_side):
             self.assertEqual((fps, rate, long_side), (30, 5, 512))
-            yield from ((i, stamp, image, (64, 64)) for i, stamp in enumerate(stamps, 1))
+            for i, stamp in enumerate(stamps, 1):
+                self.assertEqual(len(previews), i - 1)
+                yield i, stamp, image, (64, 64)
+            self.assertEqual(len(previews), len(stamps))
 
-        def result(stamp):
+        def result(stamp, optimized=False):
             pose = np.eye(4)
-            pose[0, 3] = -stamp
+            pose[0, 3] = -(10. + 2 * stamp if optimized else stamp)
             return dict(timestamp_s=stamp, tracking_state=1 if stamp == .2 else 2,
-                        map_id=0, T_cw=pose, depth_anchors=anchors)
+                        map_id=0, T_cw=pose,
+                        depth_anchors=[[x, y, 2 * z if optimized else z] for x, y, z in anchors])
 
-        for model in sorted(BATCH_POSE_MODELS):
+        for model in sorted(LEARNED_POSE_MODELS):
             with self.subTest(model=model), tempfile.TemporaryDirectory() as folder, \
                     patch('modules.mapping.data.stream_mapping.frames', side_effect=frames_at_rate) as frames, \
                     patch('modules.mapping.data.stream_mapping.start_learned_tracker') as start:
+                previews = []
                 worker = start.return_value
-                worker.finish.return_value = {stamp: result(stamp) for stamp in stamps}
+                worker.track.side_effect = lambda _image, stamp: result(stamp)
+                worker.finish.return_value = {stamp: result(stamp, optimized=True) for stamp in stamps}
                 estimator = MagicMock(device='test')
                 estimator.estimate.side_effect = lambda rgb: np.full(rgb.shape[:2], 2., np.float32)
 
-                def load_depth():
-                    worker.close.assert_called_once()
-                    return estimator
+                def preview(snapshot):
+                    worker.finish.assert_not_called()
+                    previews.append(snapshot)
 
                 output = Path(folder) / 'result'
                 orb = MagicMock()
                 run('unused', output, {'frame_fps': 30, 'sample_fps': 5, 'semantic_mapping': False,
-                    'pose_model': model, 'pose_model_location': folder}, estimator_factory=load_depth,
-                    tracker_factory=orb)
+                    'pose_model': model, 'pose_model_location': folder}, estimator_factory=lambda: estimator,
+                    tracker_factory=orb, on_preview=preview)
                 orb.assert_not_called()
                 self.assertEqual(start.call_args.args[0], model)
-                self.assertEqual(frames.call_count, 2)
+                frames.assert_called_once()
+                self.assertTrue(previews[0]['points'])
+                self.assertAlmostEqual(previews[-1]['pose_position'][0], .4)
                 worker.finish.assert_called_once_with(list(stamps))
+                worker.close.assert_called_once()
                 scene = json.loads((output / 'scene.json').read_text(encoding='utf-8'))
                 self.assertEqual(scene['depth_mapping']['pose_model'], model)
                 self.assertEqual(scene['cameras'][-1]['pose_source'], model)
-                self.assertAlmostEqual(scene['cameras'][-1]['position'][0], .4)
+                self.assertAlmostEqual(scene['cameras'][-1]['position'][0], .8)
+                self.assertTrue(all(point[3] == -4. for point in scene['points']))
 
     def test_explicit_pose_selection_uses_dpvo_only_for_hybrid(self):
         import json

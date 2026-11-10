@@ -19,6 +19,15 @@ ROOT = Path(__file__).resolve().parents[3]
 MODEL_ROOT = ROOT / 'data/models/reconstruction'
 POSE_SOURCE = ROOT / 'modules/mapping/localization/learned_pose'
 POSE_PREPARATION = threading.Lock()
+# These builds have the same dependencies as this Dockerfile. Mounting the
+# current worker lets existing installations keep their downloaded runtimes.
+PREVIEW_RUNTIME_DOCKERFILE = '5d3bc51414ff39444e0258c160f7f18017eedc78b03eb3d1e11fc8279e018e2e'
+COMPATIBLE_POSE_IMAGES = frozenset({
+    '829f1825370cebd70d48c01763615636b93ff3c33a4f7a74d8ccaa83515b99fa',
+    'aba470e0b029269137ffaf949f24bf019fe9e067894b4e4565be12136bf32715',
+    '6ecb3f0d6e5ed69dc35b76316e794b19b94366ed85e166a752484b2f9256a940',
+    'ddc07678e9200b947951ffaa846b42041c896c34b020581f2511bfd8097393fd',
+})
 DEPTH_V2 = 'depth-anything-v2-metric-indoor-small'
 VIDEO_DEPTH = 'metric-video-depth-anything-small'
 MOGE = 'moge-2-small'
@@ -253,8 +262,14 @@ def require_pose_image(image):
         require_slam_image()
         return
     require_slam_image(image)
-    if docker_assets.image_source(image) != docker_assets.source_hash(POSE_SOURCE):
-        raise RuntimeError('slam_image_missing')
+    installed = docker_assets.image_source(image)
+    if installed == docker_assets.source_hash(POSE_SOURCE):
+        return
+    if installed in COMPATIBLE_POSE_IMAGES:
+        dockerfile = (POSE_SOURCE / 'Dockerfile').read_bytes().replace(b'\r\n', b'\n')
+        if sha256(dockerfile).hexdigest() == PREVIEW_RUNTIME_DOCKERFILE:
+            return
+    raise RuntimeError('slam_image_missing')
 
 
 def install_pose(key, root, progress):
