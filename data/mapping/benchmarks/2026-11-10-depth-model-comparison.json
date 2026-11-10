@@ -1,0 +1,486 @@
+{
+  "repository_revision": "80d502c01a78472929b704366b5bab0219b27e24",
+  "hardware": "NVIDIA GeForce RTX 4050 Laptop GPU 6 GiB",
+  "sample_fps": 5,
+  "depth_range_m": [
+    0.2,
+    8
+  ],
+  "point_budget": 32000,
+  "scope": "Three anonymized source clips. All depth results use identical 5 FPS frames and a single ORB-SLAM3 run per clip. Framewise runs share one causal trajectory. The paced clip used its first eight seconds.",
+  "models": [
+    {
+      "title": "Depth Anything V2 Metric Indoor Small",
+      "repo": "depth-anything/Depth-Anything-V2-Metric-Indoor-Small-hf",
+      "hf_revision": "8078d68a9c75a972131914f6afd0c1723be0da7f",
+      "parameters_million": 24.8,
+      "weights_bytes": 99173660
+    },
+    {
+      "title": "Metric Video Depth Anything Small",
+      "repo": "depth-anything/Metric-Video-Depth-Anything-Small",
+      "hf_revision": "273d090f2ce17df50c2872d82c8322c45da5b4dd",
+      "code_revision": "4f5ae23172ba60fd7bc11ef671cca678842c7072",
+      "parameters_million": 28.4,
+      "weights_bytes": 116444063
+    },
+    {
+      "title": "MoGe-2 Small",
+      "repo": "Ruicheng/moge-2-vits-normal",
+      "hf_revision": "26b477f41595707c5db6770294c0d1721e8ed4ed",
+      "code_revision": "07444410f1e33f402353b99d6ccd26bd31e469e8",
+      "parameters_million": 35,
+      "weights_bytes": 140550416
+    }
+  ],
+  "clips": [
+    {
+      "clip": "clip-1",
+      "depth_resolution": [
+        384,
+        216
+      ],
+      "frames": 371,
+      "native_confirmed": 206,
+      "pose_sources": {
+        "bridge_held": 1,
+        "bridge_visual": 2,
+        "origin_estimated": 1,
+        "pose_held": 71,
+        "pose_predicted": 5,
+        "pose_reused": 88,
+        "tracking": 203
+      },
+      "bridge_visual": 2,
+      "bridge_held": 1,
+      "results": [
+        {
+          "model": "Depth Anything V2 Metric Indoor Small",
+          "batch": {
+            "inference_s": 8.542,
+            "effective_fps": 43.43,
+            "peak_cuda_allocated_mib": 83.6,
+            "median_depth_m": 4.4101,
+            "native_maps": 3,
+            "mapped_frames": 206
+          },
+          "framewise": {
+            "depth_ms": {
+              "p50": 15.377,
+              "p95": 22.754,
+              "p99": 26.981,
+              "max": 357.115
+            },
+            "voxel_ms": {
+              "p50": 12.34,
+              "p95": 16.736,
+              "p99": 19.705,
+              "max": 23.656
+            },
+            "combined_ms": {
+              "p50": 31.958,
+              "p95": 43.788,
+              "p99": 48.214,
+              "max": 370.928
+            },
+            "paced_samples": 0,
+            "paced_due_to_map_ms": null,
+            "paced_over_200ms": 0,
+            "depth_over_200ms": 1,
+            "combined_over_200ms": 2,
+            "peak_cuda_allocated_mib": 83.6,
+            "estimated_depth_median_m": 4.4101,
+            "integrated_frames": 371,
+            "maps": 1,
+            "points": 31897
+          }
+        },
+        {
+          "model": "Metric Video Depth Anything Small",
+          "batch": {
+            "inference_s": 8.83,
+            "effective_fps": 42.01,
+            "peak_cuda_allocated_mib": 567.1,
+            "median_depth_m": 3.2975,
+            "native_maps": 3,
+            "mapped_frames": 205
+          },
+          "framewise": {
+            "depth_ms": {
+              "p50": 25.987,
+              "p95": 36.09,
+              "p99": 42.007,
+              "max": 407.119
+            },
+            "voxel_ms": {
+              "p50": 12.918,
+              "p95": 17.357,
+              "p99": 21.04,
+              "max": 24.441
+            },
+            "combined_ms": {
+              "p50": 40.021,
+              "p95": 51.516,
+              "p99": 56.352,
+              "max": 416.066
+            },
+            "paced_samples": 0,
+            "paced_due_to_map_ms": null,
+            "paced_over_200ms": 0,
+            "depth_over_200ms": 1,
+            "combined_over_200ms": 1,
+            "peak_cuda_allocated_mib": 300.2,
+            "estimated_depth_median_m": 3.3457,
+            "integrated_frames": 371,
+            "maps": 1,
+            "points": 25895
+          }
+        },
+        {
+          "model": "MoGe-2 Small",
+          "batch": {
+            "inference_s": 25.228,
+            "effective_fps": 14.71,
+            "peak_cuda_allocated_mib": 477.9,
+            "median_depth_m": 3.192,
+            "native_maps": 3,
+            "mapped_frames": 206
+          },
+          "framewise": {
+            "depth_ms": {
+              "p50": 55.307,
+              "p95": 58.979,
+              "p99": 67.647,
+              "max": 1106.887
+            },
+            "voxel_ms": {
+              "p50": 13.47,
+              "p95": 19.257,
+              "p99": 23.287,
+              "max": 31.427
+            },
+            "combined_ms": {
+              "p50": 69.528,
+              "p95": 77.36,
+              "p99": 83.292,
+              "max": 1120.964
+            },
+            "paced_samples": 0,
+            "paced_due_to_map_ms": null,
+            "paced_over_200ms": 0,
+            "depth_over_200ms": 1,
+            "combined_over_200ms": 1,
+            "peak_cuda_allocated_mib": 479.5,
+            "estimated_depth_median_m": 3.192,
+            "integrated_frames": 371,
+            "maps": 1,
+            "points": 28190
+          }
+        }
+      ]
+    },
+    {
+      "clip": "clip-2",
+      "depth_resolution": [
+        384,
+        288
+      ],
+      "frames": 956,
+      "native_confirmed": 610,
+      "pose_sources": {
+        "bridge_held": 2,
+        "origin_estimated": 1,
+        "pose_held": 260,
+        "pose_predicted": 35,
+        "pose_reused": 52,
+        "scale_reused": 60,
+        "tracking": 546
+      },
+      "bridge_visual": 0,
+      "bridge_held": 2,
+      "results": [
+        {
+          "model": "Depth Anything V2 Metric Indoor Small",
+          "batch": {
+            "inference_s": 25.428,
+            "effective_fps": 37.6,
+            "peak_cuda_allocated_mib": 94.7,
+            "median_depth_m": 3.7904,
+            "native_maps": 2,
+            "mapped_frames": 548
+          },
+          "framewise": {
+            "depth_ms": {
+              "p50": 27.916,
+              "p95": 39.535,
+              "p99": 77.687,
+              "max": 114.6
+            },
+            "voxel_ms": {
+              "p50": 13.967,
+              "p95": 22.095,
+              "p99": 26.85,
+              "max": 40.779
+            },
+            "combined_ms": {
+              "p50": 44.73,
+              "p95": 68.16,
+              "p99": 84.274,
+              "max": 118.253
+            },
+            "paced_samples": 40,
+            "paced_due_to_map_ms": {
+              "p50": 82.687,
+              "p95": 90.849,
+              "p99": 107.58,
+              "max": 118.257
+            },
+            "paced_over_200ms": 0,
+            "depth_over_200ms": 0,
+            "combined_over_200ms": 0,
+            "peak_cuda_allocated_mib": 94.7,
+            "estimated_depth_median_m": 3.7904,
+            "integrated_frames": 956,
+            "maps": 1,
+            "points": 27996
+          }
+        },
+        {
+          "model": "Metric Video Depth Anything Small",
+          "batch": {
+            "inference_s": 37.882,
+            "effective_fps": 25.24,
+            "peak_cuda_allocated_mib": 822.0,
+            "median_depth_m": 2.952,
+            "native_maps": 2,
+            "mapped_frames": 552
+          },
+          "framewise": {
+            "depth_ms": {
+              "p50": 36.937,
+              "p95": 70.502,
+              "p99": 93.862,
+              "max": 190.7
+            },
+            "voxel_ms": {
+              "p50": 16.307,
+              "p95": 25.344,
+              "p99": 31.528,
+              "max": 56.892
+            },
+            "combined_ms": {
+              "p50": 55.629,
+              "p95": 90.952,
+              "p99": 117.116,
+              "max": 196.916
+            },
+            "paced_samples": 40,
+            "paced_due_to_map_ms": {
+              "p50": 76.307,
+              "p95": 129.075,
+              "p99": 186.329,
+              "max": 197.118
+            },
+            "paced_over_200ms": 0,
+            "depth_over_200ms": 0,
+            "combined_over_200ms": 0,
+            "peak_cuda_allocated_mib": 382.0,
+            "estimated_depth_median_m": 2.9229,
+            "integrated_frames": 956,
+            "maps": 1,
+            "points": 27835
+          }
+        },
+        {
+          "model": "MoGe-2 Small",
+          "batch": {
+            "inference_s": 67.032,
+            "effective_fps": 14.26,
+            "peak_cuda_allocated_mib": 483.6,
+            "median_depth_m": 2.9696,
+            "native_maps": 2,
+            "mapped_frames": 542
+          },
+          "framewise": {
+            "depth_ms": {
+              "p50": 55.436,
+              "p95": 58.212,
+              "p99": 67.449,
+              "max": 435.945
+            },
+            "voxel_ms": {
+              "p50": 15.844,
+              "p95": 20.332,
+              "p99": 24.987,
+              "max": 28.758
+            },
+            "combined_ms": {
+              "p50": 71.966,
+              "p95": 78.021,
+              "p99": 82.714,
+              "max": 440.979
+            },
+            "paced_samples": 40,
+            "paced_due_to_map_ms": {
+              "p50": 68.952,
+              "p95": 179.823,
+              "p99": 395.647,
+              "max": 440.996
+            },
+            "paced_over_200ms": 2,
+            "depth_over_200ms": 1,
+            "combined_over_200ms": 1,
+            "peak_cuda_allocated_mib": 483.6,
+            "estimated_depth_median_m": 2.9696,
+            "integrated_frames": 956,
+            "maps": 1,
+            "points": 25960
+          }
+        }
+      ]
+    },
+    {
+      "clip": "clip-3",
+      "depth_resolution": [
+        384,
+        216
+      ],
+      "frames": 139,
+      "native_confirmed": 127,
+      "pose_sources": {
+        "bridge_held": 1,
+        "origin_estimated": 1,
+        "pose_held": 6,
+        "pose_predicted": 5,
+        "tracking": 126
+      },
+      "bridge_visual": 0,
+      "bridge_held": 1,
+      "results": [
+        {
+          "model": "Depth Anything V2 Metric Indoor Small",
+          "batch": {
+            "inference_s": 3.643,
+            "effective_fps": 38.16,
+            "peak_cuda_allocated_mib": 83.6,
+            "median_depth_m": 3.8436,
+            "native_maps": 1,
+            "mapped_frames": 127
+          },
+          "framewise": {
+            "depth_ms": {
+              "p50": 30.365,
+              "p95": 39.8,
+              "p99": 58.106,
+              "max": 58.513
+            },
+            "voxel_ms": {
+              "p50": 12.016,
+              "p95": 18.466,
+              "p99": 20.658,
+              "max": 27.099
+            },
+            "combined_ms": {
+              "p50": 43.979,
+              "p95": 53.042,
+              "p99": 65.286,
+              "max": 68.081
+            },
+            "paced_samples": 0,
+            "paced_due_to_map_ms": null,
+            "paced_over_200ms": 0,
+            "depth_over_200ms": 0,
+            "combined_over_200ms": 0,
+            "peak_cuda_allocated_mib": 83.6,
+            "estimated_depth_median_m": 3.8436,
+            "integrated_frames": 139,
+            "maps": 1,
+            "points": 30706
+          }
+        },
+        {
+          "model": "Metric Video Depth Anything Small",
+          "batch": {
+            "inference_s": 2.349,
+            "effective_fps": 59.19,
+            "peak_cuda_allocated_mib": 567.1,
+            "median_depth_m": 2.9459,
+            "native_maps": 1,
+            "mapped_frames": 127
+          },
+          "framewise": {
+            "depth_ms": {
+              "p50": 28.258,
+              "p95": 29.418,
+              "p99": 72.915,
+              "max": 154.55
+            },
+            "voxel_ms": {
+              "p50": 11.517,
+              "p95": 20.339,
+              "p99": 21.275,
+              "max": 23.173
+            },
+            "combined_ms": {
+              "p50": 40.398,
+              "p95": 46.185,
+              "p99": 80.807,
+              "max": 162.605
+            },
+            "paced_samples": 0,
+            "paced_due_to_map_ms": null,
+            "paced_over_200ms": 0,
+            "depth_over_200ms": 0,
+            "combined_over_200ms": 0,
+            "peak_cuda_allocated_mib": 300.2,
+            "estimated_depth_median_m": 2.8504,
+            "integrated_frames": 139,
+            "maps": 1,
+            "points": 27498
+          }
+        },
+        {
+          "model": "MoGe-2 Small",
+          "batch": {
+            "inference_s": 8.827,
+            "effective_fps": 15.75,
+            "peak_cuda_allocated_mib": 481.5,
+            "median_depth_m": 3.0594,
+            "native_maps": 1,
+            "mapped_frames": 127
+          },
+          "framewise": {
+            "depth_ms": {
+              "p50": 53.602,
+              "p95": 54.479,
+              "p99": 66.361,
+              "max": 387.356
+            },
+            "voxel_ms": {
+              "p50": 13.958,
+              "p95": 19.367,
+              "p99": 22.394,
+              "max": 23.313
+            },
+            "combined_ms": {
+              "p50": 68.022,
+              "p95": 74.595,
+              "p99": 77.153,
+              "max": 391.513
+            },
+            "paced_samples": 0,
+            "paced_due_to_map_ms": null,
+            "paced_over_200ms": 0,
+            "depth_over_200ms": 1,
+            "combined_over_200ms": 1,
+            "peak_cuda_allocated_mib": 481.5,
+            "estimated_depth_median_m": 3.0594,
+            "integrated_frames": 139,
+            "maps": 1,
+            "points": 25826
+          }
+        }
+      ]
+    }
+  ]
+}
