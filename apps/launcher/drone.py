@@ -378,7 +378,9 @@ def run_real(*, phone=False, no_browser=False, interactive=None):
     open_page(page, no_browser)
     say()
     say(f'  실시간 감독  {page}')
-    say(f'  지도 콘솔    {gateway}/#/map')
+    if keeper:
+        say(f'  실시간 지도  {url(CONSOLE_PORT)}/#live (지도 콘솔)')
+    say(f'  지도 콘솔    {gateway}/#/map (촬영 영상 복원·3D 지도 편집)')
     say(f'  탐색 결과    {gateway}/#/review')
     if phone and not reuse:
         for line in phone_lines(REAL_PORT):
