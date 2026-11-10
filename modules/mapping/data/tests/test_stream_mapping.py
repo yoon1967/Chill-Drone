@@ -176,6 +176,71 @@ class StreamMappingTests(unittest.TestCase):
             self.assertEqual(selected[0][2].shape, (128, 256, 3))
             self.assertEqual(selected[0][3], (320, 160))
 
+    def test_causal_video_uses_dpvo_during_an_orb_gap_and_records_its_source(self):
+        import json
+        from modules.mapping.data.mapping_history import HistoryReader
+
+        image = np.full((32, 32, 3), 120, np.uint8)
+        stamps = [n / 10 for n in range(7)]
+        anchors = [[x, y, 3.] for x in (8, 16, 24, 28) for y in (8, 16)]
+
+        def orb_track(_image, stamp):
+            if stamp in (.3, .4):
+                return dict(timestamp_s=stamp, tracking_state=3, map_id=0)
+            pose = np.eye(4)
+            pose[0, 3] = -stamp
+            return dict(timestamp_s=stamp, tracking_state=2, map_id=0, T_cw=pose, depth_anchors=anchors)
+
+        def dpvo_track(_image, stamp):
+            pose = np.eye(4)
+            pose[0, 3] = 5. + stamp / 2.
+            if stamp in (.3, .4):
+                pose[:3, :3] = [[.98, 0, .199], [0, 1, 0], [-.199, 0, .98]]
+            return pose
+
+        class Estimator:
+            def estimate(self, rgb):
+                return np.full(rgb.shape[:2], 2., np.float32)
+
+        orb, dpvo = MagicMock(), MagicMock()
+        orb.track.side_effect = orb_track
+        options = dict(frame_fps=10, sample_fps=5, causal_video=True)
+        for mode in ('available', 'failed', 'unavailable'):
+            with self.subTest(mode=mode), tempfile.TemporaryDirectory() as directory:
+                images = [(n, stamp, image, (32, 32)) for n, stamp in enumerate(stamps, 1)]
+                dpvo.reset_mock()
+
+                def track(rgb, stamp):
+                    if mode == 'failed' and stamp == .3:
+                        raise RuntimeError('gpu_failed')
+                    return dpvo_track(rgb, stamp)
+
+                dpvo.track.side_effect = track
+                output = Path(directory) / 'result'
+                with patch('modules.mapping.data.stream_mapping.frames', return_value=iter(images)), \
+                        patch('modules.mapping.localization.pose_first.OrbPoseTracker', return_value=orb), \
+                        patch('modules.mapping.localization.dpvo_pose.DpvoPoseTracker.start',
+                              return_value=None if mode == 'unavailable' else dpvo):
+                    run('unused', output, options, estimator_factory=Estimator)
+                scene = json.loads((output / 'scene.json').read_text(encoding='utf-8'))
+                expected_frames = int(mode == 'available')
+                self.assertEqual(scene['depth_mapping']['dpvo'],
+                                 dict(status='active' if expected_frames else mode, integrated_frames=expected_frames))
+                history = HistoryReader(output)
+                entries = history.refresh()
+                self.assertEqual([entry['frame_number'] for entry in entries], [1, 3, 5, 7])
+                self.assertEqual(entries[-1]['tracking'], 'tracking')
+                if mode == 'available':
+                    self.assertEqual(entries[2]['tracking'], 'pose_dpvo')
+                    self.assertTrue(entries[2]['estimated_alignment'])
+                    self.assertAlmostEqual(entries[2]['pose_position'][0], .4)
+                    self.assertAlmostEqual(entries[2]['pose_rotation'][0][2], .199)
+                    self.assertEqual(scene['cameras'][2]['pose_source'], 'dpvo_orb_aligned')
+                    self.assertEqual(dpvo.track.call_count, len(stamps))
+                else:
+                    self.assertEqual(entries[2]['tracking'], 'pose_reused')
+                self.assertEqual(dpvo.close.call_count, int(mode != 'unavailable'))
+
     def test_full_rate_video_processes_each_frame_before_reading_the_next(self):
         import json
 
