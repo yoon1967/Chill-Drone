@@ -43,18 +43,20 @@ def write_json(path, value):
 
 
 class DepthEstimator:
-    def __init__(self, *, allow_download=False):
+    def __init__(self, *, allow_download=False, location=None):
         import torch
         from transformers import AutoImageProcessor, AutoModelForDepthEstimation
         self.torch = torch
         torch.set_num_threads(2)
         self.device = 'cuda' if torch.cuda.is_available() else 'cpu'
-        try:
-            location = str(cached_snapshot(MODEL))
-        except ModelAssetsMissing:
-            if not allow_download:
-                raise
-            location = MODEL
+        if location is None:
+            try:
+                location = cached_snapshot(MODEL)
+            except ModelAssetsMissing:
+                if not allow_download:
+                    raise
+                location = MODEL
+        location = str(location)
         local_only = not allow_download or location != MODEL
         self.processor = AutoImageProcessor.from_pretrained(location, use_fast=False, local_files_only=local_only)
         model = AutoModelForDepthEstimation.from_pretrained(location, local_files_only=local_only)

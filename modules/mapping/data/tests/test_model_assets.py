@@ -34,5 +34,5 @@ class ModelAssetsTests(unittest.TestCase):
             for config in (None, str(folder/'config.json')):
                 hub = types.SimpleNamespace(try_to_load_from_cache=lambda *args: config)
                 with self.subTest(config=config), patch.dict('sys.modules', {'huggingface_hub': hub}):
-                    with self.assertRaisesRegex(ModelAssetsMissing, '--prepare-models'):
+                    with self.assertRaisesRegex(ModelAssetsMissing, r'prepare_models --download'):
                         cached_snapshot('scene-model')

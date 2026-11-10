@@ -25,6 +25,18 @@ button, a.primary {
   text-decoration: none;
 }
 button:disabled { opacity: .55; cursor: default; }
+#model-picker { max-width: 940px; padding: 18px; border: 1px solid var(--border); border-radius: 12px; background: #fff; }
+#model-picker h2 { font-size: 17px; margin-bottom: 12px; }
+.model-fields { display: grid; gap: 16px; grid-template-columns: repeat(auto-fit, minmax(min(100%, 355px), 1fr)); }
+.model-field label { display: block; font-weight: 650; margin-bottom: 5px; }
+.model-field select { width: 100%; min-height: 40px; font: inherit; color: inherit; background: #fff;
+  border: 1px solid var(--border); border-radius: 8px; padding: 7px; }
+.model-actions { display: flex; align-items: center; gap: 8px; flex-wrap: wrap; margin-top: 6px; }
+.model-actions button:not(.primary) { min-height: 32px; padding: 3px 9px; font-size: 13px; }
+.model-field progress { margin: 6px 0 0; }
+.model-hint, .model-field [role="status"] { color: var(--muted); font-size: 13px; }
+.model-hint { margin: 14px 0 8px; }
+#model-picker-error { color: #873c22; }
 .primary, a.primary { color: #fff; background: var(--accent); border-color: var(--accent); font-weight: 650; }
 :focus-visible { outline: 2px solid #1d6857; outline-offset: 3px; }
 .drop {

@@ -34,9 +34,10 @@ def check_host(*, mona):
         problems.append('Python 3.12(64비트)를 설치해 주세요. https://www.python.org/downloads/windows/')
     if not console_web_ready() and not console_install_command():
         problems.append(NODE_INSTALL_HINT)
-    docker = docker_assets.docker_problem(mona=mona)
-    if docker:
-        problems.append(docker)
+    if mona:
+        docker = docker_assets.docker_problem(mona=True)
+        if docker:
+            problems.append(docker)
     if problems:
         print('[실행 전 확인] 이 PC에 필요한 설정이 있습니다.', flush=True)
         for problem in problems:
@@ -141,15 +142,19 @@ def ensure_console_web():
     return True
 
 
-def ensure_all(*, mona=False):
-    """선택한 모드의 파일을 준비하고 첫 실패에서 멈춘다."""
+def ensure_all():
+    """관제 화면에 필요한 패키지만 준비한다."""
     try:
         return (ensure_python_environment(allow_install=True)
                 and ensure_gateway_environment(True)
-                and ensure_console_web()
-                and ensure_models()
-                and docker_assets.ensure_image(docker_assets.ORB_IMAGE, docker_assets.ORB_SOURCE)
-                and (not mona or docker_assets.ensure_mona()))
+                and ensure_console_web())
     except OSError as error:
         print(f'[오류] 프로젝트 준비 중 파일 또는 프로그램에 접근하지 못했습니다. {error}', flush=True)
         return False
+
+
+def prepare_flight():
+    """실시간 지도, 사람 탐지, MoNA에 필요한 파일을 요청한 경우에 준비한다."""
+    return (ensure_all() and ensure_models()
+            and docker_assets.ensure_image(docker_assets.ORB_IMAGE, docker_assets.ORB_SOURCE)
+            and docker_assets.ensure_mona())

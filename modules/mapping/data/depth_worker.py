@@ -1,6 +1,7 @@
 """Reusable models, ordered mapping, and bounded live pose input independent of UI."""
 import multiprocessing
 import os
+from pathlib import Path
 import queue
 import signal
 import threading
@@ -25,6 +26,17 @@ class DepthModelCache:
             self.semantics = SemanticEstimator()
         return self.semantics
 
+    def estimator_factory(self, options):
+        if 'depth_model' not in options:
+            return self.get
+        from modules.mapping.data.selected_depth import open_depth
+        # Each saved video has its own temporal history. Free the legacy model
+        # before loading a selected one so only one depth model occupies VRAM.
+        self.estimator = None
+        if not options.get('semantic_mapping'):
+            self.semantics = None
+        return lambda: open_depth(options['depth_model'], Path(options['depth_model_location']), options.get('camera'))
+
 
 def _serve(connection, cancelled, frames):
     # A flight's inference process must never turn a missing cache file into
@@ -41,6 +53,11 @@ def _serve(connection, cancelled, frames):
             _, source, output, options = request
             try:
                 from modules.mapping.data.stream_mapping import run
+                tracker_factory = None
+                if 'pose_model' in options:
+                    from modules.mapping.data.reconstruction_models import ORB
+                    from modules.mapping.localization.pose_first import OrbPoseTracker
+                    tracker_factory = {ORB: OrbPoseTracker}[options['pose_model']]
                 def published(snapshot):
                     connection.send(('preview', snapshot))
                     # No next frame until the parent finishes displaying this one.
@@ -60,7 +77,8 @@ def _serve(connection, cancelled, frames):
                     connection.send(('input', None))
                     return connection.recv()
                 receive.started = False
-                result = run(source, output, options, estimator_factory=cache.get,
+                result = run(source, output, options, estimator_factory=cache.estimator_factory(options),
+                    tracker_factory=tracker_factory,
                     semantic_factory=cache.get_semantics,
                     stop_event=cancelled, on_preview=published,
                     live_receive=receive if request[0] == 'live' else None)

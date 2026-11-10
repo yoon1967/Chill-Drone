@@ -1,4 +1,4 @@
-"""Prepare local containers and the verified MoNA ONNX artifact on first run."""
+"""Check and prepare local containers and the verified MoNA ONNX artifact."""
 
 import hashlib
 import importlib.metadata
@@ -148,6 +148,11 @@ def image_source(image):
         return ''
 
 
+def image_build_command(image, source, digest):
+    return ['docker', 'build', '--progress', 'plain', '--label', f'{SOURCE_LABEL}={digest}',
+            '-t', image, str(source)]
+
+
 def ensure_image(image, source):
     """이미지가 없거나 지금 코드와 다르면 빌드한다. Docker는 바뀐 단계부터 다시 하므로 보통 금방 끝난다.
 
@@ -165,8 +170,7 @@ def ensure_image(image, source):
     else:
         print(f'{image} 이미지가 지금 코드와 달라 다시 빌드합니다. 바뀐 단계부터 다시 하므로 보통 금방 끝나지만, '
               'Dockerfile 앞부분이 바뀌었으면 첫 빌드처럼 오래 걸릴 수 있습니다.', flush=True)
-    built = subprocess.call(['docker', 'build', '--progress', 'plain', '--label', f'{SOURCE_LABEL}={want}',
-                             '-t', image, str(source)], cwd=ROOT) == 0
+    built = subprocess.call(image_build_command(image, source, want), cwd=ROOT) == 0
     if not built and have is not None:
         print(f'[주의] {image} 이미지를 다시 빌드하지 못해 이전 코드로 만든 이미지로 켭니다. '
               '인터넷에 연결된 상태에서 다시 실행하면 다시 빌드합니다.', flush=True)
@@ -225,6 +229,10 @@ def ensure_mona_model():
         if not model_verified(target):
             artifact.replace(target)
     return True
+
+
+def mona_ready():
+    return model_verified(MONA_OUTPUT / 'models' / DA_V2_FP16_FILE) and image_source(MONA_IMAGE) is not None
 
 
 def ensure_mona():

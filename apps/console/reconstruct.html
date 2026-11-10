@@ -36,6 +36,36 @@
     </div>
     <progress id="progress" value="0" max="100" aria-label="영상 복원 진행" hidden></progress>
 
+    <section id="model-picker" aria-labelledby="model-picker-title" hidden>
+      <h2 id="model-picker-title">복원 모델 선택</h2>
+      <div class="model-fields">
+        <div class="model-field">
+          <label for="pose-model">카메라 위치 모델</label>
+          <select id="pose-model" aria-describedby="pose-model-status" disabled></select>
+          <div class="model-actions">
+            <span id="pose-model-status" role="status"></span>
+            <button id="pose-model-action" type="button" hidden></button>
+          </div>
+          <progress id="pose-model-progress" max="100" aria-label="카메라 위치 모델 준비 진행" hidden></progress>
+        </div>
+        <div class="model-field">
+          <label for="depth-model">영상 깊이 모델</label>
+          <select id="depth-model" aria-describedby="depth-model-status" disabled></select>
+          <div class="model-actions">
+            <span id="depth-model-status" role="status"></span>
+            <button id="depth-model-action" type="button" hidden></button>
+          </div>
+          <progress id="depth-model-progress" max="100" aria-label="영상 깊이 모델 다운로드 진행" hidden></progress>
+        </div>
+      </div>
+      <p class="model-hint">크기는 가중치 또는 특징점 사전 파일 기준입니다. GPU 메모리는 깊이 추론 권장량입니다.</p>
+      <div class="model-actions">
+        <span id="model-picker-error" role="status"></span>
+        <button id="model-picker-retry" type="button" hidden>목록 다시 불러오기</button>
+        <button id="start-reconstruction" class="primary" type="button" disabled>영상 복원하기</button>
+      </div>
+    </section>
+
     <section id="recent" aria-labelledby="recent-title" hidden>
       <h2 id="recent-title">최근 복원</h2>
       <p id="recent-empty" role="status"></p>

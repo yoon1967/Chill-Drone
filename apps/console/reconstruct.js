@@ -1,6 +1,8 @@
 import {requestImport} from './import-view.js';
 import {mappingOptions} from './mapping-settings.js';
 import {editorCloud} from './editor-data.js';
+import {showModelPicker, selectedModels, setModelPickerBusy, modelPickerMessage, refreshModelChecks,
+  closeModelPicker} from './reconstruction-models.js';
 
 const $ = id => document.getElementById(id);
 const storageKey = 'mapping-video-reconstruction';
@@ -17,7 +19,8 @@ const messages = {
   stop_live_mapping_before_reconstruction: '실시간 지도 생성을 종료한 뒤 다시 시도하세요.',
   slam_docker_unavailable: 'Docker Desktop을 실행한 뒤 다시 시도하세요.',
   slam_docker_timeout: 'Docker Desktop이 준비된 뒤 다시 시도하세요.',
-  slam_image_missing: '3D 매핑 실행기에서 복원 환경을 준비하세요.',
+  slam_image_missing: '카메라 위치 모델을 준비한 뒤 다시 시도하세요.',
+  reconstruction_models_not_ready: '두 모델의 준비 상태를 확인하세요.',
   depth_mapping_dependencies_missing: '3D 매핑 실행기를 다시 열어 복원 환경을 준비하세요.',
 };
 
@@ -42,8 +45,9 @@ function status(next, label = '', notice = '') {
   $('notice').hidden = !notice;
   $('status-line').hidden = !label;
   $('drop').hidden = next !== 'input';
+  $('model-picker').hidden = next !== 'awaiting_options';
   $('recent').hidden = next !== 'input';
-  $('change').hidden = !['complete', 'partial', 'failed', 'cancelled', 'result-error'].includes(next);
+  $('change').hidden = !['awaiting_options', 'complete', 'partial', 'failed', 'cancelled', 'result-error'].includes(next);
   $('cancel').hidden = !activeStates.has(next);
   $('cancel').disabled = next === 'cancelling' || (busy && !upload);
   $('change').disabled = busy;
@@ -173,7 +177,8 @@ async function display(next) {
   updateProgress(next);
   switch (next.status) {
     case 'awaiting_options':
-      status('failed', '영상을 다시 선택하세요.');
+      status('awaiting_options');
+      showModelPicker();
       break;
     case 'running':
     case 'cancelling':
@@ -247,7 +252,7 @@ async function select(file) {
     upload.signal.throwIfAborted();
     upload = null;
     status('inspecting', '영상 형식과 촬영 정보 확인 중');
-    job = await requestImport('inspect', {auto_reconstruct: mappingOptions({includeSampling: false})}, query());
+    job = await requestImport('inspect', {}, query());
     remember(id);
   } catch (failure) {
     error = failure;
@@ -266,6 +271,8 @@ function reset() {
   watchVersion++;
   clearTimeout(timer);
   disposeMap();
+  closeModelPicker({clear: true});
+  modelPickerMessage('');
   remember(null);
   job = null;
   canRenderPreview = true;
@@ -275,6 +282,33 @@ function reset() {
   status('input');
   refreshRecent();
 }
+
+$('start-reconstruction').addEventListener('click', async () => {
+  const models = selectedModels();
+  if (!models || busy || !id || state !== 'awaiting_options') return;
+  busy = true;
+  setModelPickerBusy(true);
+  modelPickerMessage('복원 시작 확인 중');
+  status('awaiting_options');
+  let started = false;
+  let checkJob = false;
+  try {
+    await requestImport('start', {...mappingOptions({includeSampling: false}), ...models,
+      confirmed: true, mode: 'depth_rgbd', causal_video: true}, query());
+    started = true;
+    closeModelPicker();
+    status('running', '복원 준비 중');
+  } catch (error) {
+    modelPickerMessage(messages[error.cause] || '복원을 시작할 수 없습니다. 다시 시도하세요.');
+    refreshModelChecks();
+    checkJob = !error.httpStatus;
+  } finally {
+    busy = false;
+    setModelPickerBusy(false);
+    $('change').disabled = false;
+  }
+  if (started || checkJob) await watch();
+});
 
 $('choose').addEventListener('click', () => $('video').click());
 $('video').addEventListener('change', event => {
@@ -309,8 +343,16 @@ $('cancel').addEventListener('click', async () => {
   finally { busy = false; }
   await watch();
 });
-$('change').addEventListener('click', () => {
+$('change').addEventListener('click', async () => {
   if (busy) return;
+  if (id && state === 'awaiting_options') {
+    busy = true;
+    $('change').disabled = true;
+    setModelPickerBusy(true);
+    try { await requestImport('cancel', {}, query()); }
+    catch { /* The draft can be reopened through its saved job ID. */ }
+    finally { busy = false; setModelPickerBusy(false); }
+  }
   reset();
   $('choose').focus();
 });
@@ -318,8 +360,13 @@ $('retry').addEventListener('click', () => {
   if (state === 'result-error') showResult();
   else watch();
 });
-window.addEventListener('pagehide', () => { watchVersion++; clearTimeout(timer); upload?.abort(); disposeMap(); });
-window.addEventListener('pageshow', event => { if (event.persisted && id) watch(); });
+window.addEventListener('pagehide', () => { watchVersion++; clearTimeout(timer); upload?.abort(); disposeMap(); closeModelPicker(); });
+window.addEventListener('pageshow', event => {
+  if (event.persisted && id) {
+    if (state === 'awaiting_options') refreshModelChecks();
+    watch();
+  }
+});
 document.addEventListener('visibilitychange', () => { if (!document.hidden && activeStates.has(state) && !busy) watch(); });
 
 try { id = sessionStorage.getItem(storageKey); } catch { /* Storage is optional. */ }

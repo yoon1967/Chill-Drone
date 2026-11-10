@@ -148,20 +148,23 @@ class ModelAndWebTests(unittest.TestCase):
         web.assert_not_called()
         build.assert_not_called()
 
-    def test_real_preparation_builds_both_images_and_demo_skips_mona(self):
+    def test_only_explicit_flight_preparation_downloads_models_and_builds_images(self):
         with patch.object(prepare, 'ensure_python_environment', return_value=True), \
                 patch.object(prepare, 'ensure_gateway_environment', return_value=True), \
-                patch.object(prepare, 'ensure_models', return_value=True), \
+                patch.object(prepare, 'ensure_models', return_value=True) as models, \
                 patch.object(prepare, 'ensure_console_web', return_value=True), \
                 patch.object(docker_assets, 'ensure_image', return_value=True) as build, \
                 patch.object(docker_assets, 'ensure_mona_model', return_value=True), \
                 patch.object(docker_assets, 'probe', return_value=None), \
                 patch.object(docker_assets.subprocess, 'call', return_value=0) as docker:
             self.assertTrue(prepare.ensure_all())
+            models.assert_not_called()
+            build.assert_not_called()
             docker.assert_not_called()
-            self.assertTrue(prepare.ensure_all(mona=True))
+            self.assertTrue(prepare.prepare_flight())
+        models.assert_called_once()
         self.assertEqual([item.args[0] for item in build.call_args_list],
-                         [docker_assets.ORB_IMAGE, docker_assets.ORB_IMAGE, docker_assets.MONA_IMAGE])
+                         [docker_assets.ORB_IMAGE, docker_assets.MONA_IMAGE])
         self.assertEqual(docker.call_args.args[0][:5], ['docker', 'run', '--rm', '--gpus', 'all'])
 
     def test_mona_reuses_verified_model_and_never_publishes_invalid_export(self):

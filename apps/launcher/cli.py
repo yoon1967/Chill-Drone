@@ -1,6 +1,6 @@
 """Chill-Drone 실행기 메뉴와 명령줄. scripts/start.cmd가 `python -m apps.launcher`로 부른다.
 
-메뉴는 두 개다: 1 체험(가짜 드론), 2 실기체 관제. 고른 쪽의 기능을 묻지 않고 모두 켠다.
+메뉴는 두 개다: 1 체험(가짜 드론), 2 실기체 관제.
 """
 import argparse
 import subprocess
@@ -10,7 +10,7 @@ from . import drone, prepare
 
 MENU = [
     ('1', '체험', '가짜 드론으로 관제 화면·사람 탐지·지도(드론 없이)'),
-    ('2', '실기체 관제', '게이트웨이·사람 탐지·3D 지도·MoNA 자율을 모두 켬'),
+    ('2', '실기체 관제', '게이트웨이·사람 탐지·3D 지도·MoNA 자율'),
 ]
 
 
@@ -19,9 +19,10 @@ def build_parser():
     sub = parser.add_subparsers(dest='command', metavar='명령')
     fake = sub.add_parser('fake', help='1 체험: 가짜 드론으로 관제 화면(모두 켬)')
     fake.add_argument('--no-browser', action='store_true', help='브라우저를 열지 않음')
-    real = sub.add_parser('real', help='2 실기체 관제(모두 켬)')
+    real = sub.add_parser('real', help='2 실기체 관제')
     real.add_argument('--phone', action='store_true', help='폰에서도 열리게(같은 망 안에서만, 방화벽 규칙 필요)')
     real.add_argument('--no-browser', action='store_true', help='브라우저를 열지 않음')
+    sub.add_parser('prepare-flight', help='실시간 지도·사람 탐지·MoNA 모델과 이미지를 준비')
     return parser
 
 
@@ -49,7 +50,7 @@ def main(argv=None):
             if not argv:
                 return 0
         args = build_parser().parse_args(argv)
-        if not prepare.check_host(mona=args.command == 'real'):
+        if not prepare.check_host(mona=args.command == 'prepare-flight'):
             return 1
         if sys.prefix == sys.base_prefix:
             try:
@@ -69,6 +70,8 @@ def main(argv=None):
                 return 1
         if args.command == 'fake':
             return drone.run_fake(no_browser=args.no_browser)
+        if args.command == 'prepare-flight':
+            return 0 if prepare.prepare_flight() else 1
         return drone.run_real(phone=args.phone, no_browser=args.no_browser)
     except KeyboardInterrupt:
         print('\n실행을 중단했습니다. 이미 시작한 서비스를 종료하려면 실행기를 다시 열고 Enter를 누르세요.')

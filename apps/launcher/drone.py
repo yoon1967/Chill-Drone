@@ -137,9 +137,9 @@ def owner_lines(owners, procs):
     return [f'       [{proto} {port}] PID {pid}: {by_pid.get(pid, "?")}' for proto, port, pid in owners]
 
 
-def get_ready(*, mona=False):
-    say('[준비] 패키지·모델·웹 의존성·Docker 이미지 확인. 처음에는 인터넷 연결을 유지하세요.')
-    if not prepare.ensure_all(mona=mona):
+def get_ready():
+    say('[준비] 관제 화면의 Python·웹 패키지를 확인합니다.')
+    if not prepare.ensure_all():
         warn('프로젝트 준비를 마치지 못했습니다. 위 메시지의 문제를 해결한 후 scripts/start.cmd를 다시 실행해 주세요.')
         return False
     say('       준비됨')
@@ -153,7 +153,10 @@ def start_detect(procs, gateway):
         return say('       사람 탐지는 이미 켜져 있어요.')
     sys.path.insert(0, str(ROOT))
     from modules.mapping.data.model_assets import person_checkpoint
-    winproc.start_service(f'people-{gateway.rsplit(":", 1)[-1]}', ROOT, detect_cmd(gateway, person_checkpoint()))
+    checkpoint = person_checkpoint()
+    if not checkpoint.is_file():
+        return warn('사람 탐지 모델이 필요합니다. 비행 전에 scripts/start.cmd prepare-flight를 실행해 주세요.')
+    winproc.start_service(f'people-{gateway.rsplit(":", 1)[-1]}', ROOT, detect_cmd(gateway, checkpoint))
     say('       사람 탐지 켬(모델 올리는 데 10~30초). 영상을 켜야 결과가 나와요.')
 
 
@@ -319,9 +322,9 @@ def phone_lines(port):
 
 
 def run_real(*, phone=False, no_browser=False, interactive=None):
-    say('=== 2 실기체 관제: 게이트웨이·사람 탐지·3D 지도·MoNA 자율을 모두 켭니다 ===')
+    say('=== 2 실기체 관제: 게이트웨이·사람 탐지·3D 지도·MoNA 자율 ===')
     show_code()
-    if not get_ready(mona=True):
+    if not get_ready():
         return 1
     gateway = url(REAL_PORT)
     drone_wifi = next((s for s in winproc.wifi_ssids() if re.match(r'(TELLO|RMTT)-', s, re.I)), None)
@@ -370,8 +373,12 @@ def run_real(*, phone=False, no_browser=False, interactive=None):
         say('       지도: 영상이 켜지면(이륙하면 자동) 실행기가 지도를 시작하고 유지해요.')
         say('       지도 콘솔도 이 게이트웨이의 드론 연결을 보여 줘요(직접 연결 버튼 없음, 지도를 끝낼 땐 "지도 마무리").')
     stop_event = threading.Event()
-    mona_starter = start_mona_when_connected(gateway, stop_event)
-    say('       MoNA: 드론이 붙으면 켜요(비행 모드: 이륙 뒤 화면에서 "자율"을 눌러야 움직임).')
+    mona_starter = None
+    if mona_running() or prepare.docker_assets.mona_ready():
+        mona_starter = start_mona_when_connected(gateway, stop_event)
+        say('       MoNA: 드론이 붙으면 켜요(비행 모드: 이륙 뒤 화면에서 "자율"을 눌러야 움직임).')
+    else:
+        warn('MoNA 모델과 이미지가 필요합니다. 비행 전에 scripts/start.cmd prepare-flight를 실행해 주세요.')
 
     page = gateway + '/#/live'
     say('[5/5] 화면 열기')

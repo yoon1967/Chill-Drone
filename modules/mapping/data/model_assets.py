@@ -54,3 +54,12 @@ def require_local_models():
     if not result['person'].is_file() or result['person'].stat().st_size == 0:
         raise ModelAssetsMissing(PERSON_MODEL)
     return result
+
+
+def semantic_models_ready():
+    try:
+        cached_snapshot(SCENE_MODEL)
+        checkpoint = person_checkpoint()
+        return checkpoint.is_file() and checkpoint.stat().st_size > 0
+    except (ModelAssetsMissing, OSError):
+        return False
