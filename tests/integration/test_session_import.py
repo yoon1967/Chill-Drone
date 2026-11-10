@@ -538,6 +538,16 @@ class SessionImportTests(unittest.TestCase):
         self.assertEqual((default['sample_fps'], default['frame_fps']), (5, 29.97))
         self.assertEqual(validate_options({**options, 'sample_fps': 4.5}, summary)['sample_fps'], 4.5)
 
+    def test_explicit_reconstruction_models_must_match_their_roles(self):
+        from modules.mapping.data.reconstruction_models import MOGE, ORB
+        options = {'confirmed': True, 'mode': 'depth_rgbd', 'causal_video': True, 'pose_model': ORB, 'depth_model': MOGE}
+        summary = {'kind': 'video', 'source_fps': 30}
+        validated = validate_options(options, summary)
+        self.assertEqual((validated['pose_model'], validated['depth_model']), (ORB, MOGE))
+        for invalid in ({'pose_model': MOGE}, {'depth_model': ORB}, {'depth_model': None}):
+            with self.subTest(invalid=invalid), self.assertRaisesRegex(ValueError, 'invalid_reconstruction_model'):
+                validate_options({**options, **invalid}, summary)
+
     def test_default_depth_import_preserves_cumulative_preview_option(self):
         options = {'confirmed': True, 'mode': 'depth_rgbd'}
         self.assertIsNone(validate_options(options, {})['render_window_s'])

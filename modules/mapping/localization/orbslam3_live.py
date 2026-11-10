@@ -308,7 +308,7 @@ class LiveSession:
         name = "ssafy-orb-" + uuid.uuid4().hex[:12]
         process = reader = writer = log = preview_worker = None
         try:
-            command = ["docker", "run", "--rm", "-i", "--name", name, "--network", "none", "--cap-drop", "ALL",
+            command = ["docker", "run", "--pull=never", "--rm", "-i", "--name", name, "--network", "none", "--cap-drop", "ALL",
                 "--security-opt", "no-new-privileges", "--cpus", "6", "--memory", "8g",
                 "--mount", f"type=bind,source={self.path},target=/output", self.image,
                 "-", "/output/camera.yaml", "/output", "1", "0"]

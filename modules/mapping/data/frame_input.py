@@ -106,6 +106,14 @@ def validate_options(options, summary):
     if mode not in {'sfm', 'depth_rgbd'}:
         raise ValueError('invalid_reconstruction_mode')
     result['mode'] = mode
+    if 'pose_model' in options or 'depth_model' in options:
+        from .reconstruction_models import model_for
+        if mode != 'depth_rgbd' or summary.get('kind') != 'video':
+            raise ValueError('video_required')
+        for kind in ('pose', 'depth'):
+            field = kind + '_model'
+            model_for(options.get(field), kind)
+            result[field] = options[field]
     if causal_video or full_video:
         if mode != 'depth_rgbd' or summary.get('kind') != 'video':
             raise ValueError('video_required')

@@ -68,6 +68,8 @@ Thumbs.db
 # Keep the public synthetic point-cloud example; real captures remain excluded.
 !/data/samples/poc-v0.1/points.ply
 # Native reconstruction caches and vocabulary are provisioned locally.
+/data/models/*
+!/data/models/.gitignore
 ORBvoc.txt
 ORBvoc.bin
 cameras.bin

@@ -296,6 +296,9 @@ class ViewerHandler(BaseHTTPRequestHandler):
         if urlsplit(self.path).path.startswith('/api/import/'):
             self.import_request()
             return
+        if urlsplit(self.path).path == '/api/reconstruction-models/download':
+            self.model_request()
+            return
         if urlsplit(self.path).path.startswith('/api/camera-profiles'):
             self.profile_request()
             return
@@ -730,7 +733,54 @@ class ViewerHandler(BaseHTTPRequestHandler):
             raise ValueError('stop_live_mapping_before_reconstruction')
         summary = self.imports.job(key).get('summary', {})
         body = self.profile_config(body, 'file', (summary.get('width'), summary.get('height')))
-        return self.imports.start(key, body, presentation_sync=not inspected, inspected=inspected)
+        return self.imports.start(key, body, presentation_sync=not inspected and 'pose_model' not in body,
+                                  inspected=inspected)
+
+    def model_request(self):
+        from modules.mapping.data.reconstruction_models import catalog, model_for
+
+        if not self.imports:
+            self.json_response({'error': 'imports_not_enabled'}, 404)
+            return
+        url = urlsplit(self.path)
+        action = url.path.removeprefix('/api/reconstruction-models')
+        models = self.imports.models
+        try:
+            if self.command == 'POST':
+                length = int(self.headers.get('Content-Length', '0'))
+                if not 0 < length <= 1024:
+                    raise ValueError('invalid_request_size')
+                self.connection.settimeout(10)
+                data = json.loads(self.rfile.read(length))
+                if not isinstance(data, dict):
+                    raise ValueError('invalid_reconstruction_model')
+                self.json_response(models.download(data.get('id')), 202)
+            elif action == '':
+                self.json_response({'models': catalog()})
+            elif action in {'/status', '/events'}:
+                key = parse_qs(url.query).get('id', [''])[0]
+                model_for(key)
+                if action == '/status':
+                    self.json_response(models.status(key))
+                    return
+                self.send_response(200)
+                self.send_header('Content-Type', 'text/event-stream; charset=utf-8')
+                self.send_header('Cache-Control', 'no-store')
+                self.send_header('Connection', 'close')
+                self.end_headers()
+                self.close_connection = True
+                self.connection.settimeout(10)
+                for state in models.events(key):
+                    message = ': keep-alive\n\n' if state is None else 'data: ' + json.dumps(state) + '\n\n'
+                    self.wfile.write(message.encode('utf-8'))
+                    self.wfile.flush()
+            else:
+                self.send_error(404)
+        except (ConnectionError, TimeoutError):
+            self.close_connection = True
+        except (ValueError, OSError, ImportError) as error:
+            self.close_connection = True
+            self.json_response({'error': str(error)[:200]}, 400)
 
     def import_request(self):
         if not self.imports:
@@ -904,6 +954,9 @@ class ViewerHandler(BaseHTTPRequestHandler):
             return
         if path.startswith('/api/import/'):
             self.import_request()
+            return
+        if path == '/api/reconstruction-models' or path.startswith('/api/reconstruction-models/'):
+            self.model_request()
             return
         if path == '/api/editor/supervisor':
             self.supervisor_cloud()
@@ -1222,6 +1275,7 @@ class ViewerHandler(BaseHTTPRequestHandler):
                   '/editor-data.js': APP / 'editor-data.js', '/editor.css': APP / 'editor.css',
                   '/reconstruct.html': APP / 'reconstruct.html', '/reconstruct.js': APP / 'reconstruct.js',
                   '/reconstruct.css': APP / 'reconstruct.css',
+                  '/reconstruction-models.js': APP / 'reconstruction-models.js',
                   "/vendor/three.module.js": APP / "node_modules/three/build/three.module.js",
                   "/vendor/three.core.js": APP / "node_modules/three/build/three.core.js",
                   "/vendor/OrbitControls.js": APP / "node_modules/three/examples/jsm/controls/OrbitControls.js"}

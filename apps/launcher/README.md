@@ -1,6 +1,6 @@
 # Chill-Drone 실행기 (`scripts/start.cmd`)
 
-프로젝트를 켜는 실행 파일은 `scripts\start.cmd` 하나다. 더블클릭하면 메뉴가 두 개 뜨고, 고른 쪽의 기능을 **묻지 않고 모두** 켠다.
+프로젝트를 켜는 실행 파일은 `scripts\start.cmd` 하나다. 더블클릭하면 체험과 실기체 관제 메뉴가 뜬다.
 명령줄에서는 `scripts\start.cmd fake` 또는 `scripts\start.cmd real`. 내용은 이 폴더의 Python 모듈(`python -m apps.launcher`)이다.
 매핑 계측 도구는 [modules/mapping/benchmarks](../../modules/mapping/benchmarks/)에 있다.
 
@@ -15,17 +15,13 @@
 2. **실행 전 확인**에 표시된 항목을 준비한 뒤 같은 파일을 다시 실행한다.
    - [Python 3.12(64비트)](https://www.python.org/downloads/windows/)와 [Node.js LTS](https://nodejs.org/)를 설치한다.
      이미 지도 콘솔 웹 의존성이 준비됐거나 pnpm을 쓸 수 있으면 Node.js 설치 안내는 생략한다.
-   - [Docker Desktop](https://docs.docker.com/desktop/setup/install/windows-install/)을 설치하고 직접 열어 첫 실행 설정을 마친다.
-     이 PC의 Linux 컨테이너 엔진이 시작될 때까지 기다린다.
-   - 실기체 메뉴에서 MoNA를 쓰려면 [Docker Desktop의 WSL 2 엔진과 NVIDIA GPU 드라이버](https://docs.docker.com/desktop/features/gpu/)를 준비한다.
-3. 실행 전 확인을 통과하면 같은 창에서 프로젝트 Python 가상환경, Python·웹 패키지, 지도·사람 탐지 모델, ORB-SLAM3 이미지를 준비한다.
-   실기체 메뉴에서는 MoNA 모델과 이미지도 준비하고 컨테이너에서 GPU 깊이 추론을 확인한다.
-   첫 준비는 오래 걸릴 수 있다. 준비에 실패하면 표시된 문제를 해결한 뒤 다시 실행한다. 이미 받은 파일과 이미지는 재사용한다.
-   - Docker 이미지(ORB-SLAM3·MoNA)에는 만든 코드(Dockerfile과 COPY·ADD한 파일)의 해시를 라벨(`b205.launcher.source-sha256`)로
-     붙인다. `git pull`로 그 코드가 바뀌면 켤 때 다시 빌드한다. Docker가 바뀐 단계부터 다시 하므로 보통 금방 끝나지만,
-     Dockerfile 앞부분(패키지 설치)이 바뀌었거나 Docker 빌드 캐시가 지워졌으면 첫 빌드처럼 오래 걸린다(MoNA는 15분 넘게).
-     그래서 **비행하러 가기 전에 인터넷에 연결된 곳에서 한 번 켠다**. 이 라벨 전에 만든 이미지도 한 번 다시 빌드한다.
-     다시 빌드하지 못하면(드론 Wi-Fi라 인터넷이 없는 등) 있던 이미지로 켜고 알린다.
+   - ORB-SLAM3를 쓰려면 [Docker Desktop](https://docs.docker.com/desktop/setup/install/windows-install/)을 열어
+     Linux 컨테이너 엔진을 시작한다.
+   - MoNA를 쓰려면 [Docker Desktop의 WSL 2 엔진과 NVIDIA GPU 드라이버](https://docs.docker.com/desktop/features/gpu/)를 준비한다.
+3. 일반 실행은 프로젝트 Python 가상환경과 Python·웹 패키지만 준비한다. 영상 복원 모델은 **지도 콘솔**에서 영상을 열고 직접 준비한다.
+   실시간 지도·사람 탐지·MoNA를 처음 쓰기 전에는 인터넷에 연결해 `scripts\start.cmd prepare-flight`를 실행한다.
+   이 명령이 기존 비행용 모델과 Docker 이미지를 준비하고 컨테이너에서 MoNA CUDA 추론을 확인한다.
+   Dockerfile 또는 빌드에 포함된 파일이 바뀌었을 때도 이 명령으로 이미지를 갱신할 수 있다.
 4. 준비가 끝나면 관제 화면이 열린다. 실기체를 쓸 때는 준비 완료 안내가 나온 뒤 드론을 켜고 PC를 드론 Wi-Fi에 연결한다.
 
 메뉴 1·2의 **지도 콘솔**(관제 화면 `#/map`)에서 영상 드롭, 최근 복원, 저장 결과의 3D 지도 편집을 쓴다.
@@ -49,8 +45,8 @@
    - 지도 시작이 연달아 세 번 실패하면(Docker 꺼짐 등) 더 시도하지 않는다. 다른 지도가 돌거나 정리 중인 것은 실패로 세지 않는다.
    - 지도 콘솔의 "1. 드론 연결" 칸은 관제 게이트웨이의 드론 연결·배터리·영상을 보여 주고, 직접 연결 버튼(드론 검색·Wi-Fi 연결 등)은
      숨긴다(드론은 게이트웨이가 쥐고 있어서). 콘솔에서 지도를 끝내는 버튼은 **지도 마무리**다.
-5. **MoNA 자율:** 시작할 때 검증된 깊이 가중치로 CUDA용 ONNX를 만들고 체크섬을 확인한다. 컨테이너에서 GPU 깊이 추론이 가능한지
-   확인한 뒤 드론이 붙으면 MoNA를 백그라운드에서 시작한다. 이륙 뒤 화면에서 "자율"을 누르면 기체에 자율 명령이 적용된다.
+5. **MoNA 자율**은 비행 준비를 마친 PC에서 드론이 붙으면 백그라운드에서 시작한다.
+   이륙 뒤 화면에서 "자율"을 누르면 기체에 자율 명령이 적용된다.
 
 `--phone`을 붙이면 게이트웨이를 같은 망에 열고(`--host 0.0.0.0`) 폰 주소를 알려 준다. 인증이 없으니 같은 망 시험에서만 쓴다.
 방화벽 규칙은 보안 설정이라 실행기가 만들지 않고, 필요한 명령만 보여 준다(관리자 PowerShell에서 직접 추가·삭제).

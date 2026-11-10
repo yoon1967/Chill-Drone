@@ -11,6 +11,7 @@ test('controller opens a dedicated video reconstruction and keeps supervisor edi
     const browser = await chromium.launch({channel: 'msedge', headless: true});
     try {
       const page = await browser.newPage({viewport: {width: 1440, height: 900}});
+      page.setDefaultTimeout(8000);
       const errors = [];
       page.context().on('page', tab => tab.on('pageerror', error => errors.push(error.message)));
       page.on('pageerror', error => errors.push(error.message));
@@ -18,6 +19,26 @@ test('controller opens a dedicated video reconstruction and keeps supervisor edi
       const saved = {id: 'import_6543210987654321', name: '이전 지도', status: 'complete'};
       const points = [[0, 0, 2, 255, 0, 0], [1, 0, 2, 0, 255, 0], [0, 1, 2, 0, 0, 255]];
       const acknowledgements = [];
+      const pose = 'orb-slam3', depth = 'metric-video-depth-anything-small';
+      let installed = false, starts = 0, finishDownload;
+      const downloadDone = new Promise(resolve => { finishDownload = resolve; });
+      await page.route('**/api/reconstruction-models', route => route.fulfill({json: {models: [
+        {id: pose, kind: 'pose', name: 'ORB-SLAM3', size_bytes: 145250924, vram_gb: 0},
+        {id: depth, kind: 'depth', name: 'Metric Video Depth Anything Small', size_bytes: 116444063, vram_gb: 2},
+      ]}}));
+      await page.route('**/api/reconstruction-models/status?*', route => {
+        const key = new URL(route.request().url()).searchParams.get('id');
+        return route.fulfill({json: {status: key === pose || installed ? 'ready' : 'missing'}});
+      });
+      await page.route('**/api/reconstruction-models/download', route => {
+        assert.deepEqual(route.request().postDataJSON(), {id: depth});
+        return route.fulfill({json: {status: 'downloading', method: 'transfer', percent: 41}});
+      });
+      await page.route('**/api/reconstruction-models/events?*', async route => {
+        await downloadDone;
+        installed = true;
+        return route.fulfill({contentType: 'text/event-stream', body: 'data: {"status":"ready","percent":100}\n\n'});
+      });
       await page.route('**/api/import/library', route => route.fulfill({json: {items: [saved]}}));
       await page.route('**/api/import/local', route => route.fulfill({json: saved}));
       await page.route('**/api/import/create', route => {
@@ -30,7 +51,15 @@ test('controller opens a dedicated video reconstruction and keeps supervisor edi
         return route.fulfill({json: {status: 'uploaded'}});
       });
       await page.route('**/api/import/inspect?*', route => {
-        assert.equal(route.request().postDataJSON().auto_reconstruct.sample_fps, undefined);
+        assert.deepEqual(route.request().postDataJSON(), {});
+        job.status = 'awaiting_options';
+        return route.fulfill({json: job});
+      });
+      await page.route('**/api/import/start?*', route => {
+        const options = route.request().postDataJSON();
+        assert.deepEqual([options.pose_model, options.depth_model, options.causal_video], [pose, depth, true]);
+        assert.equal(options.sample_fps, undefined);
+        starts++;
         job.status = 'running'; job.stage = 'model';
         return route.fulfill({json: job});
       });
@@ -85,8 +114,30 @@ test('controller opens a dedicated video reconstruction and keeps supervisor edi
       assert.equal(await frame.locator('#file-name').textContent(), saved.name);
       await frame.locator('#change').click();
       const video = {name: job.name, mimeType: 'video/mp4', buffer: Buffer.from('fixture')};
-      await frame.locator('#video').setInputFiles(video);
+      await frame.locator('#drop').evaluate((drop, name) => {
+        const transfer = new DataTransfer();
+        transfer.items.add(new File(['fixture'], name, {type: 'video/mp4'}));
+        drop.dispatchEvent(new DragEvent('drop', {bubbles: true, cancelable: true, dataTransfer: transfer}));
+      }, video.name);
+      const restore = frame.getByRole('button', {name: '영상 복원하기'});
+      const selectModels = async () => {
+        await frame.getByLabel('카메라 위치 모델', {exact: true}).selectOption(pose);
+        await frame.getByLabel('영상 깊이 모델', {exact: true}).selectOption(depth);
+      };
+      await restore.waitFor();
+      assert.equal(await restore.isDisabled(), true);
+      await selectModels();
+      assert.match(await frame.locator('#depth-model option:checked').textContent(), /116\.4 MB.*2 GB/);
+      assert.equal(await restore.isDisabled(), true);
+      assert.equal(starts, 0);
+      await frame.getByRole('button', {name: '모델 다운받기'}).click();
+      await frame.locator('#depth-model-progress[value="41"]').waitFor();
+      assert.equal(await restore.isDisabled(), true);
+      finishDownload();
+      await frame.locator('#depth-model-status').filter({hasText: '모델 준비 완료'}).waitFor();
+      await restore.click();
       await frame.getByText('깊이 모델 준비 중', {exact: true}).waitFor();
+      assert.equal(starts, 1);
       assert.equal(await frame.getByRole('button', {name: '3D 지도 만들기'}).count(), 0);
       assert.equal(await frame.locator('#file-name').textContent(), job.name);
       job.stage = 'initial_pose';
@@ -118,11 +169,15 @@ test('controller opens a dedicated video reconstruction and keeps supervisor edi
       assert.match(await frame.locator('#download').getAttribute('href'), /history\.zip/);
       await frame.locator('#change').click();
       await frame.locator('#video').setInputFiles(video);
+      await selectModels();
+      await restore.click();
       await frame.locator('main[data-state="running"]').waitFor();
       await frame.locator('#cancel').click();
       await frame.locator('main[data-state="cancelled"]').waitFor();
       await frame.locator('#change').click();
       await frame.locator('#video').setInputFiles(video);
+      await selectModels();
+      await restore.click();
       await frame.locator('main[data-state="running"]').waitFor();
       job.status = 'failed'; job.error = 'no_valid_depth_map';
       await frame.locator('main[data-state="failed"]').waitFor();

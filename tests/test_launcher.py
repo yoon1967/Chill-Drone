@@ -71,14 +71,16 @@ class FakeModeTests(unittest.TestCase):
                 patch.object(drone.prepare, 'ensure_all', return_value=True) as ready, \
                 patch.object(drone, 'state', return_value=None), \
                 patch.object(drone, 'wait_for', return_value=True), \
-                patch('modules.mapping.data.model_assets.person_checkpoint', return_value=Path('yolo.pt')), \
+                patch('modules.mapping.data.model_assets.person_checkpoint') as checkpoint, \
                 patch.object(winproc, 'port_owners', return_value=[]), \
                 patch.object(winproc, 'processes', return_value=[]), \
                 patch.object(winproc, 'get_json', return_value=None), \
                 patch.object(drone, 'start_console') as console, \
                 patch.object(winproc, 'start_service') as window:
+            checkpoint.return_value.is_file.return_value = True
+            checkpoint.return_value.__str__.return_value = 'yolo.pt'
             self.assertEqual(drone.run_fake(no_browser=True, interactive=False), 0)
-        ready.assert_called_once_with(mona=False)   # 영상 복원용 지도 콘솔(8796) 웹 의존성까지
+        ready.assert_called_once_with()
         argvs = [c.args[2] for c in window.call_args_list]
         self.assertEqual(len(argvs), 4)
         self.assertEqual(argvs[0][-3:], ['--port', '8030', '--fake'])
@@ -100,7 +102,7 @@ class FakeModeTests(unittest.TestCase):
 
 
 class RealModeTests(unittest.TestCase):
-    def run_real(self, ready=True, first_state=None, owners=()):
+    def run_real(self, ready=True, first_state=None, owners=(), models_ready=True):
         states = iter([first_state])
         console_up = iter([None])   # 처음 확인은 꺼짐, 켠 뒤에는 응답
 
@@ -114,11 +116,15 @@ class RealModeTests(unittest.TestCase):
                 patch.object(winproc, 'get_json', side_effect=get_json), \
                 patch.object(winproc, 'port_owners', return_value=list(owners)), \
                 patch.object(winproc, 'processes', return_value=[Proc(4242, 0, 'python check_server.py')]), \
-                patch('modules.mapping.data.model_assets.person_checkpoint', return_value=Path('yolo.pt')), \
+                patch('modules.mapping.data.model_assets.person_checkpoint') as checkpoint, \
+                patch.object(drone, 'mona_running', return_value=False), \
+                patch.object(drone.prepare.docker_assets, 'mona_ready', return_value=models_ready), \
                 patch.object(drone, 'start_mona_when_connected') as mona, \
                 patch.object(drone.mapkeeper, 'MapKeeper') as keeper, \
                 patch.object(drone, 'open_page') as page, \
                 patch.object(winproc, 'start_service') as window:
+            checkpoint.return_value.is_file.return_value = models_ready
+            checkpoint.return_value.__str__.return_value = 'yolo.pt'
             code = drone.run_real(interactive=False)
         return code, [c.args[2] for c in window.call_args_list], mona, keeper, page
 
@@ -141,6 +147,15 @@ class RealModeTests(unittest.TestCase):
         mona.assert_not_called()
         keeper.assert_not_called()
         page.assert_not_called()
+
+    def test_missing_models_do_not_block_controller_and_console(self):
+        code, argvs, mona, keeper, page = self.run_real(models_ready=False)
+        self.assertEqual(code, 0)
+        self.assertEqual(len(argvs), 3)
+        self.assertTrue(any('apps/console/serve.py' in item.replace('\\', '/') for item in argvs[1]))
+        mona.assert_not_called()
+        keeper.assert_called_once()
+        page.assert_called_once()
 
     def test_drone_ports_in_use_stop_before_starting_anything(self):
         code, argvs, mona, _, _ = self.run_real(owners=[('udp', 8889, 4242)])
@@ -239,7 +254,7 @@ class CliTests(unittest.TestCase):
                 patch.object(cli.prepare, 'create_project_environment') as venv, \
                 patch.object(cli.drone, 'run_real') as real:
             self.assertEqual(cli.main(['real', '--no-browser']), 1)
-        self.host.assert_called_once_with(mona=True)
+        self.host.assert_called_once_with(mona=False)
         venv.assert_not_called()
         real.assert_not_called()
 
