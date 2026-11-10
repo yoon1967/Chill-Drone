@@ -102,7 +102,8 @@ class MapKeeper:
         reply = winproc.post_json(self.console + '/api/live/tello/start', START_CONFIG, HEADERS, timeout=60)
         if reply and reply.get('session_id'):
             self.session, self.failures, self._other = reply['session_id'], 0, None
-            self.say(f'  지도 시작(세션 {self.session}). 관제 화면 3D 칸과 지도 콘솔(#/map)에서 보여요.')
+            self.say(f'  지도 시작(세션 {self.session}). 관제 화면 지도 칸 "3D 점군"과 지도 콘솔 실시간 지도'
+                     f'({self.console}/#live)에서 보여요.')
         elif (reply or {}).get('error') in BUSY:
             self.retry_at = now + 5
         else:

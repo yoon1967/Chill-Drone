@@ -287,9 +287,10 @@ const MAP_MODES = { "2d": "2D 경로", "3d": "3D 점군" };
 
 function mapPanel(st, events, track, tall = false) {
   const mode = ui.live && !tall ? ui.map3d.mode : "2d";   // 탐색 결과(tall)는 3D 칸이 따로 있다
+  const live = ui.live && !tall ? consoleLiveUrl(st) : null;
   const seg = ui.live && !tall ? `<div class="seg map-mode" role="group" aria-label="지도 보기">
       ${Object.entries(MAP_MODES).map(([m, label]) => `<button data-map-mode="${m}" class="${mode === m ? "on" : ""}" aria-pressed="${mode === m}">${label}</button>`).join("")}</div>
-      <a class="map-open" href="#/map" title="지도 파트 콘솔의 진행 상황 화면을 크게 봅니다">지도 콘솔 ↗</a>
+      ${live ? `<a class="map-open" href="${esc(live)}" target="_blank" rel="noopener" title="지도 파트 콘솔의 실시간 지도를 새 탭에서 엽니다">실시간 지도 ↗</a>` : ""}
       ${!ui.mapCanBig ? "" : `<button class="map-big" data-map-big aria-pressed="${ui.mapBig}" title="${ui.mapBig ? "지도를 원래 칸으로 되돌립니다" : "지도와 가장 큰 칸의 자리를 바꿔 지도를 크게 봅니다"}">${ui.mapBig ? "⤡ 원래대로" : "⤢ 크게"}</button>`}` : "";
   const head = `<header><h2>지도</h2>${src("map")}${mode === "2d" ? chip("경로: 자율 비행", "neutral", "src-inline") : ""}
       <span class="spacer"></span>${seg || `<a class="link" href="${CONSOLE_URL}" target="_blank" rel="noopener">3D 지도 열기 (apps/console)</a>`}</header>`;
@@ -487,6 +488,12 @@ function consoleTarget(st) {
     return { url: null, note: "지도 콘솔이 드론 PC 안(127.0.0.1)에서만 열려 있어 이 기기에서는 볼 수 없습니다. 드론 PC의 화면에서 보세요." };
   }
   return { url: new URL("/reconstruct.html", u).href, origin: u.origin };
+}
+
+// 지도 칸 "실시간 지도 ↗": 지도 콘솔 첫 화면의 실시간 지도 탭(#live). #/map은 영상 복원 전용이라 따로 연다.
+function consoleLiveUrl(st) {
+  const target = consoleTarget(st);
+  return target.url ? new URL("/#live", target.origin).href : null;   // 이 기기에서 못 여는 주소면 링크를 안 보인다
 }
 
 function placeConsole() {
