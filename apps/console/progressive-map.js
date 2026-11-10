@@ -289,6 +289,7 @@ export function connectProgressiveMap({prefix = 'progressive', compact = false} 
       text('progressive-frame-detail', frameSpace === 'camera' ? '현재 프레임을 카메라 기준 임시 점군으로 표시합니다.' :
         frameSpace === 'map' ? '확인한 카메라 자세와 최근 배율로 현재 프레임의 점을 임시로 표시합니다.' :
         value.tracking === 'sensor_wait' ? '지도를 시작할 첫 센서 자세를 기다립니다.' :
+        value.tracking === 'pose_dpvo' ? 'ORB-SLAM3 지도 좌표에 맞춘 DPVO 위치·방향으로 점군을 합쳤습니다.' :
         value.tracking === 'pose_predicted' ? '이전 위치·회전 속도와 배율로 예측한 점을 복셀 지도에 바로 합쳤습니다.' :
         value.tracking === 'pose_reused' ? '최근 프레임을 기준으로 현재 자세를 추정하고 이전 배율로 복셀에 합쳤습니다.' :
         value.front_tof?.used === true ? '전방 ToF로 확인된 표면을 큰 점으로 표시합니다.' :
@@ -298,7 +299,7 @@ export function connectProgressiveMap({prefix = 'progressive', compact = false} 
         scale_wait: '위치·방향은 확인했습니다. 깊이 배율의 일관성이 부족해 이번 프레임은 합치지 않고 누적 지도를 유지합니다.',
         tracking: '먼저 확정한 이 프레임의 카메라 자세를 유지한 채 깊이와 지도를 복원했습니다.'}[value.tracking] || '프레임 처리 중');
       const confirmed = Boolean(value.pose_confirmed && value.pose_position && value.pose_rotation);
-      const estimated = (sensorPose || recoveredPose || ['pose_reused', 'pose_predicted', 'pose_held'].includes(value.tracking)) && value.pose_position && value.pose_rotation;
+      const estimated = (sensorPose || recoveredPose || ['pose_dpvo', 'pose_reused', 'pose_predicted', 'pose_held'].includes(value.tracking)) && value.pose_position && value.pose_rotation;
       const guidance = compact ? ({lost: value.points.length ? '위치를 다시 찾는 동안 마지막 지도를 표시합니다.' : '',
         pose_predicted: '최근 이동을 바탕으로 예측한 위치를 지도에 반영했습니다.',
         pose_reused: '이전 장면을 기준으로 위치를 맞췄습니다.',
@@ -318,7 +319,7 @@ export function connectProgressiveMap({prefix = 'progressive', compact = false} 
         cameraMarker.position.fromArray(value.pose_position);
         cameraMarker.quaternion.setFromRotationMatrix(new THREE.Matrix4().set(r[0][0], r[0][1], r[0][2], 0, r[1][0], r[1][1], r[1][2], 0, r[2][0], r[2][1], r[2][2], 0, 0, 0, 0, 1));
         const label = sensorPose ? 'Tello 센서 자세 추정' : recoveredPose ? '기존 지도에서 영상 자세 복구' :
-          {pose_predicted: '선형 이동 기반 자세 예측', pose_reused: '이전 프레임 기준 자세 추정',
+          {pose_dpvo: 'DPVO로 위치·방향 보완', pose_predicted: '선형 이동 기반 자세 예측', pose_reused: '이전 프레임 기준 자세 추정',
             pose_held: '마지막 위치·방향 적용'}[value.tracking] || '위치·방향 확정';
         const units = value.map_unit === 'm' ? '미터 단위 추정' : '단안 상대 좌표';
         text('progressive-pose', `${label} · 원본 ${value.frame_number}번째 · 위치 (${value.pose_position.map(n => n.toFixed(3)).join(', ')}) · 전방 (${r.map(row => row[2].toFixed(3)).join(', ')}) · ${units}${value.submaps > 1 ? ' · 다른 지도 구간은 분리 보존' : ''}`);

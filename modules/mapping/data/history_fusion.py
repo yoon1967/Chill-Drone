@@ -9,6 +9,7 @@ from modules.mapping.data.mapping_history import HistoryReader
 def integrate_history(output, progress=lambda **fields: None):
     from modules.mapping.data.stream_mapping import add_points
     from modules.mapping.data.rescue_mapping import SemanticSurface, PersonSightings, SCHEMA
+    from modules.mapping.localization.dpvo_pose import DPVO_POSE_SOURCE
     from modules.mapping.localization.tello_pose import METRIC_POSE_SOURCES
     reader = HistoryReader(output)
     entries = list(reader.refresh())
@@ -66,7 +67,7 @@ def integrate_history(output, progress=lambda **fields: None):
                 'position': pose[:3, 3].tolist(), 'world_from_camera_rotation': pose[:3, :3].tolist(),
                 'model': 'PINHOLE', 'width': frame['rgb'].shape[1], 'height': frame['rgb'].shape[0],
                 'params': frame['intrinsics'].tolist()})
-            if entry.get('pose_source') in METRIC_POSE_SOURCES:
+            if entry.get('pose_source') in METRIC_POSE_SOURCES or entry.get('pose_source') == DPVO_POSE_SOURCE:
                 group['cameras'][-1]['pose_source'] = entry['pose_source']
             elif predicted:
                 group['cameras'][-1]['pose_source'] = 'constant_velocity'

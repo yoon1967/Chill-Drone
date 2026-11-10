@@ -154,6 +154,8 @@ async function showResult() {
 function phaseLabel({stage, progress}) {
   if (stage === 'pose_wait' && progress?.tracking === 'initializing') return '카메라의 초기 위치와 방향 찾는 중';
   if (stage === 'pose_wait' && progress?.tracking === 'scale_wait') return '다음 장면의 깊이 기준 찾는 중';
+  if (stage === 'depth' && progress?.alignment === 'pose_dpvo') return 'DPVO로 이어 찾은 자세로 장면 깊이 계산 중';
+  if (stage === 'mapping' && progress?.alignment === 'pose_dpvo') return 'DPVO로 이어 찾은 위치와 방향을 지도에 반영 중';
   if (progress?.pose_estimated && stage === 'depth') return '예측한 위치로 장면 깊이 계산 중';
   if (progress?.pose_estimated && stage === 'mapping') return '예측한 위치를 지도에 반영 중';
   if (stage === 'mapping' && progress?.alignment === 'pose_reused') return '이전 장면과 맞춘 위치를 지도에 반영 중';

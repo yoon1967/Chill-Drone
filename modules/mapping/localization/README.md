@@ -1,6 +1,25 @@
 # 좌표·위치 추정·3D 복원
 
 Docker에서 공식 ORB-SLAM3로 연속 프레임을 추적하는 경로는 [ORB_SLAM3.md](ORB_SLAM3.md)를 따른다.
+
+## 저장 영상의 DPVO 보조 추적
+
+NVIDIA GPU가 연결된 Docker Linux 엔진에서 저장 영상 복원의 보조 추적기를 준비한다.
+저장소 루트에서 다음 명령을 한 번 실행한 뒤 **지도 복원**에서 새 영상을 연다.
+
+```powershell
+docker build -t ssafy-dpvo:local modules/mapping/localization/dpvo
+```
+
+[공식 DPVO 코드](https://github.com/princeton-vl/DPVO/tree/0ac95b656d1fda91c271d2a106460d19ad966fc7)와
+체크섬을 확인한 사전 학습 가중치는 이미지에 포함된다. 기본 빌드는 NVIDIA Ampere 이상용이다.
+다른 GPU는 호환되는 CUDA 아키텍처를 `--build-arg CUDA_ARCH_LIST=<버전>`으로 지정한다.
+저장 영상은 로컬 이미지가 있으면 DPVO를 자동으로 시작한다. GPU 또는 이미지가 준비되지 않은 환경에서는 ORB-SLAM3 복원이 계속된다.
+Windows Docker Desktop의 WSL2에서는 LieTorch 자세 변환을 CPU로 수행한다. DPVO 영상 추론과 최적화는 GPU에서 실행한다.
+
+ORB-SLAM3로 초기 자세와 깊이 배율을 정한다. 같은 시각의 여러 자세가 일치할 때만 DPVO를 현재 지도에 정렬하며,
+짧은 추적 공백에서 카메라 위치와 회전을 보완한다. 보완 프레임은 `history/index.jsonl`과 최종 경로의
+`pose_source=dpvo_orb_aligned`로 기록하고, `scene.json`의 `depth_mapping.dpvo`에 적용 수와 실행 상태를 남긴다.
 기존 COLMAP 복원과 독립적으로 ORB 지도 점 ID·키프레임·추적 상태를 웹에 연결한다.
 
 휴대폰 프레임의 SfM/COLMAP 복원, 카메라 pose, 좌표·스케일·SLAM 코드를 둔다. 문의: 김수호. 실제 입력 계약은 contracts/mapping에서 관리한다.

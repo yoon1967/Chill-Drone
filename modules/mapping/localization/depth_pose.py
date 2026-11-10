@@ -102,19 +102,26 @@ class VideoMapPose:
         self.native_to_map = (factor, rotation, offset)
         self.native_map = native_map
 
-    def resolve(self, stamp, rgb, params, native_pose, native_map):
+    def _to_map(self, pose):
+        factor, rotation, offset = self.native_to_map
+        mapped = np.eye(4)
+        mapped[:3, :3] = rotation @ pose[:3, :3]
+        mapped[:3, 3] = offset + factor * (rotation @ pose[:3, 3])
+        return mapped
+
+    def resolve(self, stamp, rgb, params, native_pose, native_map, dpvo_fallback=None):
         needs_origin = self.native_to_map is None or (self.last_pose is None and native_map != self.native_map)
         if native_pose is not None and needs_origin:
             # Define the world axes at the first confirmed camera pose.
             self._bind(np.eye(4), native_pose, native_map, 1.)
         if native_pose is not None and self.native_to_map is not None and native_map == self.native_map:
-            factor, rotation, offset = self.native_to_map
-            pose = np.eye(4)
-            pose[:3, :3] = rotation @ native_pose[:3, :3]
-            pose[:3, 3] = offset + factor * (rotation @ native_pose[:3, 3])
-            return pose, 'tracking'
+            return self._to_map(native_pose), 'tracking'
         if self.last_pose is None:
             return None, 'initializing'
+        if dpvo_fallback is not None and self.scale is not None:
+            pose, aligned_map = dpvo_fallback
+            if aligned_map == self.native_map:
+                return self._to_map(pose), 'pose_dpvo'
 
         pose = self.last_pose.copy() if np.array_equal(self.last_rgb, rgb) else self.references.relocalize(rgb, params)
         if pose is not None:

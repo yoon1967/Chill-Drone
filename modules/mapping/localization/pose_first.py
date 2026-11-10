@@ -133,6 +133,20 @@ class ConstantVelocityPose:
         return predicted, first
 
 
+def send_pose_frame(stream, rgb, stamp):
+    valid, encoded = cv2.imencode('.jpg', cv2.cvtColor(rgb, cv2.COLOR_RGB2BGR), [cv2.IMWRITE_JPEG_QUALITY, 85])
+    if not valid:
+        raise ValueError('pose_frame_encode_failed')
+    jpeg = encoded.tobytes()
+    packet = memoryview(f'{len(jpeg)} {stamp:.17g}\n'.encode('ascii') + jpeg)
+    while packet:
+        written = stream.write(packet)
+        if not written:
+            raise RuntimeError('pose_tracker_stdin_closed')
+        packet = packet[written:]
+    stream.flush()
+
+
 class OrbPoseTracker:
     def __init__(self, output, size, original_size, camera=None, fps=15):
         require_slam_image()
@@ -189,17 +203,7 @@ class OrbPoseTracker:
             self.log.close()
 
     def track(self, rgb, stamp):
-        valid, encoded = cv2.imencode('.jpg', cv2.cvtColor(rgb, cv2.COLOR_RGB2BGR), [cv2.IMWRITE_JPEG_QUALITY, 85])
-        if not valid:
-            raise ValueError('pose_frame_encode_failed')
-        jpeg = encoded.tobytes()
-        packet = memoryview(f'{len(jpeg)} {stamp:.17g}\n'.encode('ascii') + jpeg)
-        while packet:
-            written = self.process.stdin.write(packet)
-            if not written:
-                raise RuntimeError('pose_tracker_stdin_closed')
-            packet = packet[written:]
-        self.process.stdin.flush()
+        send_pose_frame(self.process.stdin, rgb, stamp)
         started = time.monotonic()
         while time.monotonic() - started < 15:
             try:
