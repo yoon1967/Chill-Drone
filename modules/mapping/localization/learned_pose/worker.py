@@ -49,6 +49,27 @@ def pose_frame(stamp, matrix=None, depth_anchors=()):
               depth_anchors=depth_anchors)
 
 
+def dpvo_frame_anchors(tracker, index):
+    from dpvo.lietorch import SE3
+    from dpvo.projective_ops import iproj
+
+    pg = tracker.pg
+    # The newest patches have little baseline. Use well-tracked older patches
+    # that the graph associates with the current frame.
+    supported = (pg.jj == index) & (pg.ii != index) & (pg.weight[0] > .25).all(dim=-1)
+    ii, kk = pg.ii[supported], pg.kk[supported]
+    if not len(kk):
+        return []
+    poses = SE3(tracker.poses)
+    relative = poses[:, index:index + 1] * poses[:, ii].inv()
+    lifted = iproj(tracker.patches[:, kk], tracker.intrinsics[:, ii])
+    points = (relative[:, :, None, None] * lifted)[0, :, tracker.P // 2, tracker.P // 2]
+    points = points[(points[:, 2] > .2) & (points[:, 3] > 0)]
+    intrinsics = pg.intrinsics_[index]
+    pixels = (points[:, :2] / points[:, 2:3] * intrinsics[:2] + intrinsics[2:]) * tracker.RES
+    return anchors(pixels.cpu().numpy(), (points[:, 2] / points[:, 3]).cpu().numpy())
+
+
 def run_dpvo(config):
     from dpvo.config import cfg
     from dpvo.dpvo import DPVO
@@ -94,12 +115,13 @@ def run_dpvo(config):
             pg = tracker.pg
             linked = (pg.ii == index) | (pg.jj == index)
             reliable = int((pg.weight[:, linked] > .25).all(dim=-1).sum()) >= 12
-        if hybrid:
-            pose = SE3(tracker.pg.poses_[index:index + 1]).matrix()[0].cpu().numpy() if reliable else None
-            pose_frame(stamp, pose)
-        else:
+        if not hybrid:
             accepted.append(reliable)
-            reply(timestamp_s=stamp)
+        if not reliable:
+            pose_frame(stamp)
+            continue
+        pose = SE3(tracker.pg.poses_[index:index + 1]).matrix()[0].cpu().numpy()
+        pose_frame(stamp, pose, () if hybrid else dpvo_frame_anchors(tracker, index))
 
     if hybrid:
         return
@@ -143,6 +165,14 @@ def vista_input(image):
     return rgb, scale, offset
 
 
+def vista_pose(slam, index, stamp, scale, offset):
+    view = slam.get_view(index, return_intri=False)
+    depth = view.depth.numpy()[4::12, 4::12]
+    v, u = np.mgrid[4:224:12, 4:224:12]
+    pixels = np.column_stack((u.ravel(), v.ravel())) * scale + offset
+    pose_frame(stamp, np.linalg.inv(view.pose.numpy()), anchors(pixels, depth.ravel()))
+
+
 def run_vista(config):
     from vista_slam.slam import OnlineSLAM
 
@@ -161,16 +191,15 @@ def run_vista(config):
                     shape=torch.tensor([[224, 224]]), gray=gray.to(torch.uint8).numpy(), view_name=str(len(stamps)))
         slam.step(view)
         stamps.append(stamp)
-        reply(timestamp_s=stamp)
+        if len(stamps) >= 2:
+            vista_pose(slam, len(stamps) - 1, stamp, scale, offset)
+        else:
+            pose_frame(stamp)
     if len(stamps) >= 2:
         if len(stamps) % slam.pgo_every:
             slam.pose_graph_optimize()
         for i, stamp in enumerate(stamps):
-            view = slam.get_view(i, return_intri=False)
-            depth = view.depth.numpy()[4::12, 4::12]
-            v, u = np.mgrid[4:224:12, 4:224:12]
-            pixels = np.column_stack((u.ravel(), v.ravel())) * scale + offset
-            pose_frame(stamp, np.linalg.inv(view.pose.numpy()), anchors(pixels, depth.ravel()))
+            vista_pose(slam, i, stamp, scale, offset)
     reply(finished=True)
 
 

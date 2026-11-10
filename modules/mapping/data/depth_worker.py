@@ -30,13 +30,14 @@ class DepthModelCache:
         if 'depth_model' not in options:
             return self.get
         from modules.mapping.data.selected_depth import open_depth
-        from modules.mapping.localization.pose_models import BATCH_POSE_MODELS
+        from modules.mapping.localization.pose_models import GPU_IMAGES
         # Each saved video has its own temporal history. Free the legacy model
         # before loading a selected one so only one depth model occupies VRAM.
         self.estimator = None
-        if not options.get('semantic_mapping') or options.get('pose_model') in BATCH_POSE_MODELS:
+        uses_pose_gpu = options.get('pose_model') in GPU_IMAGES
+        if not options.get('semantic_mapping') or uses_pose_gpu:
             self.semantics = None
-        if options.get('pose_model') in BATCH_POSE_MODELS:
+        if uses_pose_gpu:
             import torch
             if torch.cuda.is_initialized():
                 torch.cuda.empty_cache()
