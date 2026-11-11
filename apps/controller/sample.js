@@ -53,7 +53,14 @@ window.SAMPLE = (() => {
       label: "이륙 전",
       state: { ...base, battery_pct: 87, height_m: null, flight_time_s: 0, autonomy_used: false, mode: "grounded", authority: "none",
         allowed: ["emergency", "confirm_area", "takeoff"], warnings: [],
-        down_tof: { m: null, valid: false, reason: "below_min_or_on_ground" }, mission: null },
+        down_tof: { m: null, valid: false, reason: "below_min_or_on_ground" }, mission: null,
+        preflight: [   // 게이트웨이 이륙 전 점검과 같은 모양(주변 확인은 화면의 체크로 한다)
+          { key: "sdk", title: "SDK 모드", ok: true, detail: "command → ok", blocking: true },
+          { key: "state", title: "상태 수신", ok: true, detail: "0.1초 전", blocking: true },
+          { key: "battery", title: "배터리 20% 이상", ok: true, detail: "87%", blocking: true },
+          { key: "temp", title: "온도 75°C 미만(권장)", ok: true, detail: "53°C", blocking: false },
+          { key: "operator", title: "주변 비움·가드 장착·안전 담당 확인", ok: false, detail: "체크 필요", blocking: true },
+        ] },
       detections: 0,
     },
   };

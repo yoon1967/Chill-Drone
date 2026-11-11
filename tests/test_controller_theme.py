@@ -14,10 +14,13 @@ TEXT_PAIRS = [
     ('--accent', '--panel'), ('--accent', '--accent-soft'), ('--on-accent', '--accent'),
     ('--success', '--success-soft'), ('--warning', '--warning-soft'),
     ('--danger', '--danger-soft'), ('--danger', '--panel'),
+    ('--success', '--panel'), ('--warning', '--panel'), ('--person-strong', '--panel'),   # 상태 카드 값, 연결 카드 짧은 말
     ('--header-text', '--header'), ('--header-text', '--header-active'), ('--header-selected', '--header-active'),
 ]
 # (그림, 바탕): 글자가 아닌 표시 3:1
-GRAPHIC_PAIRS = [('--map-path', '--map'), ('--person', '--map'), ('--person-strong', '--map'), ('--person-off', '--map')]
+GRAPHIC_PAIRS = [('--map-path', '--map'), ('--person', '--map'), ('--person-strong', '--map'), ('--person-off', '--map'),
+                 ('--header-ok', '--header-active'), ('--header-warn', '--header-active'), ('--header-bad', '--header-active'),
+                 ('--success', '--panel'), ('--warning', '--panel'), ('--danger', '--panel'), ('--muted', '--panel')]   # 머리줄·연결 카드 점
 
 
 def block(selector):
