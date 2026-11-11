@@ -5,6 +5,7 @@
   <meta name="description" content="실내 탐색 드론의 실시간 감독, 탐색 결과 확인, 현장 조작 화면입니다.">
   <title>실내 탐색 관제</title>
   <link rel="icon" href="data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 40 40'%3E%3Crect width='40' height='40' rx='9' fill='%23244d3b'/%3E%3Ccircle cx='20' cy='20' r='8' fill='none' stroke='%23c7e3b8' stroke-width='2.5'/%3E%3Ccircle cx='20' cy='20' r='2.5' fill='%23c7e3b8'/%3E%3C/svg%3E">
+  <script src="theme.js"></script>
   <link rel="stylesheet" href="style.css">
 </head>
 <body>
@@ -23,6 +24,11 @@
     </span>
     <label class="scenario" id="scenario-wrap">상황
       <select id="scenario" aria-label="샘플 상황 선택"></select>
+    </label>
+    <label class="scenario" id="theme-wrap" title="화면 색입니다. 자동은 이 기기의 밝게/어둡게 설정을 따릅니다">테마
+      <select id="theme" aria-label="화면 테마 선택">
+        <option value="auto">자동</option><option value="light">밝게</option><option value="dark">어둡게</option>
+      </select>
     </label>
     <span class="badge sample" title="서버에 연결하지 않고 계약 형식의 샘플 데이터로 그린 화면입니다">샘플 데이터</span>
   </header>
