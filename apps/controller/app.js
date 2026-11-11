@@ -18,6 +18,7 @@ const ui = {
   edit: null,   // 화면 편집 중이면 { draft: 고치는 배치, from: 시작한 프리셋 id }
   console: { frame: null, url: null, slot: null, ro: null, loadedUp: null },
   autonomy: { connected: false, path: null, people: null, pathRev: 0, peopleRev: 0, loading: false, track: [] },  // 자율 지도(/api/autonomy)
+  takeoff: { open: false, confirmedAt: null, sampleChecked: false, focus: null },   // 이륙 전 확인 칸(열림, 주변 확인 보낸 시각, 샘플 체크, 다시 그린 뒤 초점)
 };
 if (!["2d", "3d"].includes(ui.map3d.mode)) ui.map3d.mode = "3d";   // 지도 콘솔은 따로 화면(#/map)
 function loadPref(key, fallback) { try { return localStorage.getItem(key) || fallback; } catch (e) { return fallback; } }
@@ -120,20 +121,61 @@ function toast(msg) {
 }
 
 // ---------- 공통 조각 (data-part 단위로 바뀐 것만 다시 그린다) ----------
+// 핵심 상태 카드: 모드·배터리·높이·발견·연결. 비행 중 짧은 순간에 보는 값이라 크게, 늘 같은 자리에 둔다.
+// 연결 카드는 팀 파트(드론·영상·사람 탐지·지도·자율 비행)가 지금 붙어 있는지를 한 줄로 보여 준다.
+const statCard = (name, value, sub, tone = "", cls = "") =>
+  `<div class="stat ${tone} ${cls}"><span>${esc(name)}</span><b>${value}</b>${sub ? `<small>${sub}</small>` : ""}</div>`;
+
+// 파트마다 [색, 짧은 말, 설명]. 색만으로 뜻을 나누지 않게 정상이 아니면 짧은 말을 붙인다. 모르면 모른다고 쓴다.
+function partStates(st, events) {
+  if (ui.live && !ui.wsOpen) {
+    const unknown = ["neutral", "모름", "게이트웨이에 연결되지 않아 알 수 없습니다"];
+    return [["드론", unknown], ["영상", unknown], ["사람 탐지", unknown], ["지도", unknown], ["자율 비행", unknown]];
+  }
+  const [linkText, linkTone] = LINK[st.link.level] || [];
+  const drone = st.connected === false ? ["danger", "끊김", "드론 상태가 오지 않습니다"]
+    : linkTone && linkTone !== "success" ? [linkTone, linkText.replace("통신 ", ""), linkText]
+    : ["success", "", linkText || "드론 상태 수신 중"];
+  const v = st.video;
+  const video = v.enabled === false ? ["neutral", "안 받음", "게이트웨이가 영상 수신 없이(--no-video) 켜졌습니다"]
+    : v.available ? ["success", "", `영상 ${v.fps ?? "?"}fps`]
+    : !ui.live || v.on === false ? ["neutral", "꺼짐", "이륙하면 영상이 켜집니다"]
+    : ["warning", "기다림", "영상을 켰지만 아직 프레임이 없습니다"];
+  const ds = ui.live ? detectStatus() : null;
+  const detect = !ui.live ? (events.length ? ["success", "", "샘플 발견"] : ["neutral", "연결 전", "샘플"])
+    : ds.alive ? ["success", "", ds.text] : ds.ever ? ["warning", "끊김", ds.text] : ["neutral", "연결 전", ds.text];
+  const mi = ui.live ? mapInfo(st.map, ui.map3d.has) : null;
+  const map = !ui.live ? ["neutral", "샘플", "샘플 화면은 지도에 연결하지 않습니다"]
+    : [mi[1], mi[1] === "success" ? "" : mi[0].replace(/^지도 /, ""), `${mi[0]}${mi[2] ? ` · ${mi[2]}` : ""}`];
+  const a = st.autonomy || {};
+  const auto = !ui.live ? (st.autonomy_used ? ["success", "", "샘플 자율 비행"] : ["neutral", "연결 전", "샘플"])
+    : a.connected ? (a.ground_origin ? ["success", "", "자율 연결(지상에서)"] : ["warning", "공중 연결", "이륙 뒤에 연결된 자율이라 자율 시작을 할 수 없습니다"])
+    : st.warnings.includes("autonomy_disconnected") ? ["danger", "끊김", "자율 비행 연결이 끊겼습니다"]
+    : ["neutral", "연결 전", "자율 비행이 아직 연결되지 않았습니다"];
+  return [["드론", drone], ["영상", video], ["사람 탐지", detect], ["지도", map], ["자율 비행", auto]];
+}
+
 function statusStrip(st, events, compact = false) {
   const [mode, tone] = MODE[st.mode] || [st.mode, "neutral"];
-  const [link, ltone] = LINK[st.link.level] || ["통신 측정 전", "neutral"];
-  const found = events.length;
-  return `<section class="strip ${compact ? "compact" : ""}" data-part="strip" aria-label="비행 상태">
-    <span class="mode ${tone}">${esc(mode)}</span>
-    <span class="who">${AUTHORITY[st.authority] || ""}</span>
-    ${found ? chip(`사람 ${found}건 발견`, "danger") : chip("발견 없음")}
-    ${st.mission ? chip(`탐색 ${pct(st.mission.progress)}`) : ""}
-    ${ui.live && st.autonomy?.connected ? chip(st.autonomy.ground_origin ? "자율 연결" : "자율 연결 · 공중에서 붙음", st.autonomy.ground_origin ? "accent" : "warning") : ""}
-    <span class="spacer"></span>
-    ${chip(link, ltone)}
-    ${chip(`배터리 ${st.battery_pct ?? "없음"}${st.battery_pct == null ? "" : "%"}`, st.battery_pct != null && st.battery_pct < 30 ? "warning" : "neutral")}
-    ${compact ? "" : chip(`${ui.live ? "모터" : "비행"} ${clock(st.flight_time_s)}`)}
+  const who = [AUTHORITY[st.authority], st.mission?.progress != null ? `진행 ${pct(st.mission.progress)}` : ""].filter(Boolean).join(" · ");
+  const b = st.battery_pct;
+  const btone = b == null ? "" : b <= 15 ? "danger" : b < 30 ? "warning" : "";
+  const d = st.down_tof;
+  const hsub = d.valid ? "하방 센서" : d.reason === "below_min_or_on_ground" ? "땅이거나 너무 가까움" : "하방 센서 값 없음";
+  const n = events.length, unreviewed = events.filter((e) => e.review === "unreviewed").length;
+  // 연결 전·꺼짐(빈 점)은 말을 줄이고 마우스를 올리면 설명을 보인다. 주의·끊김·모름은 말을 붙인다.
+  const parts = partStates(st, events).map(([name, [ptone, word, tip]]) => {
+    const say = word && (ptone !== "neutral" || word === "모름");
+    return `<span class="part ${ptone}" title="${esc(`${name}: ${word ? `${word} · ` : ""}${tip}`)}">${esc(name)}${say ? ` <em>${esc(word)}</em>` : ""}</span>`;
+  }).join("");
+  const [linkText] = LINK[st.link.level] || ["통신 측정 전"];
+  const recv = st.link.state_hz != null ? ` · ${st.link.state_hz}Hz · ${st.link.rtt_ms}ms` : "";
+  return `<section class="status ${compact ? "compact" : ""}" data-part="strip" aria-label="비행 상태">
+    ${statCard("모드", esc(mode), esc(who), tone === "neutral" ? "" : tone)}
+    ${statCard("배터리", b == null ? "없음" : `${b}%`, `${ui.live ? "모터" : "비행"} ${clock(st.flight_time_s)}`, btone)}
+    ${statCard("높이", d.valid ? meters(d.m) : "없음", hsub)}
+    ${statCard("발견", n ? `${n}건` : "없음", n ? `미확인 ${unreviewed}${n > unreviewed ? ` · 정리 ${n - unreviewed}` : ""}` : "아직 없음", n ? "person" : "")}
+    <div class="stat wide"><span>연결</span><p class="parts">${parts}</p><small>${esc(linkText + recv)}</small></div>
   </section>`;
 }
 
@@ -535,40 +577,72 @@ function areaConfirmed(st) {
   return !!(st.preflight || []).find((c) => c.key === "operator" && c.ok);
 }
 
-function preflightLine(st) {
-  if (st.mode !== "grounded" || !st.preflight) return "";
-  // 막는 항목은 ✓/✗, 알리기만 하는 항목(온도)은 ✓/!로. 기준값은 게이트웨이가 준 제목을 그대로 쓴다.
-  return `<span class="checks">${st.preflight.map((c) => {
-    const label = c.key === "operator" ? "주변 확인" : c.title;
-    if (c.ok) return chip(`✓ ${label}`, "success");
-    return c.blocking === false ? chip(`! ${c.detail || label}`, "warning") : chip(`✗ ${label}`, "danger");
-  }).join("")}</span>`;
+// 기체 점검(게이트웨이 preflight). 막는 항목은 ✓/✗, 알리기만 하는 항목(온도)은 ✓/!. 기준값은 게이트웨이가 준 제목을 그대로 쓴다.
+// 주변 확인(operator)은 여기서 빼고 이륙 전 확인 칸의 체크로 따로 한다.
+function preflightChips(st) {
+  const checks = (st.preflight || []).filter((c) => c.key !== "operator");
+  if (!checks.length) return chip(ui.live ? "점검 결과 없음" : "샘플: 점검 결과 없음");
+  return checks.map((c) => (c.ok ? chip(`✓ ${c.title}`, "success")
+    : c.blocking === false ? chip(`! ${c.detail || c.title}`, "warning") : chip(`✗ ${c.title}`, "danger"))).join("");
+}
+
+// ---------- 이륙: 버튼 하나 → 이륙 전 확인 칸(기체 점검 → 사람이 주변 확인 체크 → 이륙) ----------
+// 칸을 열 때마다 주변 확인을 새로 한다(전에 해 둔 확인은 푼다). 취소하거나 창을 떠나거나 조종 입력을 초기화하면 칸을 닫고 확인을 푼다.
+// 게이트웨이 규칙은 그대로다: 이륙은 점검(주변 확인 포함)을 통과해야 받고, 지도 콘솔 수동 조종 모드는 확인 뒤 30초 안·영상 켜짐이어야 한다.
+const AREA_CONFIRM_MS = 30000;   // 게이트웨이 AREA_CONFIRM_S(지도 콘솔 수동 조종 모드)와 같게
+const onGround = (st) => st.mode === "grounded" && st.flight_busy !== "takeoff";
+const areaChecked = (st) => (ui.live ? areaConfirmed(st) : ui.takeoff.sampleChecked);
+
+function takeoffBlocker(st) {   // 지금 이륙할 수 없는 까닭. 이륙할 수 있으면 null
+  if (ui.live && !ui.wsOpen) return "게이트웨이에 연결되지 않았습니다";
+  if (ui.live && !st.connected) return "드론 상태가 오지 않습니다";
+  if (!onGround(st) || !st.allowed.includes("takeoff")) return "지금 상태에서는 이륙할 수 없습니다";
+  const failed = (st.preflight || []).filter((c) => c.key !== "operator" && !c.ok && c.blocking !== false);
+  if (failed.length) return `기체 점검을 통과하지 못했습니다: ${failed.map((c) => c.title).join(", ")}`;
+  if (st.mapping_console_url && !st.video?.available) return "이륙 전에 영상을 켜세요";
+  if (!areaChecked(st)) return "주변을 확인하고 체크하세요";
+  return null;
+}
+
+// inline: 폰(현장 조작)은 큰 버튼 위에 그대로, PC는 조종 줄 위 오른쪽에 뜬다.
+function takeoffPanel(st, inline = false) {
+  const wrap = (html) => (inline ? `<div data-part="takeoff">${html}</div>` : html);
+  if (!ui.takeoff.open || !onGround(st)) return wrap("");
+  const checked = areaChecked(st), why = takeoffBlocker(st);
+  const video = !st.mapping_console_url ? "" : `<div class="to-row"><span class="to-name">영상</span>${st.video?.available
+    ? chip("✓ 영상 켜짐", "success") : `${chip("✗ 영상 꺼짐", "danger")}<button data-cmd="video_on" class="mini">영상 켜기</button>`}</div>`;
+  const deadline = st.mapping_console_url && checked && ui.takeoff.confirmedAt ? ui.takeoff.confirmedAt + AREA_CONFIRM_MS : null;
+  const hint = why || (ui.live ? "이륙 버튼이나 T를 누르면 이륙합니다" : "샘플 화면: 이륙 명령은 보내지 않습니다");
+  return wrap(`<section class="takeoff-pop ${inline ? "inline" : ""}" role="dialog" aria-label="이륙 전 확인">
+    <header><h2>이륙 전 확인</h2><span class="spacer"></span><button data-takeoff="cancel">취소</button></header>
+    <div class="to-row"><span class="to-name">기체 점검</span><span class="checks">${preflightChips(st)}</span></div>
+    ${video}
+    <button type="button" class="area-check" role="checkbox" aria-checked="${checked}" data-takeoff="area">주변에 사람·장애물이 없고, 프로펠러 가드와 안전 담당을 확인했습니다</button>
+    <div class="to-go"><span class="muted">${esc(hint)}${deadline ? `<span data-countdown="${deadline}"></span>` : ""}</span>
+      <button class="primary ${why ? "off" : ""}" data-takeoff="go" ${why ? 'aria-disabled="true"' : ""}>이륙</button></div>
+  </section>`);
 }
 
 function controlBar(st) {
   const can = (n) => st.allowed.includes(n);
-  const btn = (n, extra = "") => `<button data-cmd="${n}" class="${can(n) ? "" : "off"} ${extra}" ${can(n) ? "" : 'aria-disabled="true"'}>${n === "takeoff" && takeoffUntil ? "주변 확인 후 한 번 더" : CMD_LABEL[n]}</button>`;
+  const btn = (n, extra = "", attrs = "") => `<button data-cmd="${n}" class="${can(n) ? "" : "off"} ${extra}" ${can(n) ? "" : 'aria-disabled="true"'} ${attrs}>${CMD_LABEL[n]}</button>`;
   const manualOn = st.mode === "manual", autoOn = st.mode === "auto";
   const autoCmd = st.mode === "paused" && can("resume") ? "resume" : "auto_start";
-  const grounded = st.mode === "grounded" && st.flight_busy !== "takeoff";
-  const confirmed = areaConfirmed(st);
-  const confirm = grounded
-    ? `<button data-cmd="confirm_area" data-confirmed="${!confirmed}" class="${can("confirm_area") ? "" : "off"}" aria-pressed="${confirmed}">${confirmed ? "✓ 주변 확인됨" : "주변 비움·가드·안전 담당 확인"}</button>` : "";
+  const grounded = onGround(st);
+  // 왼쪽: 모드 바꾸기, 오른쪽 끝: 이륙/착륙과 비상 정지(늘 같은 자리). 이륙을 누르면 그 위에 이륙 전 확인 칸이 뜬다.
   return `<section class="controls" data-part="controls" aria-label="조종">
-    <span class="muted">조종</span>
+    ${takeoffPanel(st)}
     <div class="seg" role="group" aria-label="수동 자율 전환">
       <button data-cmd="takeover" class="${manualOn ? "on" : ""} ${can("takeover") || manualOn ? "" : "off"}" aria-pressed="${manualOn}">수동</button>
       <button data-cmd="${autoCmd}" class="${autoOn ? "on" : ""} ${can(autoCmd) || autoOn ? "" : "off"}" aria-pressed="${autoOn}">자율</button>
     </div>
     ${st.mode === "paused" ? btn("resume") : btn("pause")}
     ${btn("return_home", "soon")}
-    ${confirm}
-    ${grounded ? btn("takeoff") : btn("land")}
-    ${preflightLine(st)}
     <span class="spacer"></span>
     ${ui.live && st.mapping_console_url ? `<button data-keyboard-focus aria-pressed="${keyboardEnabled}">${keyboardEnabled ? "키보드 조종 활성" : "키보드 조종 활성화"}</button>` : ""}
-    ${ui.live ? '<span class="muted keys-hint">WASD 이동 · ↑↓ 높이 · ←→ 회전 · T 이륙 확인 · L 착륙 · Esc 비상 정지</span>' : ""}
-    <button class="estop" data-hold="emergency" aria-label="비상 정지, 길게 누르기"><span class="fill"></span>비상 정지 <small>길게</small></button>
+    ${ui.live ? '<span class="muted keys-hint">키보드: WASD 이동 · ↑↓ 높이 · ←→ 회전 · T 이륙 · L 착륙 · Esc 비상 정지</span>' : ""}
+    <span class="safety">${grounded ? btn("takeoff", "", `aria-haspopup="dialog" aria-expanded="${ui.takeoff.open}"`) : btn("land")}
+      <button class="estop" data-hold="emergency" aria-label="비상 정지, 길게 누르기"><span class="fill"></span>비상 정지 <small>길게</small></button></span>
   </section>`;
 }
 
@@ -729,20 +803,18 @@ function renderControl() {
   const latest = events[0];
   const can = (n) => st.allowed.includes(n);
   const big = (n, label) => `<button class="big ${can(n) ? "" : "off"}" data-cmd="${n}">${label}</button>`;
-  const grounded = st.mode === "grounded";
-  const confirmed = areaConfirmed(st);
+  const grounded = onGround(st);
   return `<div class="phone">
     ${statusStrip(st, events, true)}
     ${alertBox(sc, events)}
     <div data-part="latest">${latest ? `<div class="alert danger slim"><b>최근 발견</b><span>사람 ${latest.confidence.toFixed(2)} · ${findingTime(latest)}</span></div>` : ""}</div>
     <p class="note">현장에서 드론 옆에 두는 화면입니다. 자율 시작은 PC 감독 화면에서만 할 수 있습니다.</p>
+    ${takeoffPanel(st, true)}
     <div class="big-grid" data-part="big">
       ${st.mode === "paused" ? big("resume", "다시 시작") : big("pause", "일시정지")}
       ${big("return_home", "복귀")}
       ${grounded ? big("takeoff", "이륙") : big("land", "착륙")}
-      ${grounded
-        ? `<button class="big ${can("confirm_area") ? "" : "off"}" data-cmd="confirm_area" data-confirmed="${!confirmed}" aria-pressed="${confirmed}">${confirmed ? "✓ 주변 확인됨" : "주변 확인"}</button>`
-        : `<button class="big ${can("takeover") ? "" : "off"}" data-cmd="takeover">넘겨받기</button>`}
+      ${big("takeover", "넘겨받기")}
     </div>
     <div class="sticks" aria-label="조이스틱">
       <div class="stick" data-axes="ud,yaw"><span class="knob"></span><small>상하 · 회전</small></div>
@@ -759,7 +831,20 @@ function view() {
   return ["live", "map", "review", "control"].includes(v) ? v : "live";
 }
 
+// 머리줄 연결 표시: 어디에 붙었는지(실기체·가짜 Tello·기록 재생)와 게이트웨이 연결(연결됨·연결 중·끊김).
+const SOURCE_NAME = { tello: "실기체", fake: "가짜 Tello", replay: "기록 재생" };
+function syncHeader() {
+  const badge = $("#conn");
+  if (!ui.live || !badge) return;
+  const [word, tone] = ui.wsOpen ? ["연결됨", "success"] : ui.everOpen ? ["끊김", "danger"] : ["연결 중", "warning"];
+  const text = `${SOURCE_NAME[ui.state?.source] || "실기체"} · ${word}`;
+  if (badge.dataset.text === text) return;
+  badge.dataset.text = text;
+  badge.innerHTML = `<i class="dot ${tone}" aria-hidden="true"></i>${esc(text)}`;
+}
+
 function render() {
+  syncHeader();
   const v = view();
   const html = { live: renderLive, map: renderMap, review: renderReview, control: renderControl }[v]();
   const app = $("#app");
@@ -768,6 +853,10 @@ function render() {
   const parts = [...tpl.content.querySelectorAll("[data-part]")];
   const layout = tpl.content.querySelector("[data-layout]")?.dataset.layout ?? "";
   const keys = `${parts.map((p) => p.dataset.part).join(",")}|${layout}`;
+  // 이륙 전 확인 칸 안의 초점은 칸을 다시 그려도 지킨다(체크한 뒤 바로 이륙 버튼·T로 이어지게).
+  const keep = ui.takeoff.focus || document.activeElement?.dataset?.takeoff;
+  ui.takeoff.focus = null;
+  const refocus = () => { if (keep && document.activeElement?.dataset?.takeoff !== keep) $(`[data-takeoff="${keep}"]`)?.focus({ preventScroll: true }); };
   if (ui.view !== v || ui.cache.__keys !== keys) {
     ui.view = v;
     document.body.dataset.view = v;
@@ -779,6 +868,7 @@ function render() {
     parts.forEach((p) => { ui.cache[p.dataset.part] = p.outerHTML; });
     bindSticks();
     attachMap3d();
+    refocus();
     return placeConsole();
   }
   for (const p of parts) {
@@ -788,6 +878,7 @@ function render() {
     const el = app.querySelector(`[data-part="${k}"]`);
     if (el) el.replaceWith(document.importNode(p, true));
   }
+  refocus();
   attachMap3d();
   placeConsole();
 }
@@ -816,7 +907,7 @@ function onMessage(msg) {
   if (msg.type === "drone_state") {
     if (!msg.connected || (ui.state?.mode === "manual" && msg.mode !== "manual") ||
         (msg.mapping_console_url && ui.state?.video?.available && !msg.video?.available)) resetOperator();
-    if (takeoffUntil && !takeoffReady(msg)) cancelTakeoff();
+    if (ui.takeoff.open && !onGround(msg)) closeTakeoff(true);   // 이륙했거나(확인은 게이트웨이가 이미 씀) 땅이 아니다
     ui.state = msg;
     syncAutonomy(msg);
   } else if (msg.type === "result" && !msg.ok) {
@@ -923,6 +1014,14 @@ document.addEventListener("click", (ev) => {
     savePref("controller.feed", ui.feed);
     return render();
   }
+  const tk = ev.target.closest("[data-takeoff]");
+  if (tk) {
+    const a = tk.dataset.takeoff;
+    if (a === "cancel") { closeTakeoff(); return render(); }
+    if (a === "area") return setArea(!areaChecked(current().st));
+    if (a === "go") return requestTakeoff();
+    return;
+  }
   const b = ev.target.closest("[data-cmd]");
   if (!b) return;
   const name = b.dataset.cmd;
@@ -932,37 +1031,49 @@ document.addEventListener("click", (ev) => {
       : name.startsWith("video_") ? REASON.video_disabled : "지금 상태에서는 할 수 없습니다";
     return toast(`${CMD_LABEL[name]}: ${why}`);
   }
-  if (name === "takeoff" && ui.live) {
-    if (ev.detail > 0) requestTakeoff();
+  if (name === "takeoff") {
+    // 키보드로 누른 클릭(Enter·Space)은 칸 열기까지만 한다. 이륙은 칸 안의 이륙 버튼이나 T 키로.
+    if (!ui.live || ev.detail > 0 || !ui.takeoff.open) requestTakeoff();
     return;
   }
-  sendCmd(name, name === "confirm_area" ? { confirmed: b.dataset.confirmed === "true" } : {});
+  sendCmd(name);
 });
 
-let takeoffUntil = 0, takeoffTimer = null, keyboardEnabled = false;
-function takeoffReady(st) {
-  return ui.wsOpen && st?.connected && st.allowed?.includes("takeoff") &&
-    st.preflight?.every(check => check.ok || check.blocking === false) &&
-    (!st.mapping_console_url || st.video?.available);
+let keyboardEnabled = false;
+function setArea(confirmed) {   // 주변 확인 체크. 실시간은 게이트웨이에 보내고, 칸은 게이트웨이 점검 결과로 체크를 그린다
+  if (!ui.live) { ui.takeoff.sampleChecked = confirmed; return render(); }
+  ui.takeoff.confirmedAt = confirmed ? Date.now() : null;
+  sendCmd("confirm_area", { confirmed });
 }
-function cancelTakeoff() {
-  clearTimeout(takeoffTimer);
-  takeoffUntil = 0;
-}
-function requestTakeoff() {
-  if (!takeoffReady(ui.state)) {
-    cancelTakeoff();
-    return toast("이륙 전 영상과 주변 확인, 기체 상태를 확인하세요.");
-  }
-  if (performance.now() < takeoffUntil) {
-    cancelTakeoff();
-    sendCmd("takeoff");
-  } else {
-    takeoffUntil = performance.now() + 4000;
-    takeoffTimer = setTimeout(() => { cancelTakeoff(); render(); }, 4000);
-  }
+function openTakeoff() {
+  ui.takeoff.open = true;
+  ui.takeoff.focus = "area";
+  if (areaChecked(current().st)) setArea(false);   // 전에 해 둔 확인은 풀고 새로 확인한다
   render();
 }
+function closeTakeoff(keepConfirm = false) {   // keepConfirm: 이륙해서 닫을 때(게이트웨이가 확인을 이미 썼다)
+  if (!ui.takeoff.open) return;
+  ui.takeoff.open = false;
+  if (!keepConfirm && areaChecked(current().st)) setArea(false);
+  ui.takeoff.confirmedAt = null;
+  ui.takeoff.sampleChecked = false;
+}
+function requestTakeoff() {   // 이륙 버튼·T 키: 칸이 닫혀 있으면 열고, 열려 있으면 준비됐을 때만 이륙(아니면 까닭을 알림)
+  if (!ui.takeoff.open) return openTakeoff();
+  const why = takeoffBlocker(current().st);
+  if (why) return toast(why);
+  sendCmd("takeoff");
+}
+// 지도 콘솔 수동 조종 모드: 주변 확인 뒤 30초 안에 이륙해야 한다(게이트웨이 규칙). 남은 시간을 보이고, 지나면 확인을 푼다.
+setInterval(() => {
+  const el = $("[data-countdown]");
+  if (!el) return;
+  const left = Math.ceil((Number(el.dataset.countdown) - Date.now()) / 1000);
+  if (left > 0) { el.textContent = ` · ${left}초 안에 이륙`; return; }
+  el.remove();
+  setArea(false);
+  toast("주변 확인 뒤 30초가 지났습니다. 다시 확인하세요");
+}, 250);
 
 // 길게 누르는 비상 버튼은 포커스·포인터를 놓으면 취소한다.
 const HOLD_MS = 600;
@@ -1017,7 +1128,7 @@ function resetOperator() {
   held.clear();
   keyboardEnabled = false;
   cancelEmergencyHold();
-  cancelTakeoff();
+  closeTakeoff();
   for (const key of Object.keys(stickAxes)) stickAxes[key] = [0, 0];
   for (const stick of document.querySelectorAll(".stick")) {
     stick.onpointermove = null;
@@ -1304,12 +1415,12 @@ document.addEventListener("click", (ev) => {
 (async () => {
   ui.live = await detectGateway();
   const sel = $("#scenario");
-  const badge = $(".badge.sample");
+  const badge = $("#conn");
   if (ui.live) {
     $("#scenario-wrap").hidden = true;
-    badge.textContent = ui.state.source === "fake" ? "가짜 Tello" : ui.state.source === "replay" ? "기록 재생" : "실기체";
-    badge.title = "게이트웨이에 연결된 화면입니다. 버튼이 실제로 명령을 보냅니다.";
-    badge.classList.toggle("real", ui.state.source === "tello");
+    badge.classList.replace("sample", ui.state.source === "fake" || ui.state.source === "replay" ? "live" : "real");
+    badge.title = ui.state.source === "replay" ? "지난 회차 기록을 재생하는 화면입니다. 명령은 보내지 않습니다."
+      : "게이트웨이에 연결된 화면입니다. 버튼이 실제로 명령을 보냅니다.";
     connect();
   } else {
     sel.innerHTML = Object.entries(S.scenarios).map(([k, v]) => `<option value="${k}">${v.label}</option>`).join("");

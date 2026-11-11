@@ -7,6 +7,7 @@
   --accent:#1f5f99;--accent-soft:#e2eefa;--on-accent:#ffffff;--success:#2f6b1f;--success-soft:#e6f1dc;--warning:#8a5a00;--warning-soft:#fbf0d6;
   --danger:#a32d2d;--danger-soft:#fbe6e6;--neutral-soft:#f1f2f4;--map:#ffffff;--video:#20292a;
   --header:#202124;--header-line:#202124;--header-active:#34373c;--header-text:#ffffff;--header-selected:#d9dce1;
+  --header-ok:#7fd16b;--header-warn:#f0b44c;--header-bad:#ff8a8a;
   --map-path:var(--accent);--person:#e24b4a;--person-strong:#b3261e;--person-off:#868d86;--on-strong:#ffffff;
   --person-box:#ff6b6b;--person-box-fill:rgba(255,107,107,.18);
   --overlay-bg:rgba(0,0,0,.63);--overlay-text:#e8efe9;--video-muted:#8a9a90;--video-alert:rgba(192,57,43,.87);
@@ -37,18 +38,40 @@ h2{font-size:14px;font-weight:600;margin:0}
 .views a[aria-current=page]{background:var(--header-active);color:var(--header-selected)}
 .scenario{font-size:12px;color:var(--header-text);display:flex;gap:6px;align-items:center}
 .scenario select{font:inherit;background:var(--panel);color:var(--text);border:1px solid var(--line);border-radius:6px;padding:4px 6px}
-.badge{font-size:12px;padding:3px 10px;border-radius:999px}.badge.sample{background:var(--warning-soft);color:var(--warning)}
+.badge{font-size:12px;padding:3px 10px;border-radius:999px;white-space:nowrap}.badge.sample{background:var(--warning-soft);color:var(--warning)}
+/* 머리줄 연결 표시: 점(연결됨·연결 중·끊김)과 글자를 같이. 가짜·재생은 머리줄 색, 실기체는 위험 색 바탕 */
+.badge.live{background:var(--header-active);color:var(--header-text)}
+.badge .dot{display:inline-block;width:8px;height:8px;border-radius:50%;margin-right:6px;vertical-align:0}
+.badge.live .dot.success{background:var(--header-ok)}.badge.live .dot.warning{background:var(--header-warn)}.badge.live .dot.danger{background:var(--header-bad)}
+.badge.real .dot.success{background:var(--success)}.badge.real .dot.warning{background:var(--warning)}.badge.real .dot.danger{background:var(--danger)}
 main{max-width:1280px;margin:0 auto;padding:16px 20px 90px;display:grid;gap:12px}
 .chip{display:inline-block;font-size:12px;padding:3px 10px;border-radius:7px;white-space:nowrap;background:var(--neutral-soft)}
 .chip.success{background:var(--success-soft);color:var(--success)}.chip.warning{background:var(--warning-soft);color:var(--warning)}
 .chip.danger{background:var(--danger-soft);color:var(--danger)}.chip.accent{background:var(--accent-soft);color:var(--accent)}
 .src{font-size:11px;color:var(--muted);border:1px dashed var(--line);border-radius:6px;padding:1px 7px;margin-left:8px;white-space:nowrap}
 .src-inline{font-size:11px;margin-left:6px}
-.strip{display:flex;align-items:center;gap:8px;flex-wrap:wrap;background:var(--panel);border:1px solid var(--line);border-radius:12px;padding:10px 14px}
-.mode{font-weight:700;font-size:15px;padding:5px 12px;border-radius:8px}
-.mode.accent{background:var(--accent-soft);color:var(--accent)}.mode.success{background:var(--success-soft);color:var(--success)}
-.mode.warning{background:var(--warning-soft);color:var(--warning)}.mode.danger{background:var(--danger-soft);color:var(--danger)}.mode.neutral{background:var(--neutral-soft)}
-.who{color:var(--muted);font-size:13px;margin-right:6px}
+/* 핵심 상태 카드: 모드·배터리·높이·발견(좁게)과 연결(넓게). 값은 크게, 이름·설명은 작게. 늘 같은 자리 */
+.status{display:grid;grid-template-columns:repeat(4,minmax(0,1fr)) minmax(0,2.5fr);gap:8px}
+.stat{background:var(--panel);border:1px solid var(--line);border-radius:12px;padding:6px 12px;display:grid;gap:1px;align-content:start;min-width:0}
+.stat>span{font-size:12px;color:var(--muted)}
+.stat>b{font-size:20px;line-height:1.3;white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
+.stat>small{font-size:12px;color:var(--muted);white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
+.stat.success>b{color:var(--success)}.stat.accent>b{color:var(--accent)}.stat.person>b{color:var(--person-strong)}
+.stat.warning{background:var(--warning-soft);border-color:var(--warning)}.stat.warning>b{color:var(--warning)}
+.stat.danger{background:var(--danger-soft);border-color:var(--danger)}.stat.danger>b{color:var(--danger)}
+/* 연결 카드의 파트: 채운 점은 정상·주의·끊김, 빈 점은 연결 전·꺼짐. 정상이 아니면 짧은 말을 붙인다 */
+.parts{display:flex;flex-wrap:wrap;gap:0 12px;margin:0;font-size:13px;font-weight:600;line-height:1.95}
+.part{white-space:nowrap}
+.part::before{content:"";display:inline-block;width:6px;height:6px;border-radius:50%;margin-right:6px;vertical-align:1px;border:2px solid var(--muted)}
+.part.success::before{background:var(--success);border-color:var(--success)}
+.part.warning::before{background:var(--warning);border-color:var(--warning)}
+.part.danger::before{background:var(--danger);border-color:var(--danger)}
+.part em{font-style:normal;font-weight:400;font-size:12px;color:var(--muted)}
+.part.warning em{color:var(--warning)}.part.danger em{color:var(--danger)}
+.status.compact{grid-template-columns:repeat(4,minmax(0,1fr))}.status.compact .stat.wide{grid-column:1/-1}
+.status.compact .stat{padding:6px 10px}.status.compact .stat>b{font-size:17px}.status.compact .stat>small{white-space:normal}
+@media (max-width:900px){.status{grid-template-columns:repeat(4,minmax(0,1fr))}.status .stat.wide{grid-column:1/-1}}
+.safety{display:flex;gap:8px;align-items:center}
 .alert{display:flex;gap:12px;align-items:center;padding:10px 14px;border-radius:12px;border:1px solid}
 .alert.danger{background:var(--danger-soft);color:var(--danger);border-color:var(--danger)}
 .alert.warning{background:var(--warning-soft);color:var(--warning);border-color:var(--warning)}
@@ -122,7 +145,7 @@ body[data-view=control] main{padding-bottom:24px}body[data-view=review] main{pad
   body[data-view=live] main{flex:1;min-height:0;max-width:none;width:100%;padding:10px 16px;gap:10px;
     grid-template-rows:auto auto minmax(0,1fr) auto}
   body[data-view=live] .alert-slot:empty{margin-top:-10px}
-  body[data-view=live] .controls{position:static;padding:8px 12px;border:1px solid var(--line);border-radius:12px}
+  body[data-view=live] .controls{position:relative;padding:8px 12px;border:1px solid var(--line);border-radius:12px}
   .live-main{display:grid;grid-template-columns:minmax(0,1.45fr) minmax(360px,1fr);gap:10px;min-height:0}
   .live-main .panel{display:flex;flex-direction:column;min-height:0;overflow:hidden}
   .live-main .panel>header{margin-bottom:8px}
@@ -205,3 +228,18 @@ body[data-view=map] #app{flex:1;min-height:0;max-width:none;width:100%;padding:0
 .lg.mark.gone{background:none;border:2px dashed var(--person);width:10px;height:10px}
 /* 움직임 줄이기 설정이면 꾸밈 움직임을 끈다. 비상 정지 길게 누르기 채움은 얼마나 눌렀는지 알려 주므로 남긴다 */
 @media (prefers-reduced-motion:reduce){#toast{transition:none}}
+/* 이륙 전 확인: 이륙을 누르면 조종 줄 위 오른쪽에 뜨는 칸(폰은 큰 버튼 위에 그대로). 기체 점검 → 사람이 주변 확인 체크 → 이륙 */
+.takeoff-pop{position:absolute;right:8px;bottom:calc(100% + 8px);z-index:8;width:min(560px,calc(100vw - 32px));display:grid;gap:10px;
+  background:var(--panel);border:2px solid var(--accent);border-radius:12px;padding:12px 14px;box-shadow:var(--shadow)}
+.takeoff-pop.inline{position:static;width:auto}
+.takeoff-pop>header{display:flex;align-items:center;gap:8px}.takeoff-pop>header button{padding:3px 10px;font-size:12px}
+.to-row{display:flex;align-items:center;gap:8px;flex-wrap:wrap}.to-name{font-size:12px;color:var(--muted);min-width:56px}
+.to-row .mini{padding:3px 10px;font-size:12px}
+.area-check{display:flex;gap:10px;align-items:flex-start;width:100%;text-align:left;padding:10px 12px;font-weight:600;line-height:1.45}
+.area-check::before{content:"";flex:none;width:16px;height:16px;margin-top:1px;border:2px solid var(--muted);border-radius:4px;
+  display:flex;align-items:center;justify-content:center;font-size:13px;line-height:1;color:var(--panel)}
+.area-check[aria-checked=true]{background:var(--success-soft);border-color:var(--success);color:var(--success)}
+.area-check[aria-checked=true]::before{content:"✓";background:var(--success);border-color:var(--success)}
+.to-go{display:flex;align-items:center;gap:10px}.to-go>.muted{flex:1}
+button.primary{background:var(--accent);border-color:var(--accent);color:var(--on-accent);font-weight:700;padding:8px 20px}
+button.primary.off{background:var(--neutral-soft);border-color:var(--line);color:var(--muted)}
