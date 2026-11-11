@@ -29,12 +29,6 @@
       <p>MP4 · MOV · AVI · MKV</p>
     </div>
 
-    <section id="drone-recordings" aria-labelledby="drone-recordings-title" hidden>
-      <h2 id="drone-recordings-title">드론 측정 및 센서 활용 복원</h2>
-      <p id="drone-recordings-status" role="status"></p>
-      <ul id="drone-recordings-list"></ul>
-    </section>
-
     <div id="status-line" hidden>
       <strong id="status" role="status"></strong>
       <span id="notice" role="status" hidden></span>
@@ -73,10 +67,41 @@
       </div>
     </section>
 
-    <section id="recent" aria-labelledby="recent-title" hidden>
-      <h2 id="recent-title">최근 복원</h2>
-      <p id="recent-empty" role="status"></p>
-      <ul id="recent-list"></ul>
+    <div id="input-libraries" class="input-libraries" hidden>
+      <section id="recent" class="input-library" aria-labelledby="recent-title">
+        <h2 id="recent-title">최근 복원</h2>
+        <p class="library-hint">이전에 복원한 지도와 진행 중인 작업을 엽니다.</p>
+        <p id="recent-empty" role="status"></p>
+        <ul id="recent-list" class="library-list"></ul>
+      </section>
+      <section id="captures" class="input-library" aria-labelledby="captures-title">
+        <div class="library-heading">
+          <h2 id="captures-title">실시간 감독 촬영</h2>
+          <button id="captures-refresh" type="button">새로고침</button>
+        </div>
+        <p class="library-hint">촬영 폴더를 선택하면 영상과 센서 자료가 함께 연결됩니다.</p>
+        <button id="captures-open-folder" class="capture-location" type="button" title="파일 탐색기에서 촬영 저장 폴더 열기">촬영 저장 위치 ↗</button>
+        <p id="captures-root" class="capture-root"></p>
+        <p id="captures-status" role="status"></p>
+        <ul id="captures-list" class="library-list"></ul>
+        <details id="drone-recordings" aria-labelledby="drone-recordings-title">
+          <summary id="drone-recordings-title">드론 측정 및 센서 활용 복원</summary>
+          <p id="drone-recordings-status" role="status"></p>
+          <ul id="drone-recordings-list" class="library-list"></ul>
+        </details>
+      </section>
+    </div>
+
+    <section id="capture-selection" aria-labelledby="capture-selection-title" hidden>
+      <div class="library-heading">
+        <h2 id="capture-selection-title">촬영 자료 선택됨</h2>
+        <button id="capture-clear" type="button">선택 해제</button>
+      </div>
+      <strong id="capture-name"></strong>
+      <p id="capture-summary"></p>
+      <p id="capture-warning" role="status" hidden></p>
+      <details><summary>함께 연결된 파일</summary><ul id="capture-files"></ul></details>
+      <p class="library-hint">영상과 센서 자료를 함께 준비했습니다. 이 자료로 복원을 시작하는 기능은 준비 중입니다.</p>
     </section>
 
     <section id="visual" class="visual" aria-label="복원 지도" hidden>

@@ -39,7 +39,7 @@ test('controller opens a dedicated video reconstruction and keeps supervisor edi
         installed = true;
         return route.fulfill({contentType: 'text/event-stream', body: 'data: {"status":"ready","percent":100}\n\n'});
       });
-      await page.route('**/api/import/library', route => route.fulfill({json: {items: [saved]}}));
+      await page.route('**/api/import/reconstruction-library', route => route.fulfill({json: {items: [saved]}}));
       await page.route('**/api/import/local', route => route.fulfill({json: saved}));
       await page.route('**/api/import/create', route => {
         job.status = 'uploading';

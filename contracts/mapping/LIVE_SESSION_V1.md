@@ -158,6 +158,44 @@ Tello 입력 종료와 매핑 종료가 모두 확인된 후 파일을 닫고 �
 
 ## 로컬 HTTP
 
+### 영상 복원 화면의 촬영 자료 선택
+
+촬영 원본 선택과 기존 복원 결과 열기는 별도 API로 제공한다. 촬영 루트는 지도 서버의 `--live-root`를 사용하며,
+클라이언트가 임의 절대 경로를 입력하지 않는다. 모든 조회는 읽기 전용이다.
+
+| 경로 | 동작 |
+| --- | --- |
+| `GET /api/import/reconstruction-library` | 기존 library 중 실시간 드론 촬영 원본·그 별칭 및 결과 없는 로컬 폴더를 제외한 복원 기록 |
+| `GET /api/import/capture-library` | `root_path`, 최신 촬영순 `items`(최대 100개). 영상이 없는 종료 회차는 제외 |
+| `GET /api/import/capture-bundle?session_id=ID` | 저장 완료·필수 파일 존재 여부를 다시 확인한 선택 묶음. 미완료는 400 |
+| `GET /api/import/capture-file?session_id=ID&path=RELATIVE` | 선택 묶음에 실제 포함된 파일만 제공. 영상은 HTTP Range 지원 |
+| `POST /api/import/capture-folder` | 서버의 실제 촬영 루트를 Windows 파일 탐색기에서 열기. 사용자 경로를 받지 않음 |
+
+목록 항목과 선택 응답은 `schema_version=mapping-capture-selection/1.0`이며 다음 필드를 제공한다.
+
+| 필드 | 의미 |
+| --- | --- |
+| `session_id`, `name`, `started_at`, `ended_at` | 서버가 관리하는 회차 폴더명과 촬영 시각 |
+| `saved_at` | 수신 중 누적 저장본의 저장 요청 시각. 일반 촬영은 null이며, 값이 있으면 이 시각순으로 정렬 |
+| `status`, `selectable`, `missing` | `recording`(미종료/미확정), `incomplete`(필수 파일 부족), `ready`. ready만 선택 가능 |
+| `sync_status` | `video-sensor-sync/1.0` 파일의 complete/partial/approximate/unavailable 상태. partial·approximate는 명시하고 선택 허용 |
+| `parts` | 구간별 `part_id`, `video_path`, `index_path`, `duration_s` |
+| `files` | 실제 존재하는 파일의 `path`, `role`, `bytes`, 같은 서버의 `url` |
+| `reconstruction_supported` | 이번 선택 전용 구현에서는 false. 선택 API는 import 생성·모델 실행·센서 자세 복원을 하지 않음 |
+
+허용 파일은 `session.json`, 비어 있지 않은 `sensor.jsonl`, `video_sensor_sync.json`, 존재하는 `camera.json`·`settings.json`,
+그리고 manifest의 각 구간에 선언된 `recordings/*.mkv`/`*.mp4`와 그 `index_path`의 `recordings/*.jsonl`이다.
+모든 구간의 영상과 대응 JSONL, 센서·시각 대응 파일이 있어야 선택 가능하다. 원본 manifest는 그대로 제공하지만
+그 `assets`에 적힌 파일을 재귀적으로 연결하지 않는다. `frames/`, `frames.jsonl`, 임의 JSONL, 원시 비트스트림,
+지도 결과·진단 및 심볼릭 링크/정션은 선택 파일에 포함하지 않는다. 시각 대응 파일은 기존 별도 저장 기능의 산출물을 읽는다.
+
+브라우저 연결점: `capture-library.js`의 `selectedCaptureBundle()`은 선택 묶음의 복사본 또는 null을 반환한다.
+document의 `mapping-capture-selected` 이벤트도 같은 묶음을 `detail`로 제공하며 선택 해제 시 null이다.
+여러 구간을 누락 없이 소비하고 실제 복원 시작 직전에 `capture-bundle`로 재검증하는 것은 후속 복원 소비자의 책임이다.
+수신 시각의 대응은 동일한 3D 결과나 노출 시각의 정밀 계측을 보장하지 않는다.
+
+### 기존 전체 세션 다운로드
+
 | 경로 | 동작 |
 | --- | --- |
 | `GET /api/live/session?session=ID` | 현재 또는 명시적으로 서버에 연결한 세션의 manifest |

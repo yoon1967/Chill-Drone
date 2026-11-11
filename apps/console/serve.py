@@ -25,6 +25,7 @@ sys.path.insert(0, str(APP.parents[1]))
 from modules.mapping.localization.observations import native_observations
 from modules.mapping.data.live_recording import archive_files
 from modules.mapping.data.session_import import ImportManager, ImportedMap, inside
+from modules.mapping.data.capture_library import capture_library, capture_file, select_capture, reconstruction_library, open_capture_folder
 from modules.mapping.data.camera_profiles import CameraProfiles
 from modules.mapping.data.calibration_tutorial import CalibrationTutorial, board_svg
 from modules.mapping.data.calibration_report import calibration_report_pdf
@@ -796,6 +797,30 @@ class ViewerHandler(BaseHTTPRequestHandler):
             if self.command == 'GET':
                 if action == 'library':
                     self.json_response({'items': self.imports.library(), 'initial': getattr(self.imports, 'initial', None)})
+                elif action == 'reconstruction-library':
+                    self.json_response(reconstruction_library(self.imports))
+                elif action == 'capture-library':
+                    self.json_response(capture_library(self.imports.root))
+                elif action == 'capture-bundle':
+                    self.json_response(select_capture(self.imports.root, query.get('session_id', [''])[0]))
+                elif action == 'capture-file':
+                    file = capture_file(self.imports.root, query.get('session_id', [''])[0], query.get('path', [''])[0])
+                    if file.suffix.lower() in {'.mkv', '.mp4'}:
+                        self.demo = file
+                        self.source_video()
+                    else:
+                        self.send_response(200)
+                        self.send_header('Content-Type', 'application/x-ndjson' if file.suffix == '.jsonl' else 'application/json')
+                        self.send_header('Content-Length', str(file.stat().st_size))
+                        self.send_header('Cache-Control', 'no-store')
+                        self.send_header('X-Content-Type-Options', 'nosniff')
+                        self.end_headers()
+                        with file.open('rb') as stream:
+                            while chunk := stream.read(65536):
+                                try:
+                                    self.wfile.write(chunk)
+                                except (BrokenPipeError, ConnectionResetError, ConnectionAbortedError):
+                                    break
                 elif action == 'drone-recordings':
                     recordings = sorted(self.imports.drone_recordings().values(),
                                         key=lambda recording: recording.started_at or '', reverse=True)
@@ -874,6 +899,8 @@ class ViewerHandler(BaseHTTPRequestHandler):
             body = json.loads(self.rfile.read(length) or b'{}')
             if action == 'create':
                 value = self.imports.create(body.get('name', '불러온 자료'))
+            elif action == 'capture-folder':
+                value = open_capture_folder(self.imports.root)
             elif action == 'video-folder':
                 value = video_folder(self.imports.root, body)
             elif action == 'inspect':
@@ -1284,6 +1311,7 @@ class ViewerHandler(BaseHTTPRequestHandler):
                   '/reconstruct.html': APP / 'reconstruct.html', '/reconstruct.js': APP / 'reconstruct.js',
                   '/reconstruct.css': APP / 'reconstruct.css',
                   '/reconstruction-models.js': APP / 'reconstruction-models.js',
+                  '/capture-library.js': APP / 'capture-library.js',
                   "/vendor/three.module.js": APP / "node_modules/three/build/three.module.js",
                   "/vendor/three.core.js": APP / "node_modules/three/build/three.core.js",
                   "/vendor/OrbitControls.js": APP / "node_modules/three/examples/jsm/controls/OrbitControls.js"}
