@@ -1,5 +1,6 @@
 // 3D 점군 보기(외부 라이브러리 없이 WebGL). 게이트웨이 GET /api/map(gateway-map/0.1)을 그린다.
-// 점(색), 카메라 경로(선), 마지막 카메라 위치(빨간 점). 왼쪽 드래그 회전, 오른쪽 드래그 이동, 휠·두 손가락 확대.
+// 점(색), 카메라 경로(선), 마지막 카메라 위치(큰 점). 왼쪽 드래그 회전, 오른쪽 드래그 이동, 휠·두 손가락 확대.
+// 경로와 마지막 위치는 색 토큰 --map-path(2D 지도 경로와 같은 파랑)를 따르고, 테마가 바뀌면(theme.js) 다시 그린다.
 // 사용자가 시점을 건드리기 전까지는 지도가 커질 때마다 전체가 보이게 다시 맞춘다.
 // 좌표는 지도 표시 좌표 그대로(단위는 지도 쪽 scale.unit). up은 카메라 화면 위쪽 평균이며 중력 방향이 아니다.
 (function () {
@@ -10,8 +11,21 @@
       if (rnd > 0.5) { vec2 d = gl_PointCoord - 0.5; if (dot(d, d) > 0.25) discard; }
       gl_FragColor = u.a > 0.0 ? u : vec4(v, 1.0);
     }`;
-  const PATH = [0.36, 0.78, 0.66, 1], LAST = [1, 0.42, 0.42, 1];
+  const PATH_FALLBACK = [0.12, 0.37, 0.6, 1];   // --map-path를 못 읽을 때(밝은 테마의 파랑)
   const FOV = 0.9;
+
+  // CSS 색 토큰 → WebGL용 [r, g, b, a](0~1). 어떤 CSS 색이든 캔버스가 #rrggbb나 rgba(…)로 바꿔 준다.
+  function tokenColor(el, name, fallback) {
+    const value = getComputedStyle(el).getPropertyValue(name).trim();
+    const ctx = tokenColor.ctx || (tokenColor.ctx = document.createElement("canvas").getContext("2d"));
+    if (!value || !ctx) return fallback;
+    ctx.fillStyle = "#000000";
+    ctx.fillStyle = value;
+    const s = ctx.fillStyle, hex = s.match(/^#([0-9a-f]{2})([0-9a-f]{2})([0-9a-f]{2})$/i);
+    if (hex) return [parseInt(hex[1], 16) / 255, parseInt(hex[2], 16) / 255, parseInt(hex[3], 16) / 255, 1];
+    const n = s.match(/[\d.]+/g);
+    return n && n.length >= 3 ? [n[0] / 255, n[1] / 255, n[2] / 255, n.length > 3 ? +n[3] : 1] : fallback;
+  }
 
   const sub = (a, b) => [a[0] - b[0], a[1] - b[1], a[2] - b[2]];
   const dotv = (a, b) => a[0] * b[0] + a[1] * b[1] + a[2] * b[2];
@@ -63,6 +77,7 @@
       this.buf = { p: gl.createBuffer(), c: gl.createBuffer(), path: gl.createBuffer(), last: gl.createBuffer() };
       this._input();
       new ResizeObserver(() => this.draw()).observe(canvas);
+      window.addEventListener("themechange", () => { this.pathColor = null; this.draw(); });
     }
 
     // 지도 한 버전. 사용자가 시점을 건드렸고 같은 세션·구간이면 그 시점을 유지하고, 아니면 전체가 보이게 맞춘다.
@@ -136,9 +151,10 @@
         gl.uniform1f(this.loc.rnd, round ? 1 : 0);
         gl.drawArrays(mode, 0, count);
       };
+      const path = this.pathColor || (this.pathColor = tokenColor(this.canvas, "--map-path", PATH_FALLBACK));
       if (this.n) draw(this.buf.p, gl.POINTS, this.n, 2, null, false);
-      if (this.pathN > 1) draw(this.buf.path, gl.LINE_STRIP, this.pathN, 1, PATH, false);
-      if (this.pathN) draw(this.buf.last, gl.POINTS, 1, 11, LAST, true);
+      if (this.pathN > 1) draw(this.buf.path, gl.LINE_STRIP, this.pathN, 1, path, false);
+      if (this.pathN) draw(this.buf.last, gl.POINTS, 1, 11, path, true);
     }
 
     _pan(dx, dy) {
