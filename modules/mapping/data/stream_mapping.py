@@ -522,11 +522,16 @@ def run(source, output, options, estimator_factory=DepthEstimator, tracker_facto
     from modules.mapping.localization.dpvo_pose import DPVO_POSE_SOURCE, DpvoAlignment, DpvoPoseTracker
     from modules.mapping.localization.pose_models import LEARNED_POSE_MODELS, HYBRID, POSE_IMAGES
     offline = live_receive is None
+    recording = None
+    if offline and options.get('pose_source') == 'drone_recording':
+        from modules.mapping.data.drone_recording import DroneRecording
+        recording = DroneRecording(source)
+        options.update(camera=recording.camera, front_tof_enabled=True, run_id=recording.root.name)
     pose_model = options.get('pose_model') if offline else None
     if pose_model is not None and (not isinstance(pose_model, str) or pose_model not in POSE_IMAGES):
         raise ValueError('invalid_reconstruction_model')
     full_video = offline and options.get('all_video_frames') is True
-    causal_video = full_video or (offline and (pose_model is not None or options.get('causal_video') is True))
+    causal_video = recording is None and (full_video or (offline and (pose_model is not None or options.get('causal_video') is True)))
     learned_pose = pose_model in LEARNED_POSE_MODELS or pose_model == HYBRID
     tracking_rate = options['sample_fps'] if learned_pose and not full_video else None
     output = Path(output)
@@ -540,6 +545,9 @@ def run(source, output, options, estimator_factory=DepthEstimator, tracker_facto
                   'continuous' if live_receive is not None and options['live_policy'] == 'continuous' else 'sequential'}
     if pose_model is not None:
         status['pose_model'] = pose_model
+    if recording is not None:
+        status['input_kind'] = 'drone_recording'
+        status['unavailable_recording_parts'] = recording.unavailable_parts
     producer = history = None
     rescue = semantics_estimator = None
     cameras = []
@@ -584,7 +592,10 @@ def run(source, output, options, estimator_factory=DepthEstimator, tracker_facto
         check_cancelled()
         publish(stage='tracking_setup' if offline else 'tracking', device=getattr(estimator, 'device', 'test'),
                 model_preparation_ms=round((time.perf_counter() - model_started) * 1000, 2))
-        if live_receive is not None:
+        if recording is not None:
+            from modules.mapping.data.drone_recording import DroneRecordingFrames
+            producer = DroneRecordingFrames(recording, options['sample_fps'], lambda: stop_event is not None and stop_event.is_set())
+        elif live_receive is not None:
             producer = LivePoseFrames(live_receive, options['frame_fps'], options['sample_fps'],
                 output, options['camera'], tracker_factory, continuous=options['live_policy'] == 'continuous',
                 predict_pose=tof_calibrations is not None, prefer_sensor_pose=options.get('prefer_sensor_pose', False))
@@ -618,7 +629,9 @@ def run(source, output, options, estimator_factory=DepthEstimator, tracker_facto
         submaps = []
         while True:
             check_cancelled()
-            if offline and status['processed']:
+            if recording is not None:
+                publish(stage='sensor_pose')
+            elif offline and status['processed']:
                 recovering = status['tracking'] in {'lost', 'pose_predicted', 'pose_held', 'pose_dpvo'}
                 initial = active_map is None and not status.get('pose_confirmed')
                 publish(stage='initial_pose' if initial else 'recovering_pose' if recovering else 'tracking')
@@ -642,7 +655,7 @@ def run(source, output, options, estimator_factory=DepthEstimator, tracker_facto
             pose_predicted = False
             if telemetry is not None:
                 if tello_pose is None:
-                    tello_pose = TelloMapPose()
+                    tello_pose = TelloMapPose(max_prediction_age=.2 if recording is not None else None)
                 rgb, params = depth_frame(display_rgb, original_size, options)
                 pose, pose_source = tello_pose.resolve(telemetry, rgb, params, stamp)
                 pose_predicted = pose_source == LINEAR_PREDICTION
@@ -883,6 +896,8 @@ def run(source, output, options, estimator_factory=DepthEstimator, tracker_facto
                 stage = 'frame_preview'
             publish(stage=stage, tracking=state, pose_confirmed=native_confirmed,
                     points=len(points), frame_id=name, latency_ms=round((time.monotonic() - received) * 1000))
+        if recording is not None and (tello_pose is None or tello_pose.epoch is None):
+            raise ValueError('drone_recording_no_sensor_pose')
         if not last_nonempty_points or not cameras:
             raise ValueError('no_valid_depth_map')
         optimized = None
@@ -949,8 +964,10 @@ def finalize_history(output, status, run_id, started, publish=lambda **fields: N
     xyz = np.array([p[1:4] for p in rows] or [c['position'] for c in cameras])
     unmapped = sum(not e['observation'] for e in entries)
     partial_reasons = (['unaligned_map_segments'] if len(groups) > 1 else []) + (['insufficient_camera_baseline'] if len(cameras) < 2 else [])
-    if (status.get('causal_video') or status.get('all_video_frames')) and unmapped:
+    if (status.get('causal_video') or status.get('all_video_frames') or status.get('input_kind') == 'drone_recording') and unmapped:
         partial_reasons.append('unregistered_video_frames')
+    if status.get('unavailable_recording_parts'):
+        partial_reasons.append('missing_recording_parts')
     partial = bool(partial_reasons)
     quality = {'input_frames': len(entries), 'submitted_frames': len(entries),
         'registered_frames': len(cameras), 'registration_ratio': len(cameras) / len(entries),
@@ -985,6 +1002,9 @@ def finalize_history(output, status, run_id, started, publish=lambda **fields: N
             'spatial_density_adaptive': primary.get('rescue', {}).get('render_mode') == 'points'}}
     if 'pose_model' in status:
         scene['depth_mapping']['pose_model'] = status['pose_model']
+    if status.get('input_kind') == 'drone_recording':
+        scene['depth_mapping']['input_kind'] = 'drone_recording'
+        quality['coverage']['unavailable_recording_parts'] = status.get('unavailable_recording_parts', 0)
     if 'dpvo_status' in status:
         scene['depth_mapping']['dpvo'] = {'status': status['dpvo_status'],
             'integrated_frames': sum(bool(entry['observation']) and entry.get('pose_source') == DPVO_POSE_SOURCE

@@ -732,9 +732,11 @@ class ViewerHandler(BaseHTTPRequestHandler):
         if current and current.stats().get('session_status') not in {'complete', 'failed', 'stopped_or_disconnected'}:
             raise ValueError('stop_live_mapping_before_reconstruction')
         summary = self.imports.job(key).get('summary', {})
-        body = self.profile_config(body, 'file', (summary.get('width'), summary.get('height')))
-        return self.imports.start(key, body, presentation_sync=not inspected and 'pose_model' not in body,
-                                  inspected=inspected)
+        drone_recording = summary.get('kind') == 'drone_recording'
+        if not drone_recording:
+            body = self.profile_config(body, 'file', (summary.get('width'), summary.get('height')))
+        return self.imports.start(key, body, inspected=inspected,
+                                  presentation_sync=not (inspected or drone_recording or 'pose_model' in body))
 
     def model_request(self):
         from modules.mapping.data.reconstruction_models import catalog, model_for
@@ -794,6 +796,10 @@ class ViewerHandler(BaseHTTPRequestHandler):
             if self.command == 'GET':
                 if action == 'library':
                     self.json_response({'items': self.imports.library(), 'initial': getattr(self.imports, 'initial', None)})
+                elif action == 'drone-recordings':
+                    recordings = sorted(self.imports.drone_recordings().values(),
+                                        key=lambda recording: recording.started_at or '', reverse=True)
+                    self.json_response({'items': [recording.summary() for recording in recordings]})
                 elif action == 'video-folder':
                     self.json_response(video_folder(self.imports.root))
                 elif action == 'status':
@@ -883,6 +889,8 @@ class ViewerHandler(BaseHTTPRequestHandler):
                     value = self.imports.inspect(key, start_video=start_video)
             elif action == 'local':
                 value = self.imports.open_local(body.get('local_id', ''))
+            elif action == 'drone-recording':
+                value = self.imports.open_drone_recording(body.get('session_id', ''))
             elif action == 'delete':
                 protected = [self.current.path] if self.current and self.current.stats().get('session_status') not in {'complete', 'failed', 'stopped_or_disconnected'} else []
                 value = self.imports.delete_local(body.get('local_id', ''), protected_paths=protected)
@@ -1389,7 +1397,7 @@ def main():
         parser.error("Select a complete or partial reconstruction result")
     if not (APP / "node_modules/three/build/three.module.js").is_file():
         parser.error("Install apps/console dependencies first: pnpm install --frozen-lockfile")
-    imports = ImportManager(args.live_root)
+    imports = ImportManager(args.live_root, APP.parents[1] / 'data/real_data/03_movie_source')
     live = None
     if args.enable_camera or args.enable_tello_map or args.tello_gateway:
         from modules.mapping.localization.orbslam3_live import LiveManager

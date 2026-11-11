@@ -106,7 +106,13 @@ def validate_options(options, summary):
     if mode not in {'sfm', 'depth_rgbd'}:
         raise ValueError('invalid_reconstruction_mode')
     result['mode'] = mode
-    if 'pose_model' in options or 'depth_model' in options:
+    if summary.get('kind') == 'drone_recording':
+        from .reconstruction_models import model_for
+        if mode != 'depth_rgbd' or causal_video or full_video or camera is None:
+            raise ValueError('drone_recording_requires_sensor_pose')
+        model_for(options.get('depth_model'), 'depth')
+        result.update(pose_source='drone_recording', depth_model=options['depth_model'])
+    elif 'pose_model' in options or 'depth_model' in options:
         from .reconstruction_models import model_for
         if mode != 'depth_rgbd' or summary.get('kind') != 'video':
             raise ValueError('video_required')

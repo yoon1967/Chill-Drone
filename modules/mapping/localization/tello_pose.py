@@ -34,12 +34,13 @@ def camera_transform(sample):
 class TelloMapPose(VisualPoseReferences):
     """Maintain one metric map and re-anchor odometry only against that map."""
 
-    def __init__(self):
+    def __init__(self, *, max_prediction_age=None):
         super().__init__()
         self.epoch = None
         self.world_from_odometry = None
         self.observed = deque(maxlen=2)
         self.predicting = False
+        self.max_prediction_age = max_prediction_age
 
     def resolve(self, telemetry, rgb, params, stamp):
         pose, source = self._observed_pose(telemetry, rgb, params)
@@ -54,6 +55,8 @@ class TelloMapPose(VisualPoseReferences):
             return None, source
         self.predicting = True
         latest_stamp, latest = self.observed[-1]
+        if self.max_prediction_age is not None and stamp - latest_stamp > self.max_prediction_age:
+            return None, source
         previous_stamp, previous = self.observed[0]
         interval = latest_stamp - previous_stamp
         if interval < 1 / 120:

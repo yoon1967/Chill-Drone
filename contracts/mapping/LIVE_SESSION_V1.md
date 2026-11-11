@@ -64,7 +64,7 @@ manifest의 파일 경로는 세션 루트 기준이다. 기존 `local_assets.js
 `session.json.assets.sensor`, `assets.frame_poses`로 찾으며 ZIP에도 포함한다.
 기존 1.0 세션에 대한 호환 가능한 추가 항목이다. 기존 파일에 이 항목이 없으면 센서 재계산 가능한 기록으로 간주하지 않는다.
 `settings.json`에는 보정 카메라·샘플링·매핑 옵션과 모델 ID, 확인 가능한 로컬 모델 revision, 패키지 버전을 남긴다.
-모델 revision을 확인할 수 없으면 null이다. 과거 영상을 다시 계산하는 소비자는 이번 변경에 포함하지 않는다.
+모델 revision을 확인할 수 없으면 null이다. 저장 영상의 센서 활용 복원은 아래 소비 절차를 따른다.
 
 ### `sensor.jsonl` (`mapping-sensor/1.0`)
 
@@ -122,6 +122,23 @@ partial이며 `recording_sensor_samples_missing` 오류를 남긴다.
 대조하고, 해당 구간의 실제 원시 패킷만 보존한다. 기존 센서 내용이 있거나 출처·시각·순서가
 맞지 않으면 덮어쓰지 않는다. manifest의 `capture_metadata.sensor_recovery`에 원본 해시와
 시각 범위·복구 시각을 남기며, 영상·프레임·기체 로그 원본은 변경하지 않는다.
+
+## 드론 측정 및 센서 활용 복원
+
+기존 기록 형식을 그대로 소비한다. `GET /api/import/drone-recordings`는 실측 영상 입력 폴더와
+현재 녹화 루트의 `live_*` 중 종료된 Tello 세션을 반환한다. `POST /api/import/drone-recording`에
+`session_id`를 보내면 센서 기반 복원 초안이 생성된다. 깊이 모델을 선택한 뒤 기존 import start API로 실행한다.
+요약의 `kind`와 결과의 `depth_mapping.input_kind`는 `drone_recording`이다.
+
+JPEG 녹화는 `recording_part`, `recording_frame_index`, `video_recorded=true`로 입력 이벤트를 찾고
+영상 PTS와 `receive_timestamp_s`가 2ms 이내인지 확인한다. 저장된 구간별 `sensor_pose`를 우선하고,
+저장 자세가 없는 구간은 같은 `source.run_id`의 원시 센서를 적분한다. 원시 적분의 시작 위치와
+저장 자세의 적분 시작 위치는 서로 다른 좌표 원점으로 취급한다. H.264는 재생 메타데이터의
+`first_timestamp_s`에 PTS를 더한 패킷 수신 시각으로 원시 센서를 대응한다.
+
+복원은 실시간 감독과 같은 센서 좌표 변환 및 점군 통합을 사용한다. 저장 지도에 반영되지 않았던 입력
+프레임도 복원 대상이며, 이전 `mapping` 이벤트의 결과 자세를 새 복원의 입력 자세로 사용하지 않는다.
+새 결과는 별도 import 회차에 저장한다. 영상·센서 원본과 생산자인 실시간 녹화 형식은 유지한다.
 
 ## 부하·오류·종료
 

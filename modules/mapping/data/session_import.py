@@ -326,9 +326,11 @@ def detect_root(root):
 
 
 class ImportManager:
-    def __init__(self, root):
+    def __init__(self, root, drone_recordings_root=None):
         self.root = Path(root).resolve()
         self.root.mkdir(parents=True, exist_ok=True)
+        self.drone_recording_roots = tuple(dict.fromkeys(
+            [self.root] if drone_recordings_root is None else [Path(drone_recordings_root).resolve(), self.root]))
         self.jobs = {}
         self.lock = threading.RLock()
         self.history_readers = {}
@@ -564,6 +566,30 @@ class ImportManager:
         self.inspect(info['id'], source)
         return info['id']
 
+    def drone_recordings(self):
+        from modules.mapping.data.drone_recording import DroneRecording
+        recordings = {}
+        for root in self.drone_recording_roots:
+            for path in root.glob('live_*'):
+                if path.name in recordings:
+                    continue
+                try:
+                    recordings[path.name] = DroneRecording(inside(root, path.name))
+                except (OSError, ValueError, KeyError, TypeError):
+                    continue
+        return recordings
+
+    def open_drone_recording(self, session_id):
+        recording = self.drone_recordings().get(session_id)
+        if recording is None:
+            raise ValueError('drone_recording_unavailable')
+        with self.lock:
+            key = self.create(recording.root.name)['id']
+            self.jobs[key].update(source=recording.root, camera=recording.camera,
+                                  summary=recording.summary(), status='awaiting_options', stage='confirm')
+            self._save(self.jobs[key])
+            return self.public(key)
+
     def library(self):
         rows = []
         seen_maps = set()
@@ -674,18 +700,21 @@ class ImportManager:
     def start(self, key, options, presentation_sync=False, *, inspected=False):
         from modules.mapping.data.frame_input import validate_options
         job = self.job(key)
+        if job.get('camera') is not None:
+            options = {**options, 'camera': job['camera']}
         options = validate_options(options, job.get('summary', {}))
         depth_location = pose_assets = None
         if options['mode'] == 'depth_rgbd':
             import importlib.util
             if any(importlib.util.find_spec(name) is None for name in ('torch', 'transformers')):
                 raise ValueError('depth_mapping_dependencies_missing')
-            if 'pose_model' in options:
+            if 'depth_model' in options:
                 from modules.mapping.data.reconstruction_models import depth_location as locate_depth, pose_location
-                pose_status = self.models.status(options['pose_model'])
-                if pose_status['status'] != 'ready':
-                    raise ValueError(pose_status.get('error', 'reconstruction_models_not_ready'))
-                pose_assets = pose_location(options['pose_model'], self.models.root)
+                if 'pose_model' in options:
+                    pose_status = self.models.status(options['pose_model'])
+                    if pose_status['status'] != 'ready':
+                        raise ValueError(pose_status.get('error', 'reconstruction_models_not_ready'))
+                    pose_assets = pose_location(options['pose_model'], self.models.root)
                 depth_location = locate_depth(options['depth_model'], self.models.root)
                 if depth_location is None:
                     raise ValueError('reconstruction_models_not_ready')
@@ -711,7 +740,7 @@ class ImportManager:
             try:
                 if options['mode'] == 'depth_rgbd':
                     source = Path(job['source'])
-                    if source.is_dir():
+                    if source.is_dir() and options.get('pose_source') != 'drone_recording':
                         videos = [p for p in source.iterdir() if p.suffix.lower() in VIDEO]
                         if len(videos) == 1 and not any(p.suffix.lower() in {'.jpg', '.jpeg', '.png'} for p in source.iterdir()):
                             source = videos[0]

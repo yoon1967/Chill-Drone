@@ -29,6 +29,12 @@
       <p>MP4 · MOV · AVI · MKV</p>
     </div>
 
+    <section id="drone-recordings" aria-labelledby="drone-recordings-title" hidden>
+      <h2 id="drone-recordings-title">드론 측정 및 센서 활용 복원</h2>
+      <p id="drone-recordings-status" role="status"></p>
+      <ul id="drone-recordings-list"></ul>
+    </section>
+
     <div id="status-line" hidden>
       <strong id="status" role="status"></strong>
       <span id="notice" role="status" hidden></span>
@@ -38,8 +44,9 @@
 
     <section id="model-picker" aria-labelledby="model-picker-title" hidden>
       <h2 id="model-picker-title">복원 모델 선택</h2>
+      <p id="drone-pose-hint" hidden>녹화 시 기록된 드론 센서값으로 카메라의 위치와 방향을 계산합니다.</p>
       <div class="model-fields">
-        <div class="model-field">
+        <div id="pose-model-field" class="model-field">
           <label for="pose-model">카메라 위치 모델</label>
           <select id="pose-model" aria-describedby="pose-model-status" disabled></select>
           <div class="model-actions">
