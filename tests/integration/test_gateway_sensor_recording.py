@@ -96,6 +96,11 @@ class GatewaySensorRecordingTests(unittest.TestCase):
                 manifest = json.loads((path / 'session.json').read_text())
                 self.assertEqual(manifest['recording']['status'], 'complete')
                 self.assertEqual(manifest['recording']['log_records']['sensor'], len(sensors))
+                sync = json.loads((path / 'video_sensor_sync.json').read_text())
+                self.assertEqual(sync['status'], 'complete')
+                self.assertEqual(sync['parts'][0]['source_run_id'], link.run_id)
+                self.assertGreater(len(sync['parts'][0]['samples']), 2)
+                self.assertEqual((path / 'frames.jsonl').stat().st_size, 0)
                 self.assertGreater((path / 'recordings/part_0000.mjpeg').stat().st_size, 0)
                 self.assertNotIn('takeoff', fake.received)
             finally:

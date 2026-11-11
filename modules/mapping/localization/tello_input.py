@@ -134,7 +134,7 @@ class DirectCamera:
             return
         self.video = self.video_factory()
         if self.recording:
-            self.recording_sink = self.recording.open_part('h264', 'pc_udp_receive_monotonic')
+            self.recording_sink = self.recording.open_part('h264', 'pc_udp_receive_monotonic', source_run_id=self.run_id)
             if self.recording_sink:
                 self.video.packet_sink = self.recording_sink.offer
         self.video.start()
@@ -294,7 +294,7 @@ class GatewayCamera:
             # in one socket read, so use the high-resolution monotonic counter.
             stamp = time.perf_counter()
             if self.recording_sink:
-                recorded = self.recording_sink.offer(jpeg, stamp)
+                recorded = self.recording_sink.offer(jpeg, stamp, sensor_clock=metadata)
             else:
                 recorded = False
             self.frame_metadata = {**(metadata or {}), 'recording_part': self.recording_sink.part if self.recording_sink else None,

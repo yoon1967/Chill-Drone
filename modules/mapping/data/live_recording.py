@@ -2,6 +2,7 @@
 from __future__ import annotations
 
 from collections import deque
+from copy import deepcopy
 from datetime import datetime, timezone
 from fractions import Fraction
 import hashlib
@@ -10,6 +11,7 @@ import os
 from pathlib import Path
 import threading
 import time
+import uuid
 
 
 def utc_now():
@@ -55,7 +57,7 @@ def archive_files(path):
             yield item, item.relative_to(root).as_posix()
 
 
-def remux_video(raw, index, destination, mode, fps):
+def remux_video(raw, index, destination, mode, fps, *, clock_samples=None, source_run_id=None):
     """Copy encoded packets; reception timestamps are an approximation for raw H.264."""
     import av
     time_base = Fraction(1, 1000000)
@@ -99,6 +101,11 @@ def remux_video(raw, index, destination, mode, fps):
                 packet.time_base = time_base
                 packet.stream = target
                 output.mux(packet)
+                if clock_samples is not None:
+                    clock = (row or {}).get('sensor_clock')
+                    if mode == 'h264' and not fallback and source_run_id:
+                        clock = {'run_id': source_run_id, 'timestamp_s': stamp}
+                    clock_samples.append(clock if not fallback else None)
                 previous = pts
                 count += 1
     if not count:
@@ -117,8 +124,8 @@ class RecordingSink:
         self.owner, self.part = owner, part
         self.closed = False
 
-    def offer(self, data, timestamp):
-        return not self.closed and self.owner.offer(self.part, data, timestamp)
+    def offer(self, data, timestamp, *, sensor_clock=None):
+        return not self.closed and self.owner.offer(self.part, data, timestamp, sensor_clock=sensor_clock)
 
     def close(self, receiver_stats=None):
         if not self.closed:
@@ -151,8 +158,10 @@ class SessionRecording:
         self.sensor_gaps = 0
         self.sensor_required = False
         self.sensor_samples_written = 0
+        self.sync_info = {'path': 'video_sensor_sync.json', 'status': 'pending'}
         self.started_at, self.ended_at = utc_now(), None
         self.finished = threading.Event()
+        self.checkpoints = []
         self._manifest()
         self.worker = threading.Thread(target=self._run, daemon=True, name=self.path.name + '-recording')
         self.worker.start()
@@ -165,13 +174,14 @@ class SessionRecording:
                     'log_error': self.log_error, 'log_records': dict(self.log_counts), 'sensor_gaps': self.sensor_gaps,
                     'log_dropped': dict(self.log_dropped),
                     'sensor_required': self.sensor_required, 'sensor_samples': self.sensor_samples_written,
+                    'video_sensor_sync': dict(self.sync_info),
                     'bytes_received': self.bytes_received, 'bytes_written': self.bytes_written,
                     'queued_bytes': self.queued_bytes, 'queue_limit_bytes': self.limit,
                     'parts': len(self.parts), 'original_h264': any(p['mode'] == 'h264' for p in self.parts),
                     'playback_errors': sum('playback_error' in p for p in self.parts),
                     'session_path': str(self.path), 'manifest': 'session.json'}
 
-    def open_part(self, mode, time_basis):
+    def open_part(self, mode, time_basis, *, source_run_id=None):
         if mode not in {'h264', 'received_jpeg'}:
             raise ValueError('invalid_recording_mode')
         with self.condition:
@@ -185,12 +195,13 @@ class SessionRecording:
             self.parts.append({'id': part, 'mode': mode, 'time_basis': time_basis,
                 'raw_path': f'recordings/part_{part:04d}.{extension}',
                 'index_path': f'recordings/part_{part:04d}.jsonl', 'bytes': 0,
-                'status': 'recording', 'original_drone_bitstream': mode == 'h264'})
+                'status': 'recording', 'original_drone_bitstream': mode == 'h264',
+                'source_run_id': source_run_id})
             self.jobs.append(('open', part))
             self.condition.notify()
             return RecordingSink(self, part)
 
-    def offer(self, part, data, timestamp):
+    def offer(self, part, data, timestamp, *, sensor_clock=None):
         with self.condition:
             if self.disabled or self.finishing:
                 return False
@@ -200,7 +211,13 @@ class SessionRecording:
                 self.condition.notify()
                 return False
             self.queued_bytes += len(data)
-            self.jobs.append(('data', part, data, timestamp))
+            clock = None
+            if isinstance(sensor_clock, dict):
+                # Persist only source identity/time, never mapping poses or decisions.
+                from .video_sensor_sync import finite
+                if isinstance(sensor_clock.get('run_id'), str) and finite(sensor_clock.get('timestamp_s')):
+                    clock = {'run_id': sensor_clock['run_id'], 'timestamp_s': sensor_clock['timestamp_s']}
+            self.jobs.append(('data', part, data, timestamp, clock))
             self.condition.notify()
             return True
 
@@ -310,6 +327,31 @@ class SessionRecording:
     def wait(self, timeout=30):
         return self.finished.wait(timeout)
 
+    def checkpoint(self, map_pin):
+        """Queue a prefix barrier. Receivers keep appending after this marker."""
+        with self.condition:
+            if self.finishing or self.finalized:
+                raise ValueError('checkpoint_session_finished')
+            if any(job['status'] == 'saving' for job in self.checkpoints):
+                raise ValueError('checkpoint_busy')
+            if self.disabled or not self.bytes_received:
+                raise ValueError('checkpoint_video_not_ready')
+            job = {'id': 'saved_' + datetime.now().strftime('%Y%m%d_%H%M%S_') + uuid.uuid4().hex[:8],
+                   'status': 'saving', 'cutoff_at': utc_now(), 'cutoff_monotonic': time.monotonic(),
+                   'source_session_id': self.path.name, 'map': map_pin, 'error': None}
+            self.checkpoints.append(job)
+            self.jobs.append(('checkpoint', job))
+            self.condition.notify()
+            return self.checkpoint_status(job['id'])
+
+    def checkpoint_status(self, key=None):
+        with self.condition:
+            jobs = self.checkpoints if key is None else [job for job in self.checkpoints if job['id'] == key]
+            if not jobs:
+                return None
+            job = jobs[-1]
+            return {name: value for name, value in job.items() if name != 'map'}
+
     def snapshot(self):
         with self.condition:
             value = {'schema_version': 'mapping-session/1.0', 'session_id': self.path.name,
@@ -328,6 +370,7 @@ class SessionRecording:
                 'mapping': self.mapping,
                 'assets': {'camera': 'camera.json', 'settings': 'settings.json', 'state': 'state.json',
                     'sensor': 'sensor.jsonl', 'frame_poses': 'frames.jsonl',
+                    'video_sensor_sync': 'video_sensor_sync.json',
                     'native': 'native.json', 'camera_settings': 'camera.yaml',
                     'timeline': 'timeline.json', 'segments': 'segments.json', 'revisions': 'revisions/',
                     'keyframes': 'frames/', 'tracking': 'tracking.jsonl', 'diagnostics': 'diagnostics.json',
@@ -348,6 +391,7 @@ class SessionRecording:
     def _run(self):
         opened, digests, offsets = {}, {}, {}
         logs = {}
+        clocks_by_part = {}
         storage_failed = False
         next_flush = time.monotonic() + 1
 
@@ -407,11 +451,11 @@ class SessionRecording:
                     elif job and job[0] == 'data':
                         if storage_failed:
                             continue
-                        _, part, data, stamp = job
+                        _, part, data, stamp, clock = job
                         raw, index = opened[part]
                         raw.write(data)
                         index.write(json.dumps({'offset': offsets[part], 'size': len(data),
-                            'timestamp_s': stamp}, allow_nan=False) + '\n')
+                            'timestamp_s': stamp, **({'sensor_clock': clock} if clock else {})}, allow_nan=False) + '\n')
                         digests[part].update(data)
                         offsets[part] += len(data)
                         with self.condition:
@@ -421,6 +465,28 @@ class SessionRecording:
                             self.parts[part]['last_timestamp_s'] = stamp
                     elif job and job[0] == 'close':
                         close(job[1])
+                    elif job and job[0] == 'checkpoint':
+                        checkpoint = job[1]
+                        try:
+                            from .live_checkpoint import save_checkpoint
+                            for streams in opened.values():
+                                for stream in streams:
+                                    stream.flush()
+                            for stream in logs.values():
+                                stream.flush()
+                            # Sizes are fixed here, before any later queued packet/log is written.
+                            with self.condition:
+                                manifest = deepcopy(self.snapshot())
+                                parts = [deepcopy(part) for part in self.parts if part['bytes']]
+                            names = ['sensor.jsonl', 'frames.jsonl']
+                            names += [part[field] for part in parts for field in ('raw_path', 'index_path')]
+                            sizes = {name: (self.path / name).stat().st_size for name in names if (self.path / name).is_file()}
+                            prefix = {'manifest': manifest, 'parts': parts, 'sizes': sizes}
+                            threading.Thread(target=save_checkpoint, args=(self, checkpoint, prefix),
+                                daemon=True, name=checkpoint['id']).start()
+                        except Exception as error:
+                            with self.condition:
+                                checkpoint.update(status='failed', error=str(error)[:200])
                     elif job and job[0] == 'finish':
                         break
                     if time.monotonic() >= next_flush:
@@ -457,8 +523,10 @@ class SessionRecording:
                     continue
                 output = self.directory / f"part_{item['id']:04d}.{'mp4' if item['mode'] == 'h264' else 'mkv'}"
                 try:
+                    clocks_by_part[item['id']] = []
                     playback = remux_video(self.path / item['raw_path'], self.path / item['index_path'],
-                                           output, item['mode'], self.camera.get('fps', 24))
+                                           output, item['mode'], self.camera.get('fps', 24),
+                                           clock_samples=clocks_by_part[item['id']], source_run_id=item.get('source_run_id'))
                     playback['path'] = 'recordings/' + playback['path']
                     item['playback'] = playback
                 except Exception as error:
@@ -479,7 +547,16 @@ class SessionRecording:
                         stream.close()
                     except OSError:
                         pass
-            for name in ('camera.json', 'settings.json', 'state.json', 'sensor.jsonl', 'frames.jsonl'):
+            try:
+                from .video_sensor_sync import write_sync
+                sync = write_sync(self.path, self.parts, clocks_by_part, self.sensor_required)
+                self.sync_info['status'] = sync['status']
+                if self.sensor_required and self.bytes_received and sync['status'] in {'unavailable', 'partial'}:
+                    self.log_problem('recording_video_sensor_sync_incomplete')
+            except Exception as error:
+                self.sync_info.update(status='unavailable', error=type(error).__name__)
+                self.log_problem('recording_video_sensor_sync_' + type(error).__name__)
+            for name in ('camera.json', 'settings.json', 'state.json', 'sensor.jsonl', 'frames.jsonl', 'video_sensor_sync.json'):
                 try:
                     if (self.path / name).is_file():
                         self.asset_hashes[name] = file_hash(self.path / name)

@@ -310,6 +310,7 @@ class RecordingTests(unittest.TestCase):
             self.assertIn(self.root.name + '/session.json', archive.namelist())
             self.assertIn(self.root.name + '/sensor.jsonl', archive.namelist())
             self.assertIn(self.root.name + '/frames.jsonl', archive.namelist())
+            self.assertIn(self.root.name + '/video_sensor_sync.json', archive.namelist())
             self.assertNotIn(self.root.name + '/not-finished.mp4.tmp', archive.namelist())
             self.assertTrue(json.loads(archive.read(self.root.name + '/session.json'))['recording']['finalized'])
         with urlopen(base + 'session?session=' + self.root.name) as response:
