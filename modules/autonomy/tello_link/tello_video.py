@@ -13,10 +13,12 @@ import time
 from collections import deque
 
 
-def mjpeg_part(jpeg, pose=None):
+def mjpeg_part(jpeg, pose=None, metadata=None):
     headers = b"--frame\r\nContent-Type: image/jpeg\r\n"
     if pose is not None:
         headers += b"X-Tello-Pose: " + json.dumps(pose, separators=(',', ':'), allow_nan=False).encode('ascii') + b"\r\n"
+    if metadata is not None:
+        headers += b"X-Tello-Frame: " + json.dumps(metadata, separators=(',', ':'), allow_nan=False).encode('ascii') + b"\r\n"
     return headers + b"\r\n" + jpeg + b"\r\n"
 
 

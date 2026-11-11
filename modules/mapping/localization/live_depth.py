@@ -17,6 +17,21 @@ from .orbslam3 import atomic_json
 class LiveDepthSession:
     def __init__(self, root, camera, image_id, imports, *, input_kind='browser_camera', timestamp_basis='browser_media_time', mapping=None):
         from modules.mapping.data.rescue_mapping import mapping_options, mapping_sample_fps
+        from modules.mapping.data.model_assets import DEPTH_MODEL, SCENE_MODEL, PERSON_MODEL, PERSON_SHA256
+        from modules.mapping.data.model_assets import cached_snapshot, ModelAssetsMissing
+        from importlib.metadata import PackageNotFoundError, version
+        snapshots = {}
+        for model in (DEPTH_MODEL, SCENE_MODEL):
+            try:
+                snapshots[model] = cached_snapshot(model).name
+            except (ImportError, OSError, ModelAssetsMissing):
+                snapshots[model] = None
+        packages = {}
+        for name in ('torch', 'transformers', 'numpy', 'opencv-python', 'av'):
+            try:
+                packages[name] = version(name)
+            except PackageNotFoundError:
+                packages[name] = None
         mapping = {**mapping_options(mapping or {}), 'sample_fps': mapping_sample_fps(mapping or {})}
         self.id = 'live_' + uuid.uuid4().hex[:16]
         self.path = Path(root) / self.id
@@ -36,7 +51,9 @@ class LiveDepthSession:
         atomic_json(self.path / 'camera.json', camera)
         atomic_json(self.path / 'settings.json', {'backend': 'orb_slam3_depth', 'input': input_kind,
             'input_timestamp_basis': timestamp_basis, 'image_id': image_id, 'camera': camera,
-            'frame_policy': mapping['live_policy'], 'dense_surface': True, **mapping})
+            'frame_policy': mapping['live_policy'], 'dense_surface': True, **mapping,
+            'models': {'depth': DEPTH_MODEL, 'scene': SCENE_MODEL, 'person': PERSON_MODEL,
+                       'person_sha256': PERSON_SHA256, 'cached_revisions': snapshots}, 'packages': packages})
         self.recording = SessionRecording(self.path, camera, input_kind)
         self.jpeg_recording = self.recording.open_part('received_jpeg', timestamp_basis) if input_kind == 'browser_camera' else None
         self.depth_job_id = imports.create('실시간 깊이 지도')['id']
@@ -137,8 +154,12 @@ class LiveDepthSession:
             self.last_pts, self.last_sequence = pts, sequence
             self.last_input = self.last_admitted = time.monotonic()
             self.received += 1
-            if self.jpeg_recording:
-                self.jpeg_recording.offer(jpeg, pts)
+            video_recorded = self.jpeg_recording.offer(jpeg, pts) if self.jpeg_recording else False
+            if self.input_kind == 'browser_camera':
+                self.recording.frame_input(sequence, pts, admission='submitted',
+                    metadata={'video_match': 'received_jpeg_index', 'recording_part': self.jpeg_recording.part
+                              if self.jpeg_recording else None, 'recording_frame_index': self.received - 1,
+                              'video_recorded': video_recorded}, sensor_pose=sensor_pose, front_tof=front_tof)
             if self.pending is not None:
                 self.dropped += 1
             self.pending = (jpeg, pts, sequence)
@@ -172,6 +193,7 @@ class LiveDepthSession:
             return packet
 
     def _published(self, snapshot):
+        self.recording.frame_result(snapshot)
         with self.condition:
             self.preview = snapshot
             self.ack = snapshot['timestamp_s']

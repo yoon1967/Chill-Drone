@@ -77,6 +77,7 @@ class GatewayCase(unittest.TestCase):
 class GatewayTest(GatewayCase):
     def test_state_follows_contract(self):
         st = self.gw.drone_state()
+        self.assertEqual(st['run_id'], self.link.run_id)
         for key in ("schema_version", "type", "at", "time_source", "source", "connected", "mode", "authority",
                     "allowed", "warnings", "battery_pct", "height_m", "temp_high_c", "front_tof", "down_tof",
                     "mission", "video", "last_transition", "operator_interventions"):

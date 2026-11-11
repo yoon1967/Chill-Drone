@@ -57,7 +57,7 @@ LOCAL_HOSTS = ("127.0.0.1", "::1", "localhost")
 GRACEFUL_STOP_S = 3   # 끄기(Ctrl+C) 뒤 남은 요청을 기다리는 최대 시간. 넘으면 끊고 회차를 닫는다(metrics.json)
 
 
-def mjpeg_frames(request, latest, running, stopping, pose_at=None):
+def mjpeg_frames(request, latest, running, stopping, pose_at=None, run_id=None):
     """MJPEG 조각을 최신 프레임만 보낸다(쌓지 않는다). 손님이 닫거나 영상이 꺼지거나 게이트웨이를 끌 때 끝난다.
 
     pose_at이 있으면(지도용) latest()는 (JPEG, 프레임 시각)을 주고, 그 시각의 센서 자세를 조각에 붙인다.
@@ -69,7 +69,9 @@ def mjpeg_frames(request, latest, running, stopping, pose_at=None):
             data = frame[0] if frame is not None and pose_at else frame
             if data is not None and data is not last:
                 last = data
-                yield mjpeg_part(data, pose_at(frame[1]) if pose_at else None)
+                metadata = ({'run_id': run_id, 'timestamp_s': frame[1],
+                             'wall': frame[2] if len(frame) > 2 else None} if pose_at else None)
+                yield mjpeg_part(data, pose_at(frame[1]) if pose_at else None, metadata)
             await asyncio.sleep(0.04)
     return gen()
 
@@ -170,6 +172,16 @@ def build_app(args) -> FastAPI:
     @app.get("/api/drone/state")
     def drone_state():
         return gw.drone_state()
+
+    @app.get("/api/drone/sensors")
+    def drone_sensors(request: Request, after: int = 0):
+        if request.client is None or request.client.host not in LOCAL_HOSTS:
+            raise HTTPException(403, "not_local")
+        if after < 0:
+            raise HTTPException(400, "invalid_sensor_cursor")
+        if not hasattr(gw.link, 'sensor_samples'):
+            raise HTTPException(404, "sensor_history_unavailable")
+        return gw.link.sensor_samples(after)
 
     @app.websocket("/ws/drone")
     async def ws_drone(ws: WebSocket):
@@ -346,7 +358,7 @@ def build_app(args) -> FastAPI:
 
     def mjpeg(request: Request, latest, running, *, mapping=False):
         frames = mjpeg_frames(request, latest, running, app.state.stopping,
-                              gw.link.sensor_pose_at if mapping else None)
+                              gw.link.sensor_pose_at if mapping else None, gw.link.run_id if mapping else None)
         return StreamingResponse(frames, media_type="multipart/x-mixed-replace; boundary=frame",
                                  headers={"X-Tello-Sensor-Pose": "1"} if mapping else None)
 

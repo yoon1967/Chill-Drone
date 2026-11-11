@@ -168,7 +168,7 @@ class TelloInputTests(unittest.TestCase):
         with self.assertRaisesRegex(InputError, 'too_large'):
             next(mjpeg_frames(BytesIO(b'\xff\xd8' + b'x' * 2097153), lambda: False))
 
-    def gateway(self, *, old=False, age=.01, on=True, redirect=False, front_tof=None, pose=None):
+    def gateway(self, *, old=False, age=.01, on=True, redirect=False, front_tof=None, pose=None, metadata=None, sensors=None):
         requests = []
         class Handler(BaseHTTPRequestHandler):
             def log_message(self, *args):
@@ -186,10 +186,12 @@ class TelloInputTests(unittest.TestCase):
                     return
                 self.send_response(200)
                 if self.path == '/video.mjpg?mapping=1':
-                    body = mjpeg_part(JPEG, pose)
+                    body = mjpeg_part(JPEG, pose, metadata)
                     if pose is not None:
                         self.send_header('X-Tello-Sensor-Pose', '1')
                     self.send_header('Content-Type', 'multipart/x-mixed-replace; boundary=frame')
+                elif self.path.startswith('/api/drone/sensors?') and sensors is not None:
+                    body = json.dumps(sensors).encode()
                 else:
                     body = json.dumps({'run_id': 'fake', 'stream_on': on, 'front_tof': front_tof,
                         'video': {'frame_age_s': age, **({} if old else {'on': on, 'available': on})}}).encode()
@@ -229,6 +231,43 @@ class TelloInputTests(unittest.TestCase):
         parts = mjpeg_frames(BytesIO(mjpeg_part(JPEG, pose) + mjpeg_part(JPEG)), lambda: False, with_pose=True)
         self.assertEqual(next(parts), (JPEG, pose))
         self.assertEqual(next(parts), (JPEG, None))
+
+    def test_gateway_recording_pairs_source_sensor_clock_with_exact_saved_jpeg(self):
+        from modules.mapping.data.live_recording import SessionRecording
+        from modules.mapping.localization.tello_input import DEFAULT_CAMERA
+        camera = json.loads(DEFAULT_CAMERA.read_text(encoding='utf-8'))
+        camera.update(width=960, height=720, fps=24)
+        pose = SensorPose(2, 1., 2., .8, .1, -.2, .3)
+        sensors = {'run_id': 'fake', 'next_sequence': 12, 'samples': [{'sequence': 12,
+            'received_mono': 55.1, 'raw': {'vgx': -3, 'tof': 80}, 'valid': True}]}
+        address, requests = self.gateway(pose=pose, metadata={'run_id': 'fake', 'timestamp_s': 55.12, 'wall': 1800000000.},
+                                         sensors=sensors)
+        with tempfile.TemporaryDirectory() as temporary:
+            recording = SessionRecording(Path(temporary), camera, 'tello_camera')
+            source = GatewayCamera(address)
+            source.set_recording(recording)
+            try:
+                source.open(lambda: False)
+                jpeg, stamp = next(source.frames(lambda: False))
+                recording.frame_input(0, 0., admission='submitted', metadata=source.frame_metadata,
+                    sensor_pose=('fake', source.sensor_pose, False))
+                self.assertEqual(source.frame_metadata['timestamp_s'], 55.12)
+                self.assertEqual(source.frame_metadata['receive_timestamp_s'], stamp)
+            finally:
+                source.close()
+                recording.finish_input()
+                recording.finish_mapping({'status': 'complete'})
+                self.assertTrue(recording.wait(5))
+            root = Path(temporary)
+            rows = [json.loads(row) for row in (root / 'sensor.jsonl').read_text().splitlines()]
+            self.assertEqual(len(rows), 1)
+            self.assertEqual(rows[0]['received_mono'], 55.1)
+            frame = json.loads((root / 'frames.jsonl').read_text().strip())
+            self.assertEqual(frame['sensor_pose'], list(pose))
+            self.assertEqual(frame['source']['recording_frame_index'], 0)
+            self.assertEqual((root / 'recordings/part_0000.mjpeg').read_bytes(), jpeg)
+            self.assertEqual(recording.stats()['status'], 'complete')
+            self.assertIn('/api/drone/sensors?after=12', requests)
 
     def test_stale_off_and_redirected_gateways_never_supply_frames(self):
         for values in [dict(age=4), dict(age=float('nan')), dict(on=False), dict(redirect=True)]:

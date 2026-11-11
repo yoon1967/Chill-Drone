@@ -129,7 +129,6 @@ class StateSample:
 
     def to_dict(self, now_mono: float | None = None) -> dict:
         d = asdict(self)
-        d.pop("received_mono")
         if now_mono is not None:
             d["age_s"] = round(now_mono - self.received_mono, 3)
         return d
@@ -273,6 +272,7 @@ class TelloLink:
 
         self._latest_state: StateSample | None = None
         self._odometry = TelloOdometry()
+        self._sensor_history = deque(maxlen=512)
         self._state_times: deque = deque(maxlen=50)
         self.state_count = 0
         self.state_bad_count = 0
@@ -502,10 +502,11 @@ class TelloLink:
                 self._odometry.update(sample.raw, mono)
                 self._state_times.append(mono)
                 self.state_count += 1
+                self._sensor_history.append({**sample.to_dict(), "sequence": self.state_count})
                 if not sample.valid:
                     self.state_bad_count += 1
             if self.log:
-                self.log.append("sensor", sample.to_dict())
+                self.log.append("sensor", {**sample.to_dict(), "sequence": self.state_count})
 
     def latest_state(self) -> dict | None:
         with self._state_lock:
@@ -515,6 +516,14 @@ class TelloLink:
     def sensor_pose_at(self, frame_stamp):
         with self._state_lock:
             return self._odometry.at(frame_stamp)
+
+    def sensor_samples(self, after=0):
+        """Bounded receive-order history; consumers detect gaps instead of hiding loss."""
+        with self._state_lock:
+            first = self._sensor_history[0]['sequence'] if self._sensor_history else self.state_count + 1
+            return {"schema_version": "tello-sensor-batch/1.0", "run_id": self.run_id,
+                    "next_sequence": self.state_count, "lost": max(0, first - after - 1),
+                    "samples": [dict(row) for row in self._sensor_history if row['sequence'] > after]}
 
     def state_rate_hz(self) -> float | None:
         with self._state_lock:

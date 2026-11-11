@@ -264,6 +264,50 @@ class LiveDepthTests(unittest.TestCase):
         self.assertEqual((summary['paired_frames'], summary['corrected_frames']), (7, 1))
         self.assertAlmostEqual(summary['meters_per_slam_unit'], .8 / 3, delta=.003)
 
+    def test_capture_log_keeps_model_wait_frames_and_links_the_final_camera_pose(self):
+        self.session.stop('test_reconfigure')
+        self.runtime.release.set()
+        self.session.worker.join(5)
+        self.session.recording.wait(5)
+        runtime = self.runtime = self.manager.depth_worker = FakeWorker()
+        session = self.session = LiveDepthSession(self.root, self.session.camera, 'test-image', self.manager,
+            input_kind='tello_camera', mapping={'live_policy': 'continuous'})
+        self.assertTrue(runtime.loading.wait(2))
+        jpeg = self.jpeg
+        class Source:
+            sensor_capable = True
+            run_id = 'synthetic'
+            sensor_pose = SensorPose(1, 0., 0., .8, 0., 0., 0.)
+            def open(self, cancelled):
+                pass
+            def frames(self, cancelled):
+                yield jpeg, 100.
+                runtime.release.set()
+                wait_for(lambda: session.ready)
+                yield jpeg, 100.4
+                wait_for(lambda: session.preview is not None)
+                session.stop('user_stop')
+            def close(self):
+                pass
+        adapter = TelloMapInput(None)
+        adapter.lease_until = time.monotonic() + 45
+        adapter._run(session, Source())
+        session.worker.join(5)
+        self.assertTrue(session.recording.wait(5))
+        self.assertIsNone(session.error)
+        logs = [json.loads(line) for line in (session.path / 'frames.jsonl').read_text().splitlines()]
+        inputs = [row for row in logs if row['event'] == 'input']
+        mapped = [row for row in logs if row['event'] == 'mapping']
+        self.assertEqual([row['admission'] for row in inputs], ['model_wait', 'submitted'])
+        self.assertEqual([row['frame_sequence'] for row in inputs], [0, 1])
+        self.assertIsNone(inputs[0]['timestamp_s'])
+        self.assertEqual(inputs[1]['timestamp_s'], 0.)
+        self.assertEqual(mapped[0]['frame_sequence'], 1)
+        self.assertTrue(mapped[0]['mapping_applied'])
+        self.assertEqual(mapped[0]['pose_source'], 'tello_sensor_odometry')
+        with np.load(session.path / 'reconstruction/history/frames/00000001.npz') as frame:
+            np.testing.assert_allclose(mapped[0]['world_from_camera'], frame['world_from_camera'])
+
     def test_continuous_live_policy_keeps_processing_without_a_browser_ack(self):
         self.session.stop('test_reconfigure')
         self.runtime.release.set()
@@ -471,6 +515,14 @@ class LiveDepthTests(unittest.TestCase):
         self.assertEqual(scene['depth_mapping']['submaps'], [])
         self.assertEqual([c['pose_source'] for c in scene['cameras']], [row[4] for row in frames if row[4]])
         self.assertEqual(session.recording.snapshot()['scale'], 'm')
+        logged = [json.loads(line) for line in (session.path / 'frames.jsonl').read_text().splitlines()]
+        results = [row for row in logged if row['event'] == 'mapping']
+        self.assertEqual(len(results), len(frames))
+        self.assertFalse(results[0]['mapping_applied'])
+        self.assertIsNone(results[0]['world_from_camera'])
+        self.assertEqual([row['pose_source'] for row in results[1:]], [row[4] for row in frames[1:]])
+        with np.load(output / 'history/frames/00000010.npz', allow_pickle=False) as last:
+            np.testing.assert_allclose(results[-1]['world_from_camera'], last['world_from_camera'])
         with np.load(output / 'history/frames/00000010.npz', allow_pickle=False) as frame:
             depth, classes = frame['depth'], frame['depth_classes']
             self.assertEqual(set(np.unique(classes)), {FAR_DEPTH, STANDARD_DEPTH, TOF_DEPTH})

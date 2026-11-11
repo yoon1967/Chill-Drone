@@ -58,6 +58,71 @@ manifest의 파일 경로는 세션 루트 기준이다. 기존 `local_assets.js
   키프레임 전 패킷은 재생 파일에서 생략할 수 있으며 원본에는 남는다.
   B-frame 순서에 필요한 촬영 PTS가 없거나 변환이 실패하면 원본을 보존하고 `playback_error`를 기록한다.
 
+## 센서와 프레임별 매핑 기록 (추가 필드)
+
+영상 촬영 시 같은 세션 루트에 `sensor.jsonl`, `frames.jsonl`을 자동 생성한다.
+`session.json.assets.sensor`, `assets.frame_poses`로 찾으며 ZIP에도 포함한다.
+기존 1.0 세션에 대한 호환 가능한 추가 항목이다. 기존 파일에 이 항목이 없으면 센서 재계산 가능한 기록으로 간주하지 않는다.
+`settings.json`에는 보정 카메라·샘플링·매핑 옵션과 모델 ID, 확인 가능한 로컬 모델 revision, 패키지 버전을 남긴다.
+모델 revision을 확인할 수 없으면 null이다. 과거 영상을 다시 계산하는 소비자는 이번 변경에 포함하지 않는다.
+
+### `sensor.jsonl` (`mapping-sensor/1.0`)
+
+- `event=sample`: `source_run_id`, 원본 수신 순서 `sequence`, UTC `received_at`,
+  원본 프로세스의 단조 수신 시각 `received_mono`(초), `raw`, `si`, `valid`, `reasons`.
+- `raw`의 속도 `vgx/vgy/vgz`, 자세 `yaw/pitch/roll`, 거리 `tof`, 높이·기압 `h/baro`,
+  가속도 `agx/agy/agz`, 배터리·온도·모터 동작 시간과 미션패드 필드를 원래 단위로 보존한다.
+  `si`는 기존 수신기의 변환값이며 검증되지 않은 단위는 임의 변환하지 않는다.
+- 직접 연결은 TelloLink의 수신 이력을 읽고, 게이트웨이는 로컬 전용
+  `GET /api/drone/sensors?after=<sequence>`로 가져온다. 비행 명령은 보내지 않는다.
+  응답은 `tello-sensor-batch/1.0`, `run_id`, `next_sequence`, `lost`, `samples`다.
+  `/api/drone/state`도 같은 `run_id`를 제공한다. 구형 상태 응답에 run ID가 없어도
+  센서 이력 응답에서 확인해 수집하며, ID 누락을 이유로 조용히 건너뛰지 않는다.
+  이력은 최근 512개로 제한하며 처음 연결할 때 그 범위의 촬영 전 자료가 포함될 수 있다.
+  동일 source/sequence는 중복 저장하지 않는다. 소스가 바뀌면 새 run ID의 순서로 구분한다.
+- 다음 조회 전에 수신 이력이 밀려나면 `event=gap`, `after_sequence`, `lost`를 남기고
+  녹화 상태를 partial로 표시한다. 최초 조회 이전의 이력은 전체 비행 기록이라고 주장하지 않는다.
+  구형 게이트웨이·기록 재생 모드가 센서 이력을 제공하지 않으면 로그 오류로 표시하고 영상·매핑은 계속한다.
+
+### `frames.jsonl` (`mapping-frames/1.0`)
+
+이 파일은 이벤트 로그다. `frame_sequence`로 묶고 파일 순서대로 적용한다.
+
+| 이벤트 | 주요 값 |
+| --- | --- |
+| `input` | 프레임 번호, 매핑 PTS `timestamp_s`, `admission`(submitted/model_wait/rate_limited), `source`, `sensor_epoch`, `sensor_pose`, `allow_visual_origin`, `front_tof`, 초기 `mapping_applied=false` |
+| `mapping` | 같은 프레임 번호, 처리 이미지 `frame_id`, revision·map ID, tracking, pose_source, 단위·깊이 배율, 최종 `world_from_camera`(4×4), 실제 `mapping_applied` |
+
+`input`만 있고 `mapping`이 없으면 지도에 반영되지 않은 프레임이다. submitted는 대기열에 들어갔다는 뜻이며
+실제 반영을 보장하지 않는다(최신 프레임 교체·추적/깊이 표본 생략·종료 등이 가능).
+처리된 프레임도 추정 실패 등으로 `mapping_applied=false`일 수 있다.
+카메라 자세는 NPZ 관측의 `world_from_camera`와 같은 매핑 좌표계이며, 최종 화면 표시 좌표와 구분한다.
+`pose_source`는 센서/영상 복구/선형 예측 또는 `orb_slam3_monocular`이다. 유효 자세가 없으면 null이다.
+`sensor_pose`는 `[segment,x,y,z,yaw,pitch,roll]`이며 위치 m, 각도 rad다. 센서 단절 시 null이며
+`sensor_epoch`와 연결 번호로 재연결 전후를 구분한다. 전방 ToF는 `[거리_m, 입력_단조시각_s]` 또는 null이다.
+
+`source`는 연결 번호, 지도 입력 수신 시각과 녹화 조각 번호를 담는다.
+게이트웨이 JPEG는 `recording_frame_index`(조각 내 0부터), `video_recorded`로 저장 영상 인덱스에 정확히 대응한다.
+MJPEG의 `X-Tello-Frame` 헤더는 원래 게이트웨이 `run_id`, 디코딩 `timestamp_s`, UTC epoch `wall`을 전달한다.
+그 시각은 센서의 `received_mono`와 같은 소스 시계다. 매핑 PTS는 별도 수신 시계에서
+`mapping_timestamp_zero_monotonic`을 뺀 값이며, 모델 준비 전 프레임은 아직 기준이 없어 null이다.
+직접 H.264 입력은 디코딩 시각으로 연결하므로 패킷 수신 시각과의 대응은 근사치다.
+브라우저 입력은 media PTS이며 드론 원시 센서는 없다.
+
+로그는 기존 영상 저장 작업자에 큐로 전달한다. 큐 초과·로그 파일 오류·센서 조회 실패는
+`recording.log_error`, `log_dropped`, `sensor_gaps`와 partial 상태로 보고한다.
+영상 파일과 센서/프레임 로그는 독립적으로 실패할 수 있으며, 영상·비행·매핑을 중단하지 않는다.
+종료 후 로그의 SHA-256을 `asset_sha256`에 넣는다. 센서 원시값만으로 과거 실시간 결과의 완전 동일성을 보장하지 않는다.
+드론 입력을 연결하면 `recording.sensor_required=true`이며, 실제 기록한 원시 센서 표본 수는
+`recording.sensor_samples`다. 영상이 저장됐는데 표본이 0개이면 종료 상태는 complete가 아니라
+partial이며 `recording_sensor_samples_missing` 오류를 남긴다.
+
+이전 수집 누락으로 센서 파일이 비어 있으면 `sensor_recovery.recover_empty_sensor_log`로
+종료된 세션만 복구할 수 있다. 프레임에 기록된 원본 run ID·단조 시각과 게이트웨이 manifest를
+대조하고, 해당 구간의 실제 원시 패킷만 보존한다. 기존 센서 내용이 있거나 출처·시각·순서가
+맞지 않으면 덮어쓰지 않는다. manifest의 `capture_metadata.sensor_recovery`에 원본 해시와
+시각 범위·복구 시각을 남기며, 영상·프레임·기체 로그 원본은 변경하지 않는다.
+
 ## 부하·오류·종료
 
 수신 스레드는 파일을 쓰지 않고 전용 작업 큐에 넣는다. 8MiB 또는 대기 작업 8,192개에 도달하면
