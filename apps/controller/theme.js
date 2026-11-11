@@ -37,6 +37,7 @@
     const select = document.getElementById("theme");
     if (!select) return;
     select.value = pref;
-    select.addEventListener("change", function () { choose(select.value); });
+    // 고른 뒤 포커스를 뺀다. 선택 상자에 포커스가 있으면 키보드 조종(WASD·L 착륙·Esc 비상 정지)이 멈춘다(app.js typing).
+    select.addEventListener("change", function () { choose(select.value); select.blur(); });
   });
 })();

@@ -95,6 +95,11 @@ class PageTest(unittest.TestCase):
         self.assertIn('"themechange"', map3d)
         self.assertIn('"--map-path"', map3d)
 
+    def test_theme_picker_gives_focus_back_to_flight_keys(self):
+        # 선택 상자에 포커스가 남으면 app.js가 키 입력을 무시한다(Esc 비상 정지·L 착륙·WASD). 프리셋 상자와 같이 고른 뒤 뺀다.
+        theme = (CONTROLLER / 'theme.js').read_text(encoding='utf-8')
+        self.assertRegex(theme, r'addEventListener\("change", function \(\) \{ choose\(select\.value\); select\.blur\(\); \}\)')
+
 
 if __name__ == '__main__':
     unittest.main()
