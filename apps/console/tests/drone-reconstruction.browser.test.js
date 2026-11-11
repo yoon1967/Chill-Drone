@@ -13,6 +13,9 @@ test('drone recordings select sensor poses and a depth model, then ordinary vide
       const errors = [], checked = [];
       page.on('pageerror', error => errors.push(error.message));
       let job, started;
+      await page.route('**/api/import/drone-recordings', route => route.fulfill({json: {items: [
+        {name: 'live_sensor_fixture', started_at: '2026-11-11T00:00:00Z'},
+      ]}}));
       await page.route('**/api/import/drone-recording', async route => {
         const session = route.request().postDataJSON().session_id;
         job = {id: 'import_1234567890123456', name: session, status: 'awaiting_options',
@@ -30,6 +33,7 @@ test('drone recordings select sensor poses and a depth model, then ordinary vide
         return route.fulfill({json: {status: 'ready'}});
       });
       await page.goto(url + '/reconstruct.html');
+      await page.locator('#drone-recordings > summary').click();
       await page.locator('#drone-recordings-list button').first().waitFor();
       await page.locator('#drone-recordings-list button').first().click();
       await page.locator('#drone-pose-hint').waitFor();
@@ -54,6 +58,18 @@ test('drone recordings select sensor poses and a depth model, then ordinary vide
       await page.locator('#pose-model-field').waitFor();
       assert.equal(await page.locator('#drone-pose-hint').isVisible(), false);
       assert.equal(await page.locator('#start-reconstruction').isDisabled(), true);
+      await page.route('**/api/import/reconstruction-library', route => route.fulfill({json: {items: [
+        {local_id: job.id, name: 'saved_map', status: 'complete'},
+      ]}}));
+      await page.route('**/api/import/local', route => {
+        assert.equal(route.request().postDataJSON().local_id, job.id);
+        job = {...job, status: 'cancelled'};
+        return route.fulfill({json: job});
+      });
+      await page.route('**/api/import/cancel?*', route => route.fulfill({json: {status: 'cancelled'}}));
+      await page.locator('#change').click();
+      await page.locator('#recent-list button').click();
+      await page.locator('main[data-state="cancelled"]').waitFor();
       await page.setViewportSize({width: 390, height: 844});
       assert.equal(await page.evaluate(() => document.documentElement.scrollWidth <= window.innerWidth), true);
       assert.deepEqual(errors, []);

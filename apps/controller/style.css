@@ -195,6 +195,11 @@ body[data-view=control] main{padding-bottom:24px}body[data-view=review] main{pad
 .map3d-host canvas{flex:1;width:100%;height:100%;min-height:220px;display:block;touch-action:none;cursor:grab}
 .map3d-host canvas:active{cursor:grabbing}
 .map3d-info{display:flex;gap:8px;align-items:center;flex-wrap:wrap;margin-top:6px;font-size:12px}
+.live-map-save{display:flex;align-items:center;gap:10px;margin-top:8px;padding-top:8px;border-top:1px solid var(--line);flex-wrap:wrap;flex-shrink:0}
+.live-map-save button{flex:none;min-height:28px;padding:4px 9px;font-size:12px}
+.live-map-save>span{font-size:12px;color:var(--muted);min-width:0;flex:1 1 180px}
+.live-map-save small{display:block;overflow-wrap:anywhere;font-size:11px;margin-top:3px}
+@media (min-width:1100px) and (min-height:700px){.live-main .map3d-slot,.live-main .map3d-host canvas{min-height:0}}
 .map3d-panel .map3d-slot{min-height:320px}
 .seg.map-mode button{min-width:0;padding:3px 10px;font-size:12px}
 .checks{display:flex;gap:4px;flex-wrap:wrap}.checks .chip{font-size:11px;padding:2px 7px}

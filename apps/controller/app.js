@@ -22,6 +22,7 @@ const ui = {
   takeoff: { open: false, confirmedAt: null, sampleChecked: false, focus: null },   // 이륙 전 확인 칸(열림, 주변 확인 보낸 시각, 샘플 체크, 다시 그린 뒤 초점)
 };
 if (!["2d", "3d"].includes(ui.map3d.mode)) ui.map3d.mode = "3d";   // 지도 콘솔은 따로 화면(#/map)
+const liveSave = window.createLiveMapSave?.({onChange: () => render()});
 function loadPref(key, fallback) { try { return localStorage.getItem(key) || fallback; } catch (e) { return fallback; } }
 function savePref(key, value) { try { localStorage.setItem(key, value); } catch (e) { /* 저장 안 돼도 화면은 동작 */ } }
 const DET_OVERLAY_MS = 1000;   // 탐지 결과는 실시간 영상보다 조금 늦게 온다. 윤곽선은 1초만 보이고 지연을 함께 적는다
@@ -410,7 +411,7 @@ function autonomyMapPanel(st, head, tall) {
   if (!pose && !path.length && !found.length && !unsure.length) {
     return `<section class="panel map ${tall ? "tall" : ""}" data-part="map" aria-label="2D 지도">${head}
       <div class="map-empty">${s.connected ? "자율 비행이 연결됐습니다. 위치 추정이 시작되면 위치·경로·찾은 사람이 m 단위로 그려집니다."
-        : "자율 비행이 연결되면 드론 위치·지나온 길·계획 경로·찾은 사람이 m 단위로 그려집니다."}</div></section>`;
+        : "자율 비행이 연결되면 드론 위치·지나온 길·계획 경로·찾은 사람이 m 단위로 그려집니다."}</div>${mapSaveBar()}</section>`;
   }
   const pts = [[0, 0], ...path, ...a.track, ...found.map((q) => [q.x_m, q.y_m]), ...unsure.map((q) => [q.x_m, q.y_m]),
     ...(pose ? [[pose.x_m, pose.y_m]] : [])];
@@ -446,7 +447,7 @@ function autonomyMapPanel(st, head, tall) {
     <svg viewBox="0 0 ${W} ${H}" preserveAspectRatio="xMidYMid meet" role="img" aria-label="자율 지도: 드론 위치, 지나온 길, 계획 경로, 찾은 사람">
       <g class="grid">${grid.join("")}</g>${line(path, "planned")}${line(a.track, "flown")}${start}${marks}${drone}${scale}
     </svg>
-    <p class="legend"><i class="lg flown"></i>지나온 길 <i class="lg planned"></i>계획 경로 <i class="lg mark"></i>찾은 사람 <i class="lg mark gone"></i>다시 봤는데 없음 · ${esc(info)} · 자율 지도(m, 켠 자리 기준)</p>
+    <p class="legend"><i class="lg flown"></i>지나온 길 <i class="lg planned"></i>계획 경로 <i class="lg mark"></i>찾은 사람 <i class="lg mark gone"></i>다시 봤는데 없음 · ${esc(info)} · 자율 지도(m, 켠 자리 기준)</p>${mapSaveBar()}
   </section>`;
 }
 
@@ -474,6 +475,13 @@ function mapInfo(m, has) {
   return ["지도 수신 중", "success", ""];
 }
 
+function mapSaveBar() {
+  if (!ui.live || !liveSave || view() !== 'live') return '';
+  const state = liveSave.state();
+  return `<footer class="live-map-save"><button type="button" data-live-map-save ${state.busy || !state.available ? 'disabled' : ''}>${state.busy ? '저장 중…' : '지도 저장'}</button>
+    <span role="status">${esc(state.message)}${state.path ? `<small title="${esc(state.path)}">${esc(state.path)}</small>` : ''}</span></footer>`;
+}
+
 function map3dPanel(st, head, cls = "map") {   // cls: 실시간 감독은 지도 칸(map), 탐색 결과는 3D 칸
   const m = st.map, has = ui.map3d.has;
   const unit = m?.unit === "m" ? "m" : "임의 단위(m 아님)";
@@ -485,7 +493,7 @@ function map3dPanel(st, head, cls = "map") {   // cls: 실시간 감독은 지�
     <div class="map3d-slot">${has ? "" : `<div class="map-empty">${esc(info[2] || "점군을 기다리는 중입니다.")}</div>`}</div>
     <div class="map3d-info">${chip(info[0], info[1])}<span class="muted">${esc(detail)}</span>
       ${editor ? `<a class="map-open" href="${esc(editor)}" target="_blank" rel="noopener">3D 지도 편집 ↗</a>` : ""}
-      ${has ? `<span class="muted keys-hint">왼쪽 드래그 회전 · 우클릭 드래그 이동 · 휠/두 손가락 확대 · 두 번 눌러 처음 시점</span>` : ""}</div></section>`;
+      ${has ? `<span class="muted keys-hint">왼쪽 드래그 회전 · 우클릭 드래그 이동 · 휠/두 손가락 확대 · 두 번 눌러 처음 시점</span>` : ""}</div>${mapSaveBar()}</section>`;
 }
 
 function attachMap3d() {
@@ -853,6 +861,7 @@ function syncHeader() {
 }
 
 function render() {
+  liveSave?.setTarget(ui.live ? consoleTarget(ui.state).origin || null : null);
   syncHeader();
   const v = view();
   const html = { live: renderLive, map: renderMap, review: renderReview, control: renderControl }[v]();
@@ -986,6 +995,7 @@ async function detectGateway() {
 
 // ---------- 입력 ----------
 document.addEventListener("click", (ev) => {
+  if (ev.target.closest('[data-live-map-save]')) { liveSave?.save(); return; }
   const keyboard = ev.target.closest("[data-keyboard-focus]");
   if (keyboard) {
     keyboardEnabled = !keyboardEnabled && ui.wsOpen && ui.state?.connected === true;
@@ -1191,6 +1201,8 @@ document.addEventListener("keyup", (ev) => {
 const leaveControls = () => { resetOperator(); render(); };
 window.addEventListener("blur", leaveControls);
 window.addEventListener("pagehide", resetOperator);
+window.addEventListener('pagehide', () => liveSave?.dispose());
+window.addEventListener('pageshow', () => { if (ui.live) liveSave?.setTarget(consoleTarget(ui.state).origin || null); });
 document.addEventListener("visibilitychange", () => { if (document.hidden) leaveControls(); });
 document.addEventListener("focusin", (ev) => {
   if (typing(ev.target)) leaveControls();

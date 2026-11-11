@@ -1,6 +1,7 @@
 import {requestImport} from './import-view.js';
 import {mappingOptions} from './mapping-settings.js';
 import {editorCloud} from './editor-data.js';
+import {connectCaptureLibrary} from './capture-library.js';
 import {showModelPicker, selectedModels, setModelPickerBusy, modelPickerMessage, refreshModelChecks,
   closeModelPicker} from './reconstruction-models.js';
 
@@ -36,6 +37,8 @@ const messages = {
 
 let id = null, job = null, state = 'loading', timer, upload, map;
 let busy = false, watchVersion = 0, canRenderPreview = true;
+const captures = connectCaptureLibrary({request: requestImport,
+  onSelect: bundle => { setName(bundle.name); status('capture_selected'); }, onClear: () => reset()});
 
 function remember(next) {
   id = next;
@@ -55,10 +58,12 @@ function status(next, label = '', notice = '') {
   $('notice').hidden = !notice;
   $('status-line').hidden = !label;
   $('drop').hidden = next !== 'input';
-  $('drone-recordings').hidden = next !== 'input';
+  $('drone-recordings').hidden = !['input', 'capture_selected'].includes(next);
   $('model-picker').hidden = next !== 'awaiting_options';
-  $('recent').hidden = next !== 'input';
-  $('change').hidden = !['awaiting_options', 'complete', 'partial', 'failed', 'cancelled', 'result-error'].includes(next);
+  $('input-libraries').hidden = !['input', 'capture_selected'].includes(next);
+  captures.setEnabled(['input', 'capture_selected'].includes(next));
+  if (next !== 'capture_selected') $('capture-selection').hidden = true;
+  $('change').hidden = !['capture_selected', 'awaiting_options', 'complete', 'partial', 'failed', 'cancelled', 'result-error'].includes(next);
   $('cancel').hidden = !activeStates.has(next);
   $('cancel').disabled = next === 'cancelling' || (busy && !upload);
   $('change').disabled = busy;
@@ -105,7 +110,7 @@ function updateProgress(next) {
 
 async function refreshRecent() {
   try {
-    const {items} = await requestImport('library');
+    const {items} = await requestImport('reconstruction-library');
     const records = items.filter(item => ['local', 'ready', 'complete'].includes(item.status) ||
       ((item.source_video || item.summary?.kind === 'drone_recording') &&
         ['inspecting', 'running', 'cancelling'].includes(item.status))).slice(0, 6);
@@ -148,7 +153,8 @@ async function refreshDroneRecordings() {
 }
 
 async function openRecord(key, drone = false) {
-  if (busy || state !== 'input') return;
+  if (busy || !['input', 'capture_selected'].includes(state)) return;
+  captures.clear();
   busy = true;
   status('loading', drone ? '드론 녹화 확인 중' : '복원 기록 확인 중');
   try {
@@ -308,6 +314,7 @@ async function select(file) {
 }
 
 function reset() {
+  captures.clear();
   watchVersion++;
   clearTimeout(timer);
   disposeMap();
@@ -401,8 +408,9 @@ $('retry').addEventListener('click', () => {
   if (state === 'result-error') showResult();
   else watch();
 });
-window.addEventListener('pagehide', () => { watchVersion++; clearTimeout(timer); upload?.abort(); disposeMap(); closeModelPicker(); });
+window.addEventListener('pagehide', () => { captures.setEnabled(false); watchVersion++; clearTimeout(timer); upload?.abort(); disposeMap(); closeModelPicker(); });
 window.addEventListener('pageshow', event => {
+  if (event.persisted && ['input', 'capture_selected'].includes(state)) captures.setEnabled(true);
   if (event.persisted && id) {
     if (state === 'awaiting_options') refreshModelChecks();
     watch();
