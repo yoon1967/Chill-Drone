@@ -7,6 +7,8 @@
 - 좌표는 바꾸지 않는다(지도 표시 좌표, 단위는 지도 쪽 scale.unit). 화면이 보기 좋게 세우도록 카메라 화면 위쪽 평균(`up`)을 같이 보낸다.
   중력 방향이 아니다(카메라가 대체로 수평이라는 가정).
 - 지도 서버가 꺼졌거나 지도가 없어도 2초마다 상태(`status`)를 보내 화면이 이유를 보이게 한다.
+  게이트웨이는 상태 응답에 받은 지도가 있는지(`has_map`)를 싣는다. 거짓이면(게이트웨이만 다시 켜 지도가 빔) 보낸 버전 기억을 지우고
+  다음 차례에 지금 지도를 다시 보낸다. 지도 버전이 더 안 바뀌어도(복원 끝·저장 지도) 다시 켠 게이트웨이가 다음 상태(2초마다) 뒤 곧 받는다.
 - 깊이 지도(`backend=orb_slam3_depth`, -365): 복원이 끝나야 `map_available`이 켜진다. 그 전에는 상태의 `depth_job_id`로
   지도 화면이 쓰는 진행 중 미리보기 `GET /api/import/preview?id=..&revision=..`을 읽는다(점 행 [x,y,z,r,g,b], 최대 약 1.2만 점).
   읽기만 한다. 화면 표시 확인(`presented`)은 지도 화면 몫이라 보내지 않는다(그래서 지도 화면이 열려 있어야 복원이 다음 프레임으로 간다).
@@ -140,7 +142,8 @@ def _byte(v) -> int:
 
 class MapBridge:
     """지도 서버를 한 번 보고(poll_once) 새 버전이면 deliver(msg)로 넘긴다. 게이트웨이 안(스레드)과 따로 실행에서 같이 쓴다.
-    deliver는 (HTTP 상태, 응답)을 돌려준다: 게이트웨이 안에서는 MapInbox.receive, 따로 실행에서는 POST /api/map."""
+    deliver는 (HTTP 상태, 응답)을 돌려준다: 게이트웨이 안에서는 MapInbox.receive, 따로 실행에서는 POST /api/map.
+    보낸 버전을 기억해 같은 버전은 다시 읽지 않는다. 게이트웨이가 상태 응답에서 받은 지도가 없다고 하면 그 기억을 지운다."""
 
     def __init__(self, map_url: str, deliver, *, source: str = "live", max_points: int = 20000,
                  log=print, clock=time.monotonic):
@@ -157,13 +160,23 @@ class MapBridge:
         return upstream, state.get("mapping_state") or state.get("status"), input_of(state)["input_state"]
 
     def _tell(self, upstream: str, detail=None, state: dict | None = None) -> None:
-        """지도 서버 상태를 알린다. 같은 내용은 STATUS_EVERY_S마다, 지도·영상 입력 상태가 바뀌면 바로."""
+        """지도 서버 상태를 알린다. 같은 내용은 STATUS_EVERY_S마다, 지도·영상 입력 상태가 바뀌면 바로.
+        게이트웨이가 받은 지도가 없다고 답하면(has_map=false) 보낸 기억을 지운다. 보내기 실패(꺼짐)는 기다린다:
+        꺼진 동안 지도를 다시 읽지 않고, 다시 켜진 뒤 첫 응답으로 알아챈다."""
         said = self._said(upstream, state)
         if self.clock() - self._last_status < STATUS_EVERY_S and said == self._last_said:
             return
         self._last_status, self._last_said = self.clock(), said
-        self.deliver({"schema_version": SCHEMA, "kind": "status", "upstream": upstream, "source_url": self.base,
-                      "mapping_state": said[1], **input_of(state), "detail": detail})
+        code, out = self.deliver({"schema_version": SCHEMA, "kind": "status", "upstream": upstream, "source_url": self.base,
+                                  "mapping_state": said[1], **input_of(state), "detail": detail})
+        if code in (200, 201) and isinstance(out, dict) and out.get("has_map") is False:
+            self._forget()
+
+    def _forget(self) -> None:
+        """보낸 기억(버전)을 지운다. 다음 차례에 지금 지도(전체 또는 복원 중 미리보기)를 처음처럼 다시 보낸다."""
+        if self.last_key is not None or self._preview[0] is not None:
+            self.log("게이트웨이에 받은 지도가 없어(다시 켬) 지금 지도를 다시 보냅니다")
+        self.last_key, self._preview = None, (None, 0)
 
     def poll_once(self) -> None:
         state, read_at = self._depth

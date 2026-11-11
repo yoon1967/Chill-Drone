@@ -5,6 +5,7 @@
 (지도 표시 좌표 그대로, 단위는 `scale.unit`. 온라인 지도는 보통 `arbitrary` = m가 아님).
 - kind `snapshot`: 새 지도 버전. 최신 하나만 메모리에 든다. 화면에는 WS로 알림(`map`)만 보내고 점군은 GET /api/map으로 읽게 한다.
 - kind `status`: 연결기가 본 지도 서버 상태(꺼짐·지도 없음·동작 중). 버전이 안 바뀌어도 연결기가 살아 있다는 근거.
+  응답에 받은 지도가 있는지(`has_map`)를 싣는다. 게이트웨이만 다시 켜 지도가 비면 연결기가 이걸 보고 지금 지도를 다시 보낸다.
 - 두 kind 모두 지도 서버의 영상 입력 상태(`input_state`·`input_age_s`, 없어도 됨)를 실을 수 있다. 화면의 "영상 기다리는 중" 표시용.
   모르는 값은 버리고(None) 지도는 그대로 받는다.
 회차 폴더: map/latest.json(덮어씀), map_updates.jsonl(버전마다 한 줄: 시각·버전·점 수·출처·저장 파일),
@@ -50,7 +51,7 @@ class MapInbox:
             os.makedirs(os.path.join(run_dir, "map", "snapshots"), exist_ok=True)
 
     def receive(self, msg) -> tuple[int, dict]:
-        """(HTTP 상태, 응답). 201 새 버전, 200 상태·같은 버전, 400 형식 오류, 500 저장 실패."""
+        """(HTTP 상태, 응답). 201 새 버전, 200 상태·같은 버전, 400 형식 오류, 500 저장 실패. 상태 응답에는 has_map."""
         try:
             kind = _check(msg)
         except (ValueError, TypeError, KeyError) as e:
@@ -63,7 +64,7 @@ class MapInbox:
             self._upstream = {**{k: msg.get(k) for k in ("upstream", "source_url", "mapping_state", "detail")},
                               **_input(msg)}
             if kind == "status":
-                return 200, {"ok": True}
+                return 200, {"ok": True, "has_map": self._latest is not None}   # 다시 켜 빈 게이트웨이를 연결기가 알아채게
             src = msg["source"]
             key = (src.get("schema_version"), src.get("session_id"), src.get("segment_id"), src.get("revision"))   # 진행 중 미리보기와 최종 결과는 버전이 같아도 다르다
             if key == self._key:
