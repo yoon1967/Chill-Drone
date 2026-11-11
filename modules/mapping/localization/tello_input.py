@@ -50,10 +50,11 @@ def gateway_address(value):
     return f"http://127.0.0.1:{parsed.port}"
 
 
-def mjpeg_frames(response, cancelled, *, with_pose=False):
+def mjpeg_frames(response, cancelled, *, with_pose=False, with_metadata=False):
     """Read bounded JPEGs from both existing gateway MJPEG variants (no length header)."""
     buffer = bytearray()
     pose = None
+    metadata = None
     while not cancelled():
         chunk = response.read1(16384)
         if not chunk:
@@ -66,14 +67,19 @@ def mjpeg_frames(response, cancelled, *, with_pose=False):
                     raise InputError("tello_gateway_invalid_mjpeg")
                 break
             if start:
-                if with_pose:
+                if with_pose or with_metadata:
                     for header in buffer[:start].split(b'\r\n'):
                         if header.lower().startswith(b'x-tello-pose:') and len(header) <= 512:
                             try:
                                 pose = SensorPose.from_values(json.loads(header.split(b':', 1)[1]))
                             except (ValueError, RecursionError):
                                 pose = None
-                            break
+                        elif header.lower().startswith(b'x-tello-frame:') and len(header) <= 1024:
+                            try:
+                                value = json.loads(header.split(b':', 1)[1])
+                                metadata = value if isinstance(value, dict) else None
+                            except (ValueError, RecursionError):
+                                metadata = None
                 del buffer[:start]
             end = buffer.find(b"\xff\xd9", 2)
             if end < 0:
@@ -84,8 +90,9 @@ def mjpeg_frames(response, cancelled, *, with_pose=False):
                 raise InputError("tello_gateway_frame_too_large")
             jpeg = bytes(buffer[:end + 2])
             del buffer[:end + 2]
-            yield (jpeg, pose) if with_pose else jpeg
+            yield (jpeg, pose, metadata) if with_metadata else (jpeg, pose) if with_pose else jpeg
             pose = None
+            metadata = None
 
 
 class DirectCamera:
@@ -106,15 +113,19 @@ class DirectCamera:
         self.recording = self.recording_sink = None
         self.front_tof = None
         self.sensor_pose = None
+        self.frame_metadata = None
         self.tof_stop = threading.Event()
         self.tof_thread = None
 
     def set_recording(self, recording):
         self.recording = recording
+        if recording:
+            recording.require_sensors()
 
     def open(self, cancelled):
         self.link = self.link_factory(allow_flight=False)
         self.link.start()
+        self.run_id = self.link.run_id
         if cancelled():
             return
         if not self.link.send("command", timeout=3, source="mapping").ok:
@@ -154,11 +165,15 @@ class DirectCamera:
     def frames(self, cancelled):
         last, last_new = None, time.monotonic()
         while not cancelled():
+            self._record_sensors()
             snapshot = self.video.jpeg_snapshot()
             if snapshot and snapshot[1] != last and time.monotonic() - snapshot[1] < 1:
                 jpeg, last, _ = snapshot
                 last_new = time.monotonic()
                 self.sensor_pose = self.link.sensor_pose_at(last)
+                self.frame_metadata = {'run_id': self.run_id, 'timestamp_s': last, 'wall': snapshot[2],
+                    'recording_part': self.recording_sink.part if self.recording_sink else None,
+                    'video_match': 'h264_receive_time_approximation'}
                 yield jpeg, last
             elif time.monotonic() - last_new > 5:
                 raise InputError("tello_video_timeout_check_wifi_and_udp")
@@ -183,6 +198,7 @@ class DirectCamera:
                 if self.video:
                     self.video.stop()
             finally:
+                self._record_sensors()
                 if self.recording_sink:
                     self.recording_sink.close(self.video.stats() if self.video else None)
                     self.recording_sink = None
@@ -190,6 +206,11 @@ class DirectCamera:
                     self.link.close()
                 self.link = self.video = None
                 self.stream_requested = False
+
+    def _record_sensors(self):
+        if self.recording and self.link and hasattr(self.link, 'sensor_samples'):
+            cursor = self.recording.sensor_cursors.get(self.link.run_id, 0)
+            self.recording.sensor_batch(self.link.sensor_samples(cursor))
 
 
 class GatewayCamera:
@@ -208,9 +229,13 @@ class GatewayCamera:
         self.front_tof = None
         self.sensor_pose = None
         self.allow_visual_origin = True
+        self.frame_metadata = None
+        self.recording_frames = 0
 
     def set_recording(self, recording):
         self.recording = recording
+        if recording:
+            recording.require_sensors()
 
     def check(self):
         started = time.perf_counter()
@@ -232,9 +257,11 @@ class GatewayCamera:
                 or isinstance(age, bool) or not math.isfinite(age) or not 0 <= age < 1):
             raise InputError("tello_gateway_video_off_or_stale")
         run = state.get("run_id")
-        if self.run_id is not None and run != self.run_id:
+        if self.run_id is not None and run is not None and run != self.run_id:
             raise InputError("tello_gateway_session_changed")
-        self.run_id, self.checked = run, time.monotonic()
+        if isinstance(run, str) and run:
+            self.run_id = run
+        self.checked = time.monotonic()
         mode = state.get("source", state.get("mode"))
         self.source_label = "gateway_reported_fake" if mode == "fake" else "gateway_reported_tello" if mode == "tello" else "gateway_unspecified"
         tof = state.get('front_tof')
@@ -258,16 +285,25 @@ class GatewayCamera:
         self.allow_visual_origin = self.response.headers.get("X-Tello-Sensor-Pose") != "1"
         if self.recording:
             self.recording_sink = self.recording.open_part('received_jpeg', self.time_basis)
+            self.recording_frames = 0
+            self._record_sensors()
 
     def frames(self, cancelled):
-        for jpeg, pose in mjpeg_frames(self.response, cancelled, with_pose=True):
+        for jpeg, pose, metadata in mjpeg_frames(self.response, cancelled, with_metadata=True):
             # Windows monotonic() can have a coarse tick. Several JPEGs may arrive
             # in one socket read, so use the high-resolution monotonic counter.
             stamp = time.perf_counter()
             if self.recording_sink:
-                self.recording_sink.offer(jpeg, stamp)
+                recorded = self.recording_sink.offer(jpeg, stamp)
+            else:
+                recorded = False
+            self.frame_metadata = {**(metadata or {}), 'recording_part': self.recording_sink.part if self.recording_sink else None,
+                'recording_frame_index': self.recording_frames, 'video_recorded': recorded,
+                'video_match': 'received_jpeg_index', 'receive_timestamp_s': stamp}
+            self.recording_frames += 1
             if time.monotonic() - self.checked >= .25:
                 self.check()
+                self._record_sensors()
             self.sensor_pose = pose
             yield jpeg, stamp
 
@@ -278,8 +314,29 @@ class GatewayCamera:
             self.response.close()
             self.response = None
         if self.recording_sink:
+            self._record_sensors()
             self.recording_sink.close()
             self.recording_sink = None
+
+    def _record_sensors(self):
+        if not self.recording:
+            return
+        cursor = self.recording.sensor_cursors.get(self.run_id, 0)
+        try:
+            with self.opener.open(self.address + '/api/drone/sensors?after=' + str(cursor), timeout=.5) as response:
+                data = response.read(2097153)
+            if len(data) > 2097152:
+                raise ValueError('sensor_batch_too_large')
+            batch = json.loads(data)
+            run_id = batch.get('run_id')
+            if not isinstance(run_id, str) or not run_id:
+                raise ValueError('sensor_run_missing')
+            if self.run_id is not None and run_id != self.run_id:
+                raise ValueError('sensor_run_changed')
+            self.run_id = run_id
+            self.recording.sensor_batch(batch)
+        except (OSError, ValueError, KeyError, TypeError, RecursionError):
+            self.recording.log_problem('recording_gateway_sensors_unavailable')
 
 
 class TelloMapInput:
@@ -371,6 +428,25 @@ class TelloMapInput:
                             session.reconnects = getattr(session, 'reconnects', 0) + 1
                         missing_since = None
                         session.input_state, session.input_error = 'receiving', None
+                        frame_sequence = sequence
+                        sequence += 1
+                        pose = getattr(source, 'sensor_pose', None)
+                        sensor_pose = ((getattr(source, 'run_id', None) or connection,
+                                        pose if isinstance(pose, SensorPose) else None,
+                                        getattr(source, 'allow_visual_origin', False))
+                                       if isinstance(pose, SensorPose) or getattr(source, 'sensor_capable', False) else None)
+                        admission = ('model_wait' if not session.ready else 'rate_limited'
+                                     if not getattr(session, 'can_accept_frame', True) else 'submitted')
+                        if base is None and admission == 'submitted':
+                            base = stamp
+                            if getattr(session, 'recording', None):
+                                session.recording.set_mapping_origin(base)
+                        if getattr(session, 'recording', None):
+                            session.recording.frame_input(frame_sequence, stamp - base if base is not None else None,
+                                admission=admission, sensor_pose=sensor_pose,
+                                front_tof=getattr(source, 'front_tof', None),
+                                metadata={**(getattr(source, 'frame_metadata', None) or {}),
+                                          'connection': connection, 'receive_timestamp_s': stamp})
                         if not session.ready:
                             if hasattr(session, 'note_skipped_frame'):
                                 session.note_skipped_frame()
@@ -378,22 +454,14 @@ class TelloMapInput:
                         if not getattr(session, 'can_accept_frame', True):
                             session.note_skipped_frame()
                             continue
-                        if base is None:
-                            base = stamp
-                            if getattr(session, 'recording', None):
-                                session.recording.set_mapping_origin(base)
                         sample = getattr(source, 'front_tof', None)
                         sensors = {}
                         if (sample is not None and abs(sample[1] - stamp) <= FRONT_TOF_MAX_FRAME_GAP_S
                                 and FRONT_TOF_MIN_M <= sample[0] < FRONT_TOF_MAX_M):
                             sensors['front_tof'] = (sample[0], sample[1] - base)
-                        pose = getattr(source, 'sensor_pose', None)
-                        if isinstance(pose, SensorPose) or getattr(source, 'sensor_capable', False):
-                            epoch = getattr(source, 'run_id', None) or connection
-                            sensors['sensor_pose'] = (epoch, pose if isinstance(pose, SensorPose) else None,
-                                                      getattr(source, 'allow_visual_origin', False))
-                        session.offer(jpeg, stamp - base, sequence, **sensors)
-                        sequence += 1
+                        if sensor_pose is not None:
+                            sensors['sensor_pose'] = sensor_pose
+                        session.offer(jpeg, stamp - base, frame_sequence, **sensors)
                     if not cancelled():
                         raise InputError('tello_gateway_stream_ended')
                 except Exception as error:

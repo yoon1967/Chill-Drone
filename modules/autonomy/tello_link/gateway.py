@@ -580,6 +580,7 @@ class Gateway:
         return {
             "schema_version": SCHEMA_VERSION,
             "type": "drone_state",
+            "run_id": self.link.run_id,
             "at": now_iso(),
             "time_source": "gateway_receive",
             "source": self.source,

@@ -838,6 +838,7 @@ def run(source, output, options, estimator_factory=DepthEstimator, tracker_facto
                 'pose_position': pose[:3, 3].tolist() if pose is not None else None,
                 'pose_rotation': pose[:3, :3].tolist() if pose is not None else None,
                 'depth_scale': depth_scale, 'submaps': len(submaps) + (active_map is not None),
+                'mapping_applied': mapped,
                 'points': preview_points, 'map_points': len(points), 'cameras': visible_cameras,
                 'render_window_s': render_window_s, 'render_evicted_points': evicted,
                 'processed': status['processed'], 'registered': status['registered'],

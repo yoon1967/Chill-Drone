@@ -142,6 +142,11 @@ class RecordingTests(unittest.TestCase):
         self.assertEqual((self.root / part['raw_path']).stat().st_size, video.bytes)
         self.assertEqual(video.packet_sink_errors, 0)
         self.assertTrue(part['capture_complete'])
+        sensors = [json.loads(line) for line in (self.root / 'sensor.jsonl').read_text().splitlines()]
+        self.assertTrue(sensors)
+        self.assertIn('received_mono', sensors[-1])
+        self.assertIn('vgx', sensors[-1]['raw'])
+        self.assertEqual(sensors[-1]['source_run_id'], source.run_id)
         self.assertNotIn('playback_error', part, part)
         self.assertEqual((part['playback']['width'], part['playback']['height']), (960, 720))
         self.assertEqual([command for command in fake.received if command != 'EXT tof?'],
@@ -203,6 +208,85 @@ class RecordingTests(unittest.TestCase):
         self.assertTrue(value['recording']['finalized'])
         self.assertEqual(value['assets']['camera'], 'camera.json')
 
+    def test_sensor_and_frame_logs_keep_clock_pose_gaps_and_reconnects(self):
+        from modules.autonomy.tello_link.sensor_pose import SensorPose
+        sample = {'sequence': 8, 'received_mono': 1000., 'received_at': '2026-11-10T00:00:00+00:00',
+                  'raw': {'vgx': -3, 'yaw': 0, 'tof': 80}, 'si': {'tof_m': .8}, 'valid': True}
+        batch = {'run_id': 'source-a', 'next_sequence': 8, 'samples': [sample]}
+        self.recording.sensor_batch(batch)
+        self.recording.sensor_batch(batch)
+        self.recording.sensor_batch({**batch, 'next_sequence': 11, 'samples': [{**sample, 'sequence': 11}]})
+        self.recording.sensor_batch({**batch, 'run_id': 'source-b', 'next_sequence': 1,
+                                     'samples': [{**sample, 'sequence': 1}]})
+        self.recording.set_mapping_origin(1000.)
+        pose = SensorPose(2, .1, .2, .8, .3, .4, .5)
+        self.recording.frame_input(4, 0., admission='submitted', sensor_pose=('source-a', pose, False),
+                                   metadata={'recording_part': 0, 'recording_frame_index': 3, 'timestamp_s': 1000.})
+        self.recording.frame_input(5, .1, admission='rate_limited')
+        self.recording.frame_result(dict(frame_number=5, frame_id='frame_0000005.jpg', timestamp_s=0.,
+            pose_position=[1., 2., 3.], pose_rotation=np.eye(3).tolist(), mapping_applied=True,
+            pose_source='tello_linear_prediction', map_id=0, map_unit='m', revision=1))
+        self.finish()
+        sensors = [json.loads(row) for row in (self.root / 'sensor.jsonl').read_text().splitlines()]
+        self.assertEqual([row['sequence'] for row in sensors if row['event'] == 'sample'], [8, 11, 1])
+        self.assertEqual(next(row['lost'] for row in sensors if row['event'] == 'gap'), 2)
+        frames = [json.loads(row) for row in (self.root / 'frames.jsonl').read_text().splitlines()]
+        self.assertEqual(frames[0]['sensor_pose'], list(pose))
+        self.assertFalse(frames[1]['mapping_applied'])
+        self.assertEqual(frames[2]['frame_sequence'], frames[0]['frame_sequence'])
+        self.assertEqual(frames[2]['world_from_camera'], [[1., 0., 0., 1.], [0., 1., 0., 2.],
+                                                        [0., 0., 1., 3.], [0., 0., 0., 1.]])
+        self.assertTrue(frames[2]['mapping_applied'])
+        manifest = self.manifest()
+        self.assertEqual(manifest['recording']['sensor_gaps'], 2)
+        self.assertEqual(manifest['recording']['status'], 'partial')
+        for name in ('sensor.jsonl', 'frames.jsonl'):
+            self.assertEqual(manifest['asset_sha256'][name], hashlib.sha256((self.root / name).read_bytes()).hexdigest())
+
+    def test_log_overflow_keeps_video_and_mapping_running(self):
+        self.recording.limit = 512
+        self.assertFalse(self.recording.log('sensor', {'raw': 'x' * 600}))
+        sink = self.recording.open_part('received_jpeg', 'synthetic')
+        self.assertTrue(sink.offer(b'video-still-running', 1.))
+        sink.close()
+        self.finish()
+        self.assertEqual((self.root / self.manifest()['recordings'][0]['raw_path']).read_bytes(), b'video-still-running')
+        self.assertEqual(self.manifest()['mapping']['status'], 'complete')
+        self.assertEqual(self.manifest()['recording']['status'], 'partial')
+        self.assertIn('log_queue_overflow', self.manifest()['recording']['error'])
+
+    def test_drone_video_without_required_sensor_samples_is_never_complete(self):
+        self.recording.require_sensors()
+        sink = self.recording.open_part('received_jpeg', 'synthetic')
+        sink.offer(b'video-without-sensor-packets', 1.)
+        sink.close()
+        self.finish()
+        result = self.manifest()['recording']
+        self.assertEqual(result['status'], 'partial')
+        self.assertEqual(result['sensor_samples'], 0)
+        self.assertTrue(result['sensor_required'])
+        self.assertEqual(result['log_error'], 'recording_sensor_samples_missing')
+
+    def test_log_disk_failure_does_not_stop_original_video(self):
+        self.finish()
+        other = self.root / 'broken_logs'
+        other.mkdir()
+        original = Path.open
+        def opening(path, *args, **kwargs):
+            if path.name == 'sensor.jsonl' and args == ('x',):
+                raise OSError('synthetic log disk failure')
+            return original(path, *args, **kwargs)
+        with patch.object(Path, 'open', opening):
+            recorder = SessionRecording(other, CAMERA, 'tello_camera')
+            sink = recorder.open_part('received_jpeg', 'synthetic')
+            self.assertTrue(sink.offer(b'video-survives-log-failure', 2.))
+            recorder.finish_input()
+            recorder.finish_mapping(FINAL)
+            self.assertTrue(recorder.wait(5))
+        self.assertEqual((other / 'recordings/part_0000.mjpeg').read_bytes(), b'video-survives-log-failure')
+        self.assertEqual(recorder.stats()['status'], 'partial')
+        self.assertIn('log_write_failed', recorder.stats()['error'])
+
     def test_http_session_export_and_identity(self):
         server = ViewerServer(('127.0.0.1', 0), partial(ViewerHandler, session=self.root,
             live=SimpleNamespace(current=None)))
@@ -224,6 +308,8 @@ class RecordingTests(unittest.TestCase):
         with zipfile.ZipFile(BytesIO(data)) as archive:
             self.assertIn(self.root.name + '/camera.json', archive.namelist())
             self.assertIn(self.root.name + '/session.json', archive.namelist())
+            self.assertIn(self.root.name + '/sensor.jsonl', archive.namelist())
+            self.assertIn(self.root.name + '/frames.jsonl', archive.namelist())
             self.assertNotIn(self.root.name + '/not-finished.mp4.tmp', archive.namelist())
             self.assertTrue(json.loads(archive.read(self.root.name + '/session.json'))['recording']['finalized'])
         with urlopen(base + 'session?session=' + self.root.name) as response:

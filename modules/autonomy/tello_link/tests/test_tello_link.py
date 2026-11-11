@@ -108,6 +108,12 @@ class LinkWithFakeTest(unittest.TestCase):
         state = self.link.latest_state()
         self.assertEqual(state["raw"]["bat"], 87)
         self.assertLess(state["age_s"], 1.0)
+        batch = self.link.sensor_samples()
+        self.assertEqual(batch['run_id'], 'test_run')
+        self.assertIn('received_mono', batch['samples'][-1])
+        self.assertEqual(batch['samples'][-1]['sequence'], batch['next_sequence'])
+        self.assertEqual(self.link.sensor_samples(batch['next_sequence'])['lost'], 0)
+        self.assertIn('received_mono', state)
 
     def test_flight_blocked_and_not_sent(self):
         self.link.send("command")

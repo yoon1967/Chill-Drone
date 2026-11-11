@@ -143,6 +143,14 @@ class SessionRecording:
         self.mapping = None
         self.mapping_origin = None
         self.asset_hashes = {}
+        self.log_error = None
+        self.log_failed = False
+        self.log_counts = {'sensor': 0, 'frames': 0}
+        self.log_dropped = {'sensor': 0, 'frames': 0}
+        self.sensor_cursors = {}
+        self.sensor_gaps = 0
+        self.sensor_required = False
+        self.sensor_samples_written = 0
         self.started_at, self.ended_at = utc_now(), None
         self.finished = threading.Event()
         self._manifest()
@@ -151,9 +159,12 @@ class SessionRecording:
 
     def stats(self):
         with self.condition:
-            status = 'partial' if self.error else 'complete' if self.finalized else \
+            status = 'partial' if self.error or self.log_error else 'complete' if self.finalized else \
                 'finalizing' if self.finishing else 'recording' if self.bytes_received else 'waiting'
-            return {'status': status, 'finalized': self.finalized, 'error': self.error,
+            return {'status': status, 'finalized': self.finalized, 'error': self.error or self.log_error,
+                    'log_error': self.log_error, 'log_records': dict(self.log_counts), 'sensor_gaps': self.sensor_gaps,
+                    'log_dropped': dict(self.log_dropped),
+                    'sensor_required': self.sensor_required, 'sensor_samples': self.sensor_samples_written,
                     'bytes_received': self.bytes_received, 'bytes_written': self.bytes_written,
                     'queued_bytes': self.queued_bytes, 'queue_limit_bytes': self.limit,
                     'parts': len(self.parts), 'original_h264': any(p['mode'] == 'h264' for p in self.parts),
@@ -209,6 +220,71 @@ class SessionRecording:
             if self.mapping_origin is None:
                 self.mapping_origin = stamp
 
+    def log_problem(self, reason):
+        with self.condition:
+            self.log_error = self.log_error or reason
+
+    def require_sensors(self):
+        with self.condition:
+            self.sensor_required = True
+
+    def log(self, stream, record):
+        """Enqueue JSON only; logging failure must never interrupt flight or mapping."""
+        try:
+            line = json.dumps({'schema_version': 'mapping-' + stream + '/1.0', **record},
+                              ensure_ascii=True, allow_nan=False, separators=(',', ':')) + '\n'
+        except (TypeError, ValueError):
+            self.log_problem('recording_log_invalid_' + stream)
+            if stream in self.log_dropped:
+                self.log_dropped[stream] += 1
+            return False
+        with self.condition:
+            if self.finishing or self.finalized or self.log_failed:
+                if stream in self.log_dropped:
+                    self.log_dropped[stream] += 1
+                return False
+            if stream not in self.log_counts or len(line) > 65536 or self.queued_bytes + len(line) > self.limit or len(self.jobs) >= 8192:
+                self.log_error = self.log_error or 'recording_log_queue_overflow'
+                if stream in self.log_dropped:
+                    self.log_dropped[stream] += 1
+                return False
+            self.queued_bytes += len(line)
+            self.jobs.append(('json', stream, line, record.get('event')))
+            self.condition.notify()
+            return True
+
+    def sensor_batch(self, batch):
+        run_id = batch['run_id']
+        after = self.sensor_cursors.get(run_id, 0)
+        samples = batch['samples']
+        if samples and after and samples[0]['sequence'] > after + 1:
+            lost = samples[0]['sequence'] - after - 1
+            self.sensor_gaps += lost
+            self.log_problem('recording_sensor_gap')
+            self.log('sensor', {'event': 'gap', 'source_run_id': run_id, 'after_sequence': after, 'lost': lost})
+        for sample in samples:
+            if sample['sequence'] > after:
+                self.log('sensor', {'event': 'sample', 'source_run_id': run_id, **sample})
+                after = sample['sequence']
+        self.sensor_cursors[run_id] = max(after, batch['next_sequence'])
+
+    def frame_input(self, sequence, stamp, *, admission, metadata=None, sensor_pose=None, front_tof=None):
+        epoch, pose, visual = sensor_pose if sensor_pose is not None else (None, None, False)
+        return self.log('frames', {'event': 'input', 'frame_sequence': sequence, 'timestamp_s': stamp,
+            'admission': admission, 'mapping_applied': False, 'source': metadata,
+            'sensor_epoch': epoch, 'sensor_pose': list(pose) if pose is not None else None,
+            'allow_visual_origin': visual, 'front_tof': front_tof})
+
+    def frame_result(self, snapshot):
+        position, rotation = snapshot.get('pose_position'), snapshot.get('pose_rotation')
+        transform = ([list(row) + [position[i]] for i, row in enumerate(rotation)] + [[0., 0., 0., 1.]]
+                     if position is not None and rotation is not None else None)
+        self.log('frames', {'event': 'mapping', 'frame_sequence': snapshot['frame_number'] - 1,
+            **{key: snapshot.get(key) for key in ('frame_id', 'timestamp_s', 'revision', 'map_id', 'pose_map_id',
+                'tracking', 'pose_source', 'map_unit', 'depth_scale', 'mapping_applied')},
+            'pose_source': snapshot.get('pose_source') or ('orb_slam3_monocular' if transform is not None else None),
+            'world_from_camera': transform})
+
     def finish_input(self):
         with self.condition:
             self.input_closed = True
@@ -239,9 +315,19 @@ class SessionRecording:
             value = {'schema_version': 'mapping-session/1.0', 'session_id': self.path.name,
                 'started_at': self.started_at, 'ended_at': self.ended_at, 'input': self.input_kind,
                 'mapping_timestamp_zero_monotonic': self.mapping_origin,
+                'capture_metadata': {'schema_version': 'mapping-capture/1.0',
+                    'sensor_time_basis': 'source_pc_receive_monotonic_seconds',
+                    'frame_time_basis': ('browser_media_time' if self.input_kind == 'browser_camera'
+                                         else 'mapping_input_receive_monotonic_minus_mapping_origin'),
+                    'sensor_pose_fields': ['segment', 'x_m', 'y_m', 'z_m', 'yaw_rad', 'pitch_rad', 'roll_rad'],
+                    'sensor_axes': 'power_on_forward_left_up', 'camera_axes': 'x_right_y_down_z_forward',
+                    'raw_units': 'Tello state packet units; preserved without conversion',
+                    'frame_results': 'fold frames.jsonl by frame_sequence; input then mapping result',
+                    'unprocessed_frames': 'mapping_applied=false unless a mapping event overrides it'},
                 'recording': self.stats(), 'recordings': [dict(part) for part in self.parts],
                 'mapping': self.mapping,
                 'assets': {'camera': 'camera.json', 'settings': 'settings.json', 'state': 'state.json',
+                    'sensor': 'sensor.jsonl', 'frame_poses': 'frames.jsonl',
                     'native': 'native.json', 'camera_settings': 'camera.yaml',
                     'timeline': 'timeline.json', 'segments': 'segments.json', 'revisions': 'revisions/',
                     'keyframes': 'frames/', 'tracking': 'tracking.jsonl', 'diagnostics': 'diagnostics.json',
@@ -261,6 +347,7 @@ class SessionRecording:
 
     def _run(self):
         opened, digests, offsets = {}, {}, {}
+        logs = {}
         storage_failed = False
         next_flush = time.monotonic() + 1
 
@@ -287,12 +374,31 @@ class SessionRecording:
                                 status='partial' if self.error else 'captured')
 
         try:
+            for stream in self.log_counts:
+                try:
+                    logs[stream] = (self.path / (stream + '.jsonl')).open('x', encoding='utf-8')
+                except OSError:
+                    self.log_failed = True
+                    self.log_problem('recording_log_write_failed')
             while True:
                 with self.condition:
                     self.condition.wait_for(lambda: bool(self.jobs), timeout=.25)
                     job = self.jobs.popleft() if self.jobs else None
                 try:
-                    if job and job[0] == 'open':
+                    if job and job[0] == 'json':
+                        try:
+                            if job[1] not in logs or self.log_failed:
+                                self.log_dropped[job[1]] += 1
+                                continue
+                            logs[job[1]].write(job[2])
+                            self.log_counts[job[1]] += 1
+                            if job[1] == 'sensor' and job[3] == 'sample':
+                                self.sensor_samples_written += 1
+                        except OSError:
+                            self.log_dropped[job[1]] += 1
+                            self.log_failed = True
+                            self.log_problem('recording_log_write_failed')
+                    elif job and job[0] == 'open':
                         part = job[1]
                         item = self.parts[part]
                         opened[part] = ((self.path / item['raw_path']).open('xb'),
@@ -321,6 +427,12 @@ class SessionRecording:
                         for streams in opened.values():
                             for stream in streams:
                                 stream.flush()
+                        for stream in logs.values():
+                            try:
+                                stream.flush()
+                            except OSError:
+                                self.log_failed = True
+                                self.log_problem('recording_log_write_failed')
                         self._manifest()
                         next_flush = time.monotonic() + 1
                 except (OSError, ValueError, KeyError) as error:
@@ -329,6 +441,9 @@ class SessionRecording:
                         self.error, self.disabled = 'recording_write_' + type(error).__name__, True
                 finally:
                     if job and job[0] == 'data':
+                        with self.condition:
+                            self.queued_bytes -= len(job[2])
+                    elif job and job[0] == 'json':
                         with self.condition:
                             self.queued_bytes -= len(job[2])
             for part in list(opened):
@@ -351,13 +466,20 @@ class SessionRecording:
         except Exception as error:
             self.error, self.disabled = 'recording_worker_' + type(error).__name__, True
         finally:
+            if self.sensor_required and self.bytes_received and not self.sensor_samples_written:
+                self.log_problem('recording_sensor_samples_missing')
+            for stream in logs.values():
+                try:
+                    stream.close()
+                except OSError:
+                    self.log_problem('recording_log_write_failed')
             for streams in opened.values():
                 for stream in streams:
                     try:
                         stream.close()
                     except OSError:
                         pass
-            for name in ('camera.json', 'settings.json', 'state.json'):
+            for name in ('camera.json', 'settings.json', 'state.json', 'sensor.jsonl', 'frames.jsonl'):
                 try:
                     if (self.path / name).is_file():
                         self.asset_hashes[name] = file_hash(self.path / name)
