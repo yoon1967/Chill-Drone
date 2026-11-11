@@ -123,6 +123,43 @@ partial이며 `recording_sensor_samples_missing` 오류를 남긴다.
 맞지 않으면 덮어쓰지 않는다. manifest의 `capture_metadata.sensor_recovery`에 원본 해시와
 시각 범위·복구 시각을 남기며, 영상·프레임·기체 로그 원본은 변경하지 않는다.
 
+## 독립적인 영상·센서 시각 대응
+
+드론 영상과 센서를 공유할 때 `frames.jsonl`, 이미지, 매핑 결과를 제외할 수 있도록
+세션 루트에 `video_sensor_sync.json`(`video-sensor-sync/1.0`)을 자동 저장한다.
+`session.json.assets.video_sensor_sync`, `asset_sha256`, `recording.video_sensor_sync`에도 등록하며 ZIP에 포함한다.
+새 촬영은 매핑 선택 전에 녹화 입력에서 원본 시각을 보존하므로 매핑 로그가 없어도 생성된다.
+영상 조각별 내부 인덱스에 `sensor_clock={run_id,timestamp_s}`를 추가한다.
+
+| 필드 | 의미 |
+| --- | --- |
+| `status` | complete / approximate / partial / unavailable / not_applicable |
+| `sensor_path`, `sensor_sha256` | 함께 사용할 센서 파일과 SHA-256 |
+| `sample_fields` | samples의 두 값: video_time_s, sensor_received_mono_s |
+| `parts[].part_id`, `video_path`, `video_sha256` | 해당 영상 조각과 파일 식별자 |
+| `parts[].source_run_id` | 대응할 sensor.jsonl의 source_run_id |
+| `parts[].samples` | 실제 재생 파일의 PTS(초)와 센서 수신 시계(초)의 대응 쌍. 시각 미상은 null |
+| `parts[].coverage` | 재생 시각 수, 원본 시각 누락 수, 중복 재생 시각과 역행 시각 수 |
+| `parts[].sensor_available_range_s` | 해당 센서 원본에 기록된 단조 시각 범위 |
+| `parts[].accuracy` | gateway_decode_receive_alignment 또는 packet_receive_approximation |
+
+사용자는 원하는 간격으로 영상을 처리하고, 그 재생 시각을 대응 쌍 사이에서 선형 보간해
+같은 source_run_id의 센서 `received_mono`에 연결한다. 범위 밖 외삽, null 구간 연결,
+중복된 영상 시각의 임의 선택은 하지 않는다. `video_sensor_sync.sensor_time_at`은 이런 구간에 None을 반환한다.
+필요한 공유 입력은 영상·sensor.jsonl·video_sensor_sync.json과 카메라/설정/세션 메타데이터다.
+매핑에서 사용했던 사진·선택 번호·자세는 이 파일에 포함하지 않는다.
+
+네트워크 지연 변화 때문에 대응을 고정 시간차 하나로 줄이지 않는다. 컨테이너가 PTS를
+반올림하므로 실제 저장 영상에서 다시 읽은 시각을 사용한다. 중복·누락은 partial로 표시한다.
+H.264는 촬영 PTS가 없으므로 패킷 수신 시각의 근사이며 approximate로 표시한다.
+어느 경로도 카메라 노출 순간을 실측한 시각이라고 주장하지 않는다.
+센서가 필요한 녹화의 대응 자료가 불완전하면 녹화 상태도 partial과 오류를 표시한다.
+
+기존 종료 회차는 `video_sensor_sync.export_existing_sync(회차_경로)`로 파일을 생성할 수 있다.
+새 내부 인덱스 또는 과거 입력 기록에서 시각만 추출하며 영상·센서·사진·기존 로그는 변경하지 않는다.
+기존 대응 파일은 덮어쓰지 않는다. 영상 파일을 변환/편집하면 PTS·해시가 달라질 수 있으므로
+원래 파일의 대응 자료가 그대로 유효한지 다시 검증해야 한다.
+
 ## 드론 측정 및 센서 활용 복원
 
 기존 기록 형식을 그대로 소비한다. `GET /api/import/drone-recordings`는 실측 영상 입력 폴더와
@@ -170,3 +207,26 @@ manifest 파일 쓰기가 실패해도 살아 있는 서버는 메모리의 최�
 반출 ZIP도 촬영 자료를 포함하는 비공개 자료이며 자동 업로드하지 않는다.
 
 이번 버전은 저장·내려받기만 추가한다. ZIP/폴더 불러오기 화면·보정 프로필·초기화 튜토리얼은 후속 단계다.
+
+### 수신 중 누적 저장
+
+`POST /api/live/checkpoint`의 JSON은 현재 `session_id`를 받는다. 요청을 수락한 지점에 녹화 큐의 경계를 넣고,
+그 앞의 영상·센서·입력 로그를 flush한 뒤 파일별 바이트 길이를 고정한다. 원본 수신기·지도 처리·조종은 종료하지 않는다.
+새 `saved_YYYYMMDD_HHMMSS_<id>/` 회차에 그 길이까지만 복사하고 재생 영상과 `video_sensor_sync.json`을 생성한다.
+매번 원본 회차의 처음부터 새 요청 지점까지 저장하며, 이전 저장본은 덮어쓰지 않는다.
+
+지도는 요청 시점에 공개 완료된 revision을 고정한다. 깊이 지도는 해당 revision까지의 관측 전체를 별도로 합성한다.
+처리 중인 장면을 기다리지 않으므로 영상의 마지막 시각과 지도에 반영된 마지막 시각이 다를 수 있다.
+기존 native 지도는 그 시점에 공개된 scene을 저장한다. 관측·카메라 이미지 등 지도 재열기에 필요한 파일도 보존한다.
+저장 회차의 `checkpoint`에는 `source_session_id`, `cutoff_at`, `cutoff_monotonic`,
+`scope=session_start_to_request`, `map_revision`, `map_scope=committed_observations_at_request`를 기록한다.
+`started_at`은 원본 시작 시각, `ended_at`은 저장 요청 시각이다. 저장 실패는 원본 녹화를 중단하지 않는다.
+
+응답 202는 `{id,status:saving,cutoff_at,source_session_id,...}`이며, 처리 완료 후
+`GET /api/live/checkpoint-status`의 `latest`에 `status=complete`, 저장 `path`, `capture_status`, `sync_status`가 나온다.
+실패는 `status=failed,error`로 표시하고 다시 저장할 수 있다. 이미 저장 중이면 `checkpoint_busy`,
+지도가 준비되지 않았으면 `checkpoint_map_not_ready`로 400을 반환한다. 수신 종료·마무리 중에는 요청을 받지 않는다.
+부분 녹화·시각 누락은 `recording.status=partial`로 유지하며 정상 완료로 바꾸지 않는다.
+
+관제 UI에서 이 두 API를 호출할 때만 설정된 로컬 gateway의 Origin(동일 포트의 localhost/127.0.0.1)을 허용한다.
+POST의 `X-Mapping-Client: 1`과 기존 Host 검증을 유지하며 비행·영상 종료 API의 교차 Origin 권한을 넓히지 않는다.

@@ -256,8 +256,37 @@ class ViewerHandler(BaseHTTPRequestHandler):
         self.send_header("Content-Type", "application/json; charset=utf-8")
         self.send_header("Content-Length", str(len(payload)))
         self.send_header("Cache-Control", "no-store")
+        origin = self.checkpoint_origin()
+        if origin:
+            self.send_header('Access-Control-Allow-Origin', origin)
+            self.send_header('Vary', 'Origin')
         self.end_headers()
         self.write_payload(payload)
+
+    def checkpoint_origin(self):
+        """Only the configured loopback controller may call the checkpoint API cross-origin."""
+        if urlsplit(self.path).path not in {'/api/live/checkpoint', '/api/live/checkpoint-status'}:
+            return None
+        origin = self.headers.get('Origin')
+        gateway = getattr(self.tello_map, 'gateway', None)
+        if not origin or not gateway:
+            return None
+        parsed = urlsplit(gateway)
+        allowed = {f'{parsed.scheme}://{host}:{parsed.port}' for host in ('127.0.0.1', 'localhost')}
+        return origin if origin in allowed and parsed.hostname in {'127.0.0.1', 'localhost'} else None
+
+    def do_OPTIONS(self):
+        host = self.headers.get('Host', '')
+        if (host not in {f'127.0.0.1:{self.server.server_port}', f'localhost:{self.server.server_port}'}
+                or not self.checkpoint_origin()):
+            self.send_error(403)
+            return
+        self.send_response(204)
+        self.send_header('Access-Control-Allow-Origin', self.checkpoint_origin())
+        self.send_header('Access-Control-Allow-Methods', 'GET, POST')
+        self.send_header('Access-Control-Allow-Headers', 'Content-Type, X-Mapping-Client')
+        self.send_header('Vary', 'Origin')
+        self.end_headers()
 
     def write_payload(self, payload):
         try:
@@ -290,7 +319,8 @@ class ViewerHandler(BaseHTTPRequestHandler):
         host = self.headers.get("Host", "")
         origin = self.headers.get("Origin")
         if (host not in {f"127.0.0.1:{self.server.server_port}", f"localhost:{self.server.server_port}"}
-                or origin not in {None, "http://" + host} or self.headers.get("X-Mapping-Client") != "1"):
+                or (origin not in {None, "http://" + host} and not self.checkpoint_origin())
+                or self.headers.get("X-Mapping-Client") != "1"):
             self.send_error(403)
             return
         if urlsplit(self.path).path.startswith('/api/import/'):
@@ -434,6 +464,12 @@ class ViewerHandler(BaseHTTPRequestHandler):
                     self.json_response({"error": "tello_mapping_input_disabled"}, 403)
                     return
                 self.json_response(self.tello_map.heartbeat(json.loads(data)["session_id"]))
+            elif url.path == '/api/live/checkpoint':
+                body = json.loads(data)
+                if not self.current or body.get('session_id') not in {None, self.current.id}:
+                    raise ValueError('checkpoint_session_unavailable')
+                from modules.mapping.data.live_checkpoint import capture_map
+                self.json_response(self.current.recording.checkpoint(capture_map(self.current)), 202)
             elif not self.live:
                 self.json_response({"error": "camera_input_disabled"}, 403)
             elif url.path == "/api/live/start":
@@ -937,6 +973,13 @@ class ViewerHandler(BaseHTTPRequestHandler):
             return
         url = urlsplit(self.path)
         path = unquote(url.path)
+        if path == '/api/live/checkpoint-status':
+            latest = self.current.recording.checkpoint_status() if self.current else None
+            self.json_response({'session_id': self.current.id if self.current else None,
+                'available': bool(self.current and not self.current.recording.finishing
+                                  and not self.current.recording.finalized and self.current.recording.bytes_received),
+                'latest': latest})
+            return
         if path == '/api/drones/state':
             self.json_response(self.drone_state())
             return
