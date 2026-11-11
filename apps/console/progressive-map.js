@@ -436,6 +436,8 @@ export function connectProgressiveMap({prefix = 'progressive', compact = false} 
     cameraMarker.visible = false; updateFramePreview(null);
     if (compact) scene.scale.set(1, 1, 1);
     else camera.up.fromArray(value.up);
+    // Saved points use display axes even when their revision matches the optical preview.
+    pointKey = null;
     drawMap(value); fit();
     $('progressive-map-empty').hidden = true;
   }, dispose() { unsubscribeSettings(); rescue.dispose(); listeners.abort(); disposed = true; running = false; generation++; clearTimeout(timer); pendingPaint?.(false); pendingPaint = null; observer.disconnect(); renderer.setAnimationLoop(null); controls.dispose(); geometry.dispose(); cloud.material.dispose(); frameGeometry.dispose(); frameCloud.material.dispose(); route.geometry.dispose(); route.material.dispose(); markerLines.geometry.dispose(); markerLines.material.dispose(); renderer.dispose(); renderer.domElement.remove(); trackingNote.remove(); }};

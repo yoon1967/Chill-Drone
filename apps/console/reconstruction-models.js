@@ -6,7 +6,7 @@ const rows = Object.fromEntries(['pose', 'depth'].map(kind => [kind, {
 }]));
 
 const start = $('start-reconstruction');
-let catalogRequest, busy = false;
+let catalogRequest, busy = false, droneRecording = false;
 const sizes = new Intl.NumberFormat('ko-KR', {minimumFractionDigits: 1, maximumFractionDigits: 1});
 const errors = {
   slam_docker_unavailable: 'Docker Desktop을 실행한 후 다시 확인하세요.',
@@ -52,7 +52,8 @@ function render(row, status = {}) {
 }
 
 function updateButton() {
-  start.disabled = busy || Object.values(rows).some(row => !row.ready || !row.select.value);
+  const required = droneRecording ? [rows.depth] : Object.values(rows);
+  start.disabled = busy || required.some(row => !row.ready || !row.select.value);
   for (const row of Object.values(rows)) {
     row.select.disabled = busy || !row.select.options.length;
     row.button.disabled = busy;
@@ -95,7 +96,12 @@ async function check(row, action = 'check') {
   }
 }
 
-export function showModelPicker() {
+export function showModelPicker(useDroneSensors = droneRecording) {
+  droneRecording = useDroneSensors;
+  $('pose-model-field').hidden = droneRecording;
+  $('drone-pose-hint').hidden = !droneRecording;
+  $('model-picker-title').textContent = droneRecording ? '드론 측정 및 센서 활용 복원' : '복원 모델 선택';
+  updateButton();
   if (catalogRequest) return catalogRequest;
   const retry = $('model-picker-retry');
   retry.hidden = true;
@@ -122,7 +128,8 @@ export function showModelPicker() {
 
 export function selectedModels() {
   if (start.disabled) return null;
-  return {pose_model: rows.pose.select.value, depth_model: rows.depth.select.value};
+  const depth_model = rows.depth.select.value;
+  return droneRecording ? {depth_model} : {pose_model: rows.pose.select.value, depth_model};
 }
 
 export function setModelPickerBusy(next) {
@@ -131,7 +138,10 @@ export function setModelPickerBusy(next) {
 }
 
 export function modelPickerMessage(text) { $('model-picker-error').textContent = text; }
-export function refreshModelChecks() { for (const row of Object.values(rows)) check(row); }
+export function refreshModelChecks() {
+  check(rows.depth);
+  if (!droneRecording) check(rows.pose);
+}
 export function closeModelPicker({clear = false} = {}) {
   for (const row of Object.values(rows)) {
     row.version++;
@@ -151,4 +161,4 @@ for (const row of Object.values(rows)) {
   });
   row.button.addEventListener('click', () => check(row, row.action));
 }
-$('model-picker-retry').addEventListener('click', showModelPicker);
+$('model-picker-retry').addEventListener('click', () => showModelPicker());

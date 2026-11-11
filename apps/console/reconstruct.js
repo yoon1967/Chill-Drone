@@ -25,8 +25,13 @@ const messages = {
   pose_worker_stopped: '카메라 위치 추적기가 중단되었습니다. Docker와 NVIDIA GPU 상태를 확인하세요.',
   pose_worker_timeout: '카메라 위치 모델의 응답 시간이 초과되었습니다.',
   'ValueError: pose_frame_limit': '이 위치 모델이 처리할 수 있는 영상 길이를 초과했습니다.',
-  reconstruction_models_not_ready: '두 모델의 준비 상태를 확인하세요.',
+  reconstruction_models_not_ready: '선택한 모델의 준비 상태를 확인하세요.',
   depth_mapping_dependencies_missing: '3D 매핑 실행기를 다시 열어 복원 환경을 준비하세요.',
+  drone_recording_unavailable: '녹화 영상과 센서 기록이 모두 있는지 확인하세요.',
+  drone_recording_missing_video: '재생 가능한 녹화 파일이 없습니다.',
+  drone_recording_missing_logs: '녹화에 대응하는 프레임 또는 센서 기록이 없습니다.',
+  drone_recording_invalid_timing: '영상 프레임을 녹화 기록의 시각과 맞출 수 없습니다.',
+  drone_recording_no_sensor_pose: '녹화 영상과 같은 시각의 드론 자세를 찾을 수 없습니다.',
 };
 
 let id = null, job = null, state = 'loading', timer, upload, map;
@@ -50,6 +55,7 @@ function status(next, label = '', notice = '') {
   $('notice').hidden = !notice;
   $('status-line').hidden = !label;
   $('drop').hidden = next !== 'input';
+  $('drone-recordings').hidden = next !== 'input';
   $('model-picker').hidden = next !== 'awaiting_options';
   $('recent').hidden = next !== 'input';
   $('change').hidden = !['awaiting_options', 'complete', 'partial', 'failed', 'cancelled', 'result-error'].includes(next);
@@ -101,7 +107,8 @@ async function refreshRecent() {
   try {
     const {items} = await requestImport('library');
     const records = items.filter(item => ['local', 'ready', 'complete'].includes(item.status) ||
-      (item.source_video && ['inspecting', 'running', 'cancelling'].includes(item.status))).slice(0, 6);
+      ((item.source_video || item.summary?.kind === 'drone_recording') &&
+        ['inspecting', 'running', 'cancelling'].includes(item.status))).slice(0, 6);
     $('recent-empty').textContent = records.length ? '' : '복원 기록이 없습니다.';
     $('recent-list').replaceChildren(...records.map(record => {
       const item = document.createElement('li'), button = document.createElement('button');
@@ -118,15 +125,38 @@ async function refreshRecent() {
   } catch { $('recent-empty').textContent = '복원 기록을 열 수 없습니다.'; }
 }
 
-async function openRecord(key) {
+async function refreshDroneRecordings() {
+  const label = $('drone-recordings-status');
+  const list = $('drone-recordings-list');
+  label.textContent = '드론 녹화 목록 확인 중';
+  list.replaceChildren();
+  try {
+    const {items} = await requestImport('drone-recordings');
+    label.textContent = items.length ? '' : '영상과 센서값이 함께 저장된 드론 녹화가 없습니다.';
+    list.replaceChildren(...items.map(record => {
+      const item = document.createElement('li'), button = document.createElement('button');
+      button.type = 'button'; button.className = 'recent-record';
+      const title = document.createElement('strong'), detail = document.createElement('span');
+      title.textContent = record.name;
+      detail.textContent = record.started_at ? new Date(record.started_at).toLocaleString('ko-KR') : '센서 기반 복원';
+      button.append(title, detail);
+      button.addEventListener('click', () => openRecord(record.name, true));
+      item.append(button);
+      return item;
+    }));
+  } catch { label.textContent = '드론 녹화 목록을 열 수 없습니다.'; }
+}
+
+async function openRecord(key, drone = false) {
   if (busy || state !== 'input') return;
   busy = true;
-  status('loading', '복원 기록 확인 중');
+  status('loading', drone ? '드론 녹화 확인 중' : '복원 기록 확인 중');
   try {
-    const record = await requestImport('local', {local_id: key});
+    const record = drone ? await requestImport('drone-recording', {session_id: key}) :
+      await requestImport('local', {local_id: key});
     remember(record.id);
-  } catch {
-    status('input', '복원 기록을 열 수 없습니다.');
+  } catch (error) {
+    status('input', drone ? '드론 녹화를 열 수 없습니다.' : '복원 기록을 열 수 없습니다.', messages[error.cause] || '');
   } finally { busy = false; }
   if (id) await watch();
 }
@@ -149,8 +179,9 @@ async function showResult() {
       counts?.unmapped_frames > 0 ? `${counts.recorded_frames}개 중 ${counts.integrated_frames}개 장면을 지도에 반영했습니다.` :
       partial ? '영상의 일부 장면만 지도에 반영됐습니다.' : '';
     const held = counts?.held_pose_frames ? `${counts.held_pose_frames}개 장면은 마지막으로 확인한 위치에 합쳤습니다.` : '';
+    const missing = counts?.unavailable_recording_parts ? `${counts.unavailable_recording_parts}개 녹화 구간은 파일 또는 시각 정보가 없어 복원하지 못했습니다.` : '';
     const scale = cloud.unit === 'arbitrary' ? '실제 거리 측정에 사용할 수 없습니다.' : '거리 정확도는 검증되지 않았습니다.';
-    status(partial ? 'partial' : 'complete', partial ? '부분 복원' : '복원 완료', [coverage, held, scale].filter(Boolean).join(' '));
+    status(partial ? 'partial' : 'complete', partial ? '부분 복원' : '복원 완료', [coverage, held, missing, scale].filter(Boolean).join(' '));
   } catch {
     status('result-error', '지도를 표시할 수 없습니다.', '지도를 저장하거나 다시 시도하세요.');
   }
@@ -172,6 +203,7 @@ function phaseLabel({stage, progress}) {
     pose_optimization: '최종 지도를 저장할 카메라 경로 보정 중',
     tracking_setup: '카메라 위치 추적기 준비 중', initial_pose: '카메라의 초기 위치와 방향 찾는 중',
     tracking: '카메라 위치와 방향 추적 중', recovering_pose: '카메라 위치와 방향 다시 찾는 중',
+    sensor_pose: '녹화 장면과 드론 센서 위치를 맞추는 중',
     depth: '장면의 깊이 계산 중', semantics: '사람과 구조물 구분 중', depth_alignment: '깊이와 지도 크기 맞추는 중',
     visual_registration: '이전 장면을 기준으로 위치와 방향 맞추는 중',
     mapping: '장면을 3D 지도에 합치는 중', presentation: '장면과 지도 갱신 중',
@@ -186,7 +218,7 @@ async function display(next) {
   switch (next.status) {
     case 'awaiting_options':
       status('awaiting_options');
-      showModelPicker();
+      showModelPicker(next.summary?.kind === 'drone_recording');
       break;
     case 'running':
     case 'cancelling':
@@ -289,6 +321,7 @@ function reset() {
   setName('');
   status('input');
   refreshRecent();
+  refreshDroneRecordings();
 }
 
 $('start-reconstruction').addEventListener('click', async () => {
@@ -302,7 +335,7 @@ $('start-reconstruction').addEventListener('click', async () => {
   let checkJob = false;
   try {
     await requestImport('start', {...mappingOptions({includeSampling: false}), ...models,
-      confirmed: true, mode: 'depth_rgbd', causal_video: true}, query());
+      confirmed: true, mode: 'depth_rgbd', causal_video: Boolean(models.pose_model)}, query());
     started = true;
     closeModelPicker();
     status('running', '복원 준비 중');
