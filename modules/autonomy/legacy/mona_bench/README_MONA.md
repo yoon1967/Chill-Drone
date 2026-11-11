@@ -1,5 +1,8 @@
 # MoNA 자율 비행 정리 (2026-11-04 ~ 11-10)
 
+> **레거시(2026-11-11).** 이 폴더는 보관용이다. 실행기(`scripts/start.cmd`)는 MoNA를 켜지 않고, 유지보수·검증도 하지 않는다.
+> 다시 쓰려면 [../README.md](../README.md)의 안내를 먼저 본다. 아래 내용은 2026-11-10까지의 기록이다.
+
 Tello가 카메라 한 대로 실내에서 **이륙 → 정면 이동 → 장애물 회피 → 착륙**을 하도록 만든
 MoNA-Bench 기반 자율 비행 스택의 구조와 지금까지의 실험을 한곳에 모은 요약이다.
 날짜별 상세 기록·회차 폴더·수치 근거는 [README.md](README.md)에 있다.
@@ -92,10 +95,10 @@ Tello ──(Wi-Fi)── 팀 드론 게이트웨이 (tello_link/gateway_server.
 ## 5. 실행 방법
 
 ```powershell
-.\modules\autonomy\mona_bench\run.ps1 -Action Build          # 이미지 빌드(첫 빌드는 오래 걸림)
-.\modules\autonomy\mona_bench\run.ps1 -Action Sim            # 닫힌 고리 시뮬레이션(정면 4 m)
-.\modules\autonomy\mona_bench\run.ps1 -Action Replay -Bag <input.bag> -GoalForwardM 3
-.\modules\autonomy\mona_bench\run.ps1 -Action Live -Seconds 600 -RecordDepth   # 실기(드론이 지상에 있을 때)
+.\modules\autonomy\legacy\mona_bench\run.ps1 -Action Build          # 이미지 빌드(첫 빌드는 오래 걸림)
+.\modules\autonomy\legacy\mona_bench\run.ps1 -Action Sim            # 닫힌 고리 시뮬레이션(정면 4 m)
+.\modules\autonomy\legacy\mona_bench\run.ps1 -Action Replay -Bag <input.bag> -GoalForwardM 3
+.\modules\autonomy\legacy\mona_bench\run.ps1 -Action Live -Seconds 600 -RecordDepth   # 실기(드론이 지상에 있을 때)
 ```
 
 시뮬레이션 세트는 환경 변수 `MONA_SIM_SET`으로 고른다: `person`(사람 1 m 앞), `indoor`, `indoor4m`(6×4 m 방, 정면 4 m),

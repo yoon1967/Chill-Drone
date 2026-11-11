@@ -1,5 +1,8 @@
 # MoNA-Bench Ubuntu·ROS 통합 실험
 
+> **레거시(2026-11-11).** 이 폴더는 보관용이다. 실행기(`scripts/start.cmd`)는 MoNA를 켜지 않고, 유지보수·검증도 하지 않는다.
+> 다시 쓰려면 [../README.md](../README.md)의 안내를 먼저 본다. 아래 내용은 2026-11-10까지의 기록이다.
+
 담당 작업: [S15P31B205-276](https://ssafy.atlassian.net/browse/S15P31B205-276).
 
 [MoNA-Bench 원본](https://github.com/npu-ius-lab/MoNA-Bench)의 커밋을
@@ -17,10 +20,10 @@
 GPU 지원이 필요하다. 첫 빌드는 ROS·PyTorch 의존성을 내려받으므로 오래 걸린다.
 
 ```powershell
-.\modules\autonomy\mona_bench\run.ps1 -Action Build
-.\modules\autonomy\mona_bench\run.ps1 -Action Check
-.\modules\autonomy\mona_bench\run.ps1 -Action Graph
-.\modules\autonomy\mona_bench\run.ps1 -Action Smoke
+.\modules\autonomy\legacy\mona_bench\run.ps1 -Action Build
+.\modules\autonomy\legacy\mona_bench\run.ps1 -Action Check
+.\modules\autonomy\legacy\mona_bench\run.ps1 -Action Graph
+.\modules\autonomy\legacy\mona_bench\run.ps1 -Action Smoke
 ```
 
 `Check`는 패키지·Python import·launch 그래프·CUDA·모델 파일 유무를 출력한다.
@@ -59,8 +62,8 @@ MoNA 전체 거리 보정·SLAM·경로 계획을 포함한 추론은 아직 검
 출력은 m 단위 거리다. 가중치는 저장소와 이미지에 넣지 않고 호스트에서 ONNX로 변환한다.
 
 ```powershell
-.\.venv-depth\Scripts\python.exe modules/autonomy/mona_bench/export_da2_onnx.py data/outputs/mona-bench/models
-.\.venv-depth\Scripts\python.exe modules/autonomy/mona_bench/export_da2_onnx.py data/outputs/mona-bench/models --precision fp32
+.\.venv-depth\Scripts\python.exe modules/autonomy/legacy/mona_bench/export_da2_onnx.py data/outputs/mona-bench/models
+.\.venv-depth\Scripts\python.exe modules/autonomy/legacy/mona_bench/export_da2_onnx.py data/outputs/mona-bench/models --precision fp32
 ```
 
 변환 스크립트는 revision `8078d68a9c75a972131914f6afd0c1723be0da7f`와
@@ -84,7 +87,7 @@ torch 2.11.0·transformers 4.57.6에서 두 번씩 변환한 해시가 같았다
 ## ONNX 영상 추론 확인
 
 ```powershell
-.\modules\autonomy\mona_bench\run.ps1 -Action Infer
+.\modules\autonomy\legacy\mona_bench\run.ps1 -Action Infer
 ```
 
 기존 웹 서버에서 0.3초 이내의 최신 영상을 GET으로 읽고 깊이를 추론한다(`-DepthModel`로 모델 선택).
@@ -132,8 +135,8 @@ SLAM은 이 전용 토픽을 사용하고, 깊이→포인트클라우드 처리
 웹 서버가 이미 최신 영상과 상태를 수신하고 있어야 한다.
 
 ```powershell
-.\modules\autonomy\mona_bench\run.ps1 -Action Capture -Seconds 30
-.\modules\autonomy\mona_bench\run.ps1 -Action Inspect -Bag C:\recordings\input.bag
+.\modules\autonomy\legacy\mona_bench\run.ps1 -Action Capture -Seconds 30
+.\modules\autonomy\legacy\mona_bench\run.ps1 -Action Inspect -Bag C:\recordings\input.bag
 ```
 
 녹화 중 **Enter**를 누르면 그 시점에서 멈추고 bag·입력 검사·`capture.json`까지 저장한다.
@@ -159,7 +162,7 @@ Ctrl+C도 같은 방식으로 저장한다. `-Seconds`는 최대 녹화 시간�
 ## 재생
 
 ```powershell
-.\modules\autonomy\mona_bench\run.ps1 -Action Replay -Bag C:\recordings\trial.bag
+.\modules\autonomy\legacy\mona_bench\run.ps1 -Action Replay -Bag C:\recordings\trial.bag
 ```
 
 ROS 1 bag에는 같은 시계의 `/tello/image_raw` (`sensor_msgs/Image`, 색상 영상)와
@@ -183,7 +186,7 @@ ROS 1 bag에는 같은 시계의 `/tello/image_raw` (`sensor_msgs/Image`, 색상
 ### 목표를 넣은 재생
 
 ```powershell
-.\modules\autonomy\mona_bench\run.ps1 -Action Replay -Bag C:\recordings\trial.bag -GoalForwardM 1
+.\modules\autonomy\legacy\mona_bench\run.ps1 -Action Replay -Bag C:\recordings\trial.bag -GoalForwardM 1
 ```
 
 `-GoalForwardM`은 재생 중 첫 `/sync/tf_odom` 자세에서 기체 x축(정면) 방향으로
@@ -482,7 +485,7 @@ MoNA 쪽은 이륙·착륙·비상정지를 요청하지 않는다.
 
 ```powershell
 .\.venv-depth\Scripts\python.exe modules\autonomy\tello_link\gateway_server.py
-.\modules\autonomy\mona_bench\run.ps1 -Action Live -Seconds 120 -GoalForwardM 5 -AutoStart
+.\modules\autonomy\legacy\mona_bench\run.ps1 -Action Live -Seconds 120 -GoalForwardM 5 -AutoStart
 ```
 
 게이트웨이 화면(http://127.0.0.1:8010)에서 영상을 켠다(지상에서는 60초 뒤 자동으로 꺼진다). `check_server.py`와
@@ -545,8 +548,8 @@ SLAM·경로·명령이 시작되지 않았다. 게이트웨이 기록에 관제
 ## 닫힌 고리 회피 시뮬레이션 (2026-11-06)
 
 ```powershell
-.\modules\autonomy\mona_bench\run.ps1 -Action Sim                 # 정면 4 m, 옆 제한 3 m
-.\modules\autonomy\mona_bench\run.ps1 -Action Sim -GoalForwardM 3 -MaxSideM 2
+.\modules\autonomy\legacy\mona_bench\run.ps1 -Action Sim                 # 정면 4 m, 옆 제한 3 m
+.\modules\autonomy\legacy\mona_bench\run.ps1 -Action Sim -GoalForwardM 3 -MaxSideM 2
 ```
 
 실기와 같은 계획기·궤적 서버·PID·바닥 제거(`launch/planner.launch`, live/replay가 함께 쓴다)에 `sim_world.py`를 붙인다.
@@ -993,7 +996,7 @@ Monodepth2 인코더에는 비상업 조건이 있으므로 재배포·상용 �
 ROS 및 실기 연결 없이 30프레임 이후에도 출력이 지속되는지 확인한다.
 
 ```powershell
-.\.venv-depth\Scripts\python.exe -B modules/autonomy/mona_bench/test_scale_filter.py data/outputs/mona-bench/stage-check-v3
+.\.venv-depth\Scripts\python.exe -B modules/autonomy/legacy/mona_bench/test_scale_filter.py data/outputs/mona-bench/stage-check-v3
 ```
 
 이 검사는 ROS 노드 간 연결, 학습 가중치의 성능이나 실기 회피 성능을 검증하지 않는다.

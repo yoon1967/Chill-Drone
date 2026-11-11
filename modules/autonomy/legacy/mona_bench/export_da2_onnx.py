@@ -1,8 +1,8 @@
 """Export Depth Anything V2 Metric Indoor Small to the fixed-shape ONNX used by onnx_depth.py.
 
 Run on the host (needs torch, transformers and onnx; not part of the ROS image):
-    python modules/autonomy/mona_bench/export_da2_onnx.py data/outputs/mona-bench/models
-    python modules/autonomy/mona_bench/export_da2_onnx.py data/outputs/mona-bench/models --precision fp32
+    python modules/autonomy/legacy/mona_bench/export_da2_onnx.py data/outputs/mona-bench/models
+    python modules/autonomy/legacy/mona_bench/export_da2_onnx.py data/outputs/mona-bench/models --precision fp32
 
 fp16 (default, needs a CUDA GPU to export) keeps float32 input/output and is about 1.7x faster on the
 RTX 4050 Laptop; fp32 is for CPU inference. Each run writes the .onnx, a .source.json with the pinned

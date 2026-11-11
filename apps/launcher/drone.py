@@ -2,7 +2,7 @@
 
 - 켜기 전에 빠진 패키지·모델·지도 콘솔 웹 의존성을 받는다(prepare.py).
 - 보조 프로그램은 숨겨 실행하고 실행기 창에서 상태를 안내한다.
-- 실기체는 게이트웨이 + 사람 탐지 + 지도 콘솔·지도 연결기 + 지도 자동 시작(mapkeeper.py) + MoNA 자율(드론이 붙은 뒤).
+- 실기체는 게이트웨이 + 사람 탐지 + 지도 콘솔·지도 연결기 + 지도 자동 시작(mapkeeper.py).
 - 실행기 창은 열어 둔다. Enter를 누르면 모두 끈다: 실기체가 공중이면 아무것도 끄지 않고, 땅이면 지도를 저장하고
   보조 프로그램을 정상 종료시킨다(게이트웨이가 회차 metrics.json·영상 조각을 마무리하게).
 """
@@ -12,7 +12,6 @@ import re
 import signal
 import subprocess
 import sys
-import threading
 import time
 import webbrowser
 
@@ -28,7 +27,6 @@ DRONE_UDP = (8889, 8890, 11111)   # Tello 명령·상태·영상. Tello는 처�
 GROUND = {'grounded', 'disconnected', 'emergency'}
 MODE_KO = {'disconnected': '연결 끊김', 'grounded': '지상', 'manual': '수동 비행', 'auto': '자율 탐색',
            'paused': '일시정지', 'landing': '착륙 중', 'emergency': '비상 정지'}
-MONA_RUN = ROOT / 'modules/autonomy/mona_bench/run.ps1'
 
 
 def say(text=''):
@@ -111,12 +109,6 @@ def bridge_cmd(map_url, gateway):
             '--gateway', gateway]
 
 
-def mona_cmd():
-    """MoNA 비행 모드: 경로는 운용자가 이륙 뒤 화면에서 "자율"을 눌러야 시작한다(그 전 속도 명령은 게이트웨이가 무시)."""
-    return ['powershell.exe', '-NoProfile', '-NonInteractive', '-ExecutionPolicy', 'Bypass', '-File', str(MONA_RUN),
-            '-Action', 'Live', '-Seconds', '3600', '-GoalForwardM', '5']
-
-
 def show_code():
     try:
         head = subprocess.run(['git', '-C', str(ROOT), 'log', '-1', '--format=%h %s'], capture_output=True,
@@ -182,49 +174,12 @@ def start_console(gateway, *, port=CONSOLE_PORT):
     return False
 
 
-def mona_running():
-    try:
-        return bool(subprocess.run(['docker', 'ps', '-q', '--filter', 'name=^mona-live$'], capture_output=True,
-                                   timeout=15, creationflags=winproc.CREATE_NO_WINDOW).stdout.strip())
-    except (OSError, subprocess.TimeoutExpired):
-        return False
-
-
-def start_mona_when_connected(gateway, stop, interval=2.0):
-    """드론이 붙으면 MoNA를 한 번 켠다(MoNA는 시작할 때 게이트웨이의 드론 상태를 확인한다)."""
-    def run():
-        while not stop.is_set():
-            st = state(gateway)
-            if is_gateway(st) and st.get('connected'):
-                if mona_running():
-                    return say('  MoNA는 이미 돌고 있어요(mona-live).')
-                if stop.is_set():
-                    return
-                process = winproc.start_service('mona-live', ROOT, mona_cmd())
-                say('  MoNA 시작 중. 비행 모드라 이륙 뒤 화면에서 "자율"을 눌러야 기체를 움직여요.')
-                connected = False
-                while not stop.wait(1):
-                    code = process.poll()
-                    if code is not None:
-                        if code:
-                            warn(f'MoNA 종료({code}). 로그: {winproc.service_log(ROOT, "mona-live")}')
-                        return
-                    if not connected and ((state(gateway) or {}).get('autonomy') or {}).get('connected'):
-                        connected = True
-                        say('  MoNA가 게이트웨이에 연결됐어요.')
-                return
-            stop.wait(interval)
-    thread = threading.Thread(target=run, name='mona-starter', daemon=True)
-    thread.start()
-    return thread
-
-
 def open_page(page, no_browser):
     if not no_browser and not webbrowser.open(page):
         say('       위 주소를 브라우저에서 여세요.')
 
 
-def wait_and_stop(keeper=None, stop_event=None, mona_starter=None):
+def wait_and_stop(keeper=None):
     """실행기 창을 열어 두고, Enter를 누르면 모두 끈다(실기체가 공중이면 끄지 않고 다시 기다린다)."""
     say()
     say('이 창을 열어 두세요(지도 유지). Enter를 누르면 모두 끕니다. 실기체가 공중이면 끄지 않아요.')
@@ -235,7 +190,7 @@ def wait_and_stop(keeper=None, stop_event=None, mona_starter=None):
             return 0
         except KeyboardInterrupt:
             pass
-        if run_stop(keeper=keeper, stop_event=stop_event, mona_starter=mona_starter) == 0:
+        if run_stop(keeper=keeper) == 0:
             time.sleep(4)   # 끈 결과를 읽을 시간
             return 0
         say('착륙한 뒤 다시 Enter를 누르세요.')
@@ -322,7 +277,7 @@ def phone_lines(port):
 
 
 def run_real(*, phone=False, no_browser=False, interactive=None):
-    say('=== 2 실기체 관제: 게이트웨이·사람 탐지·3D 지도·MoNA 자율 ===')
+    say('=== 2 실기체 관제: 게이트웨이·사람 탐지·3D 지도 ===')
     show_code()
     if not get_ready():
         return 1
@@ -361,9 +316,9 @@ def run_real(*, phone=False, no_browser=False, interactive=None):
     if connected:
         show_drone(connected)
     else:
-        warn('아직 드론이 안 붙었어요. 전원과 Wi-Fi를 확인하세요. 붙으면 나머지(MoNA 등)는 알아서 이어서 켜요.')
+        warn('아직 드론이 안 붙었어요. 전원과 Wi-Fi를 확인하세요. 붙으면 게이트웨이가 알아서 이어 가요.')
 
-    say('[4/5] 사람 탐지·3D 지도·MoNA')
+    say('[4/5] 사람 탐지·3D 지도')
     procs = winproc.processes()
     start_detect(procs, gateway)
     keeper = None
@@ -372,13 +327,6 @@ def run_real(*, phone=False, no_browser=False, interactive=None):
         keeper = mapkeeper.MapKeeper(gateway, url(CONSOLE_PORT), say)
         say('       지도: 영상이 켜지면(이륙하면 자동) 실행기가 지도를 시작하고 유지해요.')
         say('       지도 콘솔도 이 게이트웨이의 드론 연결을 보여 줘요(직접 연결 버튼 없음, 지도를 끝낼 땐 "지도 마무리").')
-    stop_event = threading.Event()
-    mona_starter = None
-    if mona_running() or prepare.docker_assets.mona_ready():
-        mona_starter = start_mona_when_connected(gateway, stop_event)
-        say('       MoNA: 드론이 붙으면 켜요(비행 모드: 이륙 뒤 화면에서 "자율"을 눌러야 움직임).')
-    else:
-        warn('MoNA 모델과 이미지가 필요합니다. 비행 전에 scripts/start.cmd prepare-flight를 실행해 주세요.')
 
     page = gateway + '/#/live'
     say('[5/5] 화면 열기')
@@ -397,14 +345,13 @@ def run_real(*, phone=False, no_browser=False, interactive=None):
     if interactive if interactive is not None else sys.stdin.isatty():
         if keeper:
             keeper.start()
-        return wait_and_stop(keeper, stop_event, mona_starter)
+        return wait_and_stop(keeper)
     say('  (창 입력이 없어 기다리지 않아요. 지도 자동 시작과 Enter 끄기는 실행기 창에서 실행할 때만 돼요.)')
     return 0
 
 
 # ---------- 모두 끄기(실행기 창에서 Enter) ----------
 STOP_ORDER = [   # (이름, 찾을 글자들, 기다릴 초)
-    ('MoNA 실행', ('mona_bench/run.ps1', '-Action Live'), 15),
     ('사람 탐지', ('gateway_ai_client',), 10),
     ('지도 연결기', ('gateway_map_bridge',), 10),
     ('가짜 지도', ('fake_map_server.py',), 10),
@@ -429,7 +376,7 @@ def stop_group(name, procs, wait_s):
     return True
 
 
-def run_stop(*, keeper=None, stop_event=None, mona_starter=None):
+def run_stop(*, keeper=None):
     say('=== 모두 끄기 ===')
     me = {os.getpid(), os.getppid()}
     procs = [p for p in winproc.processes() if p.pid not in me]
@@ -445,25 +392,9 @@ def run_stop(*, keeper=None, stop_event=None, mona_starter=None):
             say(f"  드론이 공중에 있어요({g}: {MODE_KO.get(st.get('mode'), st.get('mode'))}{busy}).")
         say('  아무것도 끄지 않았어요.')
         return 1
-    if stop_event:
-        stop_event.set()
-    if mona_starter:
-        mona_starter.join(timeout=20)
-        procs = [p for p in winproc.processes() if p.pid not in me]
     if keeper:
         keeper.stop()
     stopped = False
-    if mona_running():
-        try:
-            result = subprocess.run(['docker', 'stop', 'mona-live'], capture_output=True, timeout=60,
-                                    creationflags=winproc.CREATE_NO_WINDOW)
-            stopped = result.returncode == 0
-        except (OSError, subprocess.TimeoutExpired):
-            pass
-        if stopped:
-            say('       MoNA 자율: 껐어요')
-        else:
-            warn('MoNA 컨테이너 종료를 확인하지 못했어요. Docker Desktop의 mona-live 상태를 확인하세요.')
     previous = signal.signal(signal.SIGINT, signal.SIG_IGN)  # 이전 버전 서비스도 종료할 수 있다.
     try:
         for name, tokens, wait_s in STOP_ORDER:

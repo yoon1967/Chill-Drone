@@ -3,7 +3,6 @@ from pathlib import Path
 import os
 import tempfile
 import subprocess
-import threading
 import unittest
 from unittest.mock import patch
 
@@ -59,12 +58,6 @@ class CommandLineTests(unittest.TestCase):
             self.assertEqual(popen.call_args.kwargs['creationflags'], winproc.CREATE_NEW_CONSOLE)
             self.assertEqual(popen.call_args.kwargs['startupinfo'].wShowWindow, subprocess.SW_HIDE)
 
-    def test_mona_runs_in_flight_mode(self):
-        cmd = drone.mona_cmd()
-        self.assertNotIn('-AutoStart', cmd)   # 경로는 운용자가 이륙 뒤 "자율"을 눌러야 시작
-        self.assertEqual(cmd[cmd.index('-Seconds') + 1], '3600')
-
-
 class FakeModeTests(unittest.TestCase):
     def test_fake_drone_starts_everything_without_asking(self):
         with patch.object(drone, 'show_code'), \
@@ -117,19 +110,16 @@ class RealModeTests(unittest.TestCase):
                 patch.object(winproc, 'port_owners', return_value=list(owners)), \
                 patch.object(winproc, 'processes', return_value=[Proc(4242, 0, 'python check_server.py')]), \
                 patch('modules.mapping.data.model_assets.person_checkpoint') as checkpoint, \
-                patch.object(drone, 'mona_running', return_value=False), \
-                patch.object(drone.prepare.docker_assets, 'mona_ready', return_value=models_ready), \
-                patch.object(drone, 'start_mona_when_connected') as mona, \
                 patch.object(drone.mapkeeper, 'MapKeeper') as keeper, \
                 patch.object(drone, 'open_page') as page, \
                 patch.object(winproc, 'start_service') as window:
             checkpoint.return_value.is_file.return_value = models_ready
             checkpoint.return_value.__str__.return_value = 'yolo.pt'
             code = drone.run_real(interactive=False)
-        return code, [c.args[2] for c in window.call_args_list], mona, keeper, page
+        return code, [c.args[2] for c in window.call_args_list], keeper, page
 
     def test_everything_is_started_without_asking(self):
-        code, argvs, mona, keeper, page = self.run_real()
+        code, argvs, keeper, page = self.run_real()
         self.assertEqual(code, 0)
         self.assertEqual(len(argvs), 4)
         self.assertEqual(argvs[0][-2:], ['--port', '8010'])
@@ -137,77 +127,57 @@ class RealModeTests(unittest.TestCase):
         self.assertIn('modules.perception.inference.gateway_ai_client', argvs[1])
         self.assertEqual(argvs[2][-2:], ['--tello-gateway', 'http://127.0.0.1:8010'])
         self.assertEqual(argvs[3][-4:], ['--map', 'http://127.0.0.1:8790', '--gateway', 'http://127.0.0.1:8010'])
-        mona.assert_called_once()
         keeper.assert_called_once_with('http://127.0.0.1:8010', 'http://127.0.0.1:8790', drone.say)
         self.assertEqual(page.call_args.args[0], 'http://127.0.0.1:8010/#/live')
 
     def test_failed_preparation_stops_before_starting_anything(self):
-        code, argvs, mona, keeper, page = self.run_real(ready=False)
+        code, argvs, keeper, page = self.run_real(ready=False)
         self.assertEqual((code, argvs), (1, []))
-        mona.assert_not_called()
         keeper.assert_not_called()
         page.assert_not_called()
 
     def test_missing_models_do_not_block_controller_and_console(self):
-        code, argvs, mona, keeper, page = self.run_real(models_ready=False)
+        code, argvs, keeper, page = self.run_real(models_ready=False)
         self.assertEqual(code, 0)
         self.assertEqual(len(argvs), 3)
         self.assertTrue(any('apps/console/serve.py' in item.replace('\\', '/') for item in argvs[1]))
-        mona.assert_not_called()
         keeper.assert_called_once()
         page.assert_called_once()
 
     def test_drone_ports_in_use_stop_before_starting_anything(self):
-        code, argvs, mona, _, _ = self.run_real(owners=[('udp', 8889, 4242)])
+        code, argvs, _, _ = self.run_real(owners=[('udp', 8889, 4242)])
         self.assertEqual((code, argvs), (1, []))
-        mona.assert_not_called()
 
     def test_non_real_gateway_on_8010_is_refused(self):
-        code, argvs, _, _, _ = self.run_real(first_state={'type': 'drone_state', 'source': 'fake'})
+        code, argvs, _, _ = self.run_real(first_state={'type': 'drone_state', 'source': 'fake'})
         self.assertEqual((code, argvs), (1, []))
-
-
-class MonaStarterTests(unittest.TestCase):
-    def test_mona_starts_once_after_the_drone_connects(self):
-        states = iter([tello('disconnected', connected=False), tello('grounded')])
-        stop = threading.Event()
-        with patch.object(drone, 'state', side_effect=lambda base: next(states, tello('grounded'))), \
-                patch.object(drone, 'mona_running', return_value=False), \
-                patch.object(winproc, 'start_service') as window:
-            window.return_value.poll.return_value = 0
-            drone.start_mona_when_connected('http://127.0.0.1:8010', stop, interval=0.01).join(2)
-        self.assertEqual(window.call_count, 1)
-        self.assertEqual(window.call_args.args[2], drone.mona_cmd())
 
 
 class StopTests(unittest.TestCase):
     def run_stop(self, procs, states, keeper=None):
         sent = []
-        stop_event = threading.Event()
         with patch.object(drone.signal, 'signal'), \
                 patch.object(winproc, 'processes', return_value=procs), \
                 patch.object(drone, 'state', side_effect=lambda base: states.get(base)), \
-                patch.object(drone, 'mona_running', return_value=False), \
                 patch.object(winproc, 'alive', side_effect=lambda pid: pid not in sent), \
                 patch.object(winproc, 'send_ctrl_c', side_effect=sent.append), \
                 patch.object(winproc, 'kill_tree') as kill:
-            code = drone.run_stop(keeper=keeper, stop_event=stop_event)
-        return code, sent, kill, stop_event
+            code = drone.run_stop(keeper=keeper)
+        return code, sent, kill
 
     def test_nothing_is_stopped_while_a_real_drone_is_in_the_air(self):
         procs = [Proc(10, 0, 'python gateway_server.py --port 8010'),
                  Proc(20, 0, 'python -m modules.perception.inference.gateway_ai_client --gateway http://127.0.0.1:8010')]
         keeper = unittest.mock.Mock()
-        code, sent, kill, stop_event = self.run_stop(procs, {'http://127.0.0.1:8010': tello('auto')}, keeper)
+        code, sent, kill = self.run_stop(procs, {'http://127.0.0.1:8010': tello('auto')}, keeper)
         self.assertEqual((code, sent), (1, []))
         kill.assert_not_called()
         keeper.stop.assert_not_called()
-        self.assertFalse(stop_event.is_set())
 
     def test_map_console_gateway_in_the_air_also_blocks(self):
         procs = [Proc(30, 0, r'python C:\repo\apps\console\serve.py --enable-camera --port 8790 '
                              r'--tello-gateway http://127.0.0.1:8011')]
-        code, sent, _, _ = self.run_stop(procs, {'http://127.0.0.1:8011': tello('manual')})
+        code, sent, _ = self.run_stop(procs, {'http://127.0.0.1:8011': tello('manual')})
         self.assertEqual((code, sent), (1, []))
 
     def test_on_the_ground_map_is_saved_then_helpers_stop_first_gateway_last(self):
@@ -215,10 +185,9 @@ class StopTests(unittest.TestCase):
                  Proc(21, 0, 'python gateway_map_bridge.py --map http://127.0.0.1:8790 --gateway http://127.0.0.1:8010'),
                  Proc(20, 0, 'python -m modules.perception.inference.gateway_ai_client --gateway http://127.0.0.1:8010')]
         keeper = unittest.mock.Mock()
-        code, sent, kill, stop_event = self.run_stop(procs, {'http://127.0.0.1:8010': tello('grounded')}, keeper)
+        code, sent, kill = self.run_stop(procs, {'http://127.0.0.1:8010': tello('grounded')}, keeper)
         self.assertEqual(code, 0)
         keeper.stop.assert_called_once_with()
-        self.assertTrue(stop_event.is_set())
         self.assertEqual(sent, [20, 21, 10])
         kill.assert_not_called()
 
@@ -254,7 +223,7 @@ class CliTests(unittest.TestCase):
                 patch.object(cli.prepare, 'create_project_environment') as venv, \
                 patch.object(cli.drone, 'run_real') as real:
             self.assertEqual(cli.main(['real', '--no-browser']), 1)
-        self.host.assert_called_once_with(mona=False)
+        self.host.assert_called_once_with(docker=False)
         venv.assert_not_called()
         real.assert_not_called()
 

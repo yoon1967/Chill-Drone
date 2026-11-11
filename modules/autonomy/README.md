@@ -8,3 +8,4 @@
 ## 현재 들어 있는 것
 
 - [tello_link](tello_link/README.md): Tello EDU SDK 연결 모듈과 연결 점검 화면(S15P31B205-156, 이륙 없음). -207 ROS 2 드라이버에서 import해 쓰는 것을 전제로 한다.
+- [legacy](legacy/README.md): 지금은 쓰지 않는 자율비행 코드 보관(MoNA-Bench 장애물 회피). 실행기와 연결돼 있지 않다.
