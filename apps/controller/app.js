@@ -12,6 +12,7 @@ const ui = {
   live: false, ws: null, wsOpen: false, everOpen: false, state: null, timeline: [], seq: 0, cache: {}, view: null,
   findings: new Map(), lastDet: null, newFindingAt: 0,   // 실시간 사람 탐지: finding_id → 발견, 영상 위 윤곽선용 최근 탐지
   feed: loadPref("controller.feed", "raw") === "ai" ? "ai" : "raw",   // 영상 칸: raw(원본) / ai(사람 탐지 합성 영상). 합성이 끊기면 원본을 보여 준다
+  outline: loadPref("controller.outline", "on") !== "off",   // 영상 칸: 원본 위에 사람 윤곽선을 그릴지(보기 고르기, 이 브라우저에 기억)
   map3d: { mode: loadPref("map-mode", "3d"), host: null, view: null, revision: undefined, loading: false, has: false, editable: false },  // 3D 점군(지도 연결기)
   mapBig: loadPref("map-big", "0") === "1",   // 지도 칸을 가장 큰 칸(기본 프리셋은 영상)과 바꿔 크게 본다
   preset: new URLSearchParams(location.search).get("preset") || loadPref("controller.preset", ""),   // 실시간 감독 칸 배치(presets.js)
@@ -212,54 +213,62 @@ function alertBox(sc, events) {
 function videoControl(st) {
   const v = st.video;
   const on = v.on ?? !!v.available;  // 샘플에는 on이 없다
-  const [text, tone] = v.enabled === false ? ["영상 수신 안 함", "neutral"]
+  const lost = ui.live && !ui.wsOpen;   // 게이트웨이와 끊기면 마지막 값 대신 끊겼다고 적고 버튼을 잠근다
+  const [text, tone] = lost ? ["게이트웨이 끊김", "neutral"] : v.enabled === false ? ["영상 수신 안 함", "neutral"]
     : !on ? ["영상 꺼짐", "neutral"]
     : v.ground_s != null ? [v.ground_off_s != null ? `지상 ${Math.round(v.ground_s)}초 · ${Math.round(v.ground_off_s)}초에 꺼짐`
         : `지상 ${Math.round(v.ground_s)}초 켜짐${st.warnings.includes("video_on_ground") ? " · 발열 주의" : ""}`,
       st.warnings.includes("video_on_ground") ? "warning" : "neutral"]
     : ["영상 켜짐", "success"];
   const name = on ? "video_off" : "video_on";
-  const off = v.enabled === false || (on && st.mapping_console_url &&
+  const off = lost || v.enabled === false || (on && st.mapping_console_url &&
     (st.flight_busy === "takeoff" || ["manual", "auto", "paused", "landing"].includes(st.mode)));
   // 칩(초 단위로 바뀜)과 버튼을 다른 칸으로 둔다. 버튼이 매초 바뀌면 누르는 중에 사라져 클릭이 빠진다.
   return `<span class="video-ctl"><span data-part="videostate">${chip(text, tone)}</span>
     <span data-part="videobtn"><button data-cmd="${name}" class="${off ? "off" : ""}" ${off ? 'aria-disabled="true"' : ""}>${CMD_LABEL[name]}</button></span></span>`;
 }
 
-// 원본 / AI 합성 고르기. 합성 영상은 사람 탐지 프로그램이 게이트웨이 영상에 윤곽선·장면 분할을 그려 보낸 것이다.
-function feedSelect(st) {
+// 보기 고르기: 원본 / AI 합성, 그리고 원본 위 사람 윤곽선 켜고 끄기(AI 합성은 윤곽이 영상에 들어 있어 잠근다).
+// 합성 영상은 사람 탐지 프로그램이 게이트웨이 영상에 윤곽선·장면 분할을 그려 보낸 것이다.
+function feedSelect(st, aiOn) {
   const ai = st.overlay.alive;
   const btn = (key, label, off) => `<button data-feed="${key}" class="${off ? "off" : ""}" aria-pressed="${ui.feed === key}" ${off ? 'aria-disabled="true"' : ""}>${label}</button>`;
-  return `<span class="feed-sel" data-part="feedsel" role="group" aria-label="영상 고르기">${btn("raw", "원본", false)}${btn("ai", "AI 합성", !ai)}</span>`;
+  const outline = `<button class="mini outline-btn ${aiOn ? "off" : ""}" data-outline aria-pressed="${ui.outline}" ${aiOn ? 'aria-disabled="true"' : ""}
+    title="${aiOn ? "AI 합성 영상에는 윤곽선이 들어 있습니다" : "원본 영상 위에 사람 탐지 윤곽선을 그립니다"}">사람 윤곽</button>`;
+  return `<span class="view-sel" data-part="feedsel"><span class="feed-sel" role="group" aria-label="영상 고르기">${btn("raw", "원본", false)}${btn("ai", "AI 합성", !ai)}</span>${outline}</span>`;
+}
+
+// 영상이 없을 때 까닭. 게이트웨이와 끊기면 마지막 화면이 실시간처럼 보이지 않게 영상을 내린다.
+function videoWhy(st) {
+  if (!ui.live) return "샘플 화면 · 영상 없음";
+  if (!ui.wsOpen) return "게이트웨이와 끊겨 영상이 멈췄습니다 · 다시 연결되면 이어집니다";
+  if (st.video.enabled === false) return "영상 수신 안 함 · 게이트웨이를 영상 없이(--no-video) 켰습니다";
+  if (st.video.on === false) return "영상 꺼짐 · 지상에서 켜 두면 기체가 뜨거워집니다. 이륙하면 자동으로 켜집니다";
+  return "영상을 기다리는 중 · 아직 프레임이 오지 않았습니다";
 }
 
 function videoPanel(st, events, big = true) {
   const latest = events[0];
-  const aiOn = ui.live && st.video.available && ui.feed === "ai" && st.overlay.alive;
-  const box = aiOn ? "" : ui.live ? liveOutline() : latest && st.mode !== "grounded" ? (() => {
+  const showing = ui.live && ui.wsOpen && st.video.available;
+  const aiOn = showing && ui.feed === "ai" && st.overlay.alive;
+  const box = aiOn || !ui.outline || (ui.live && !ui.wsOpen) ? "" : ui.live ? liveOutline() : latest && st.mode !== "grounded" ? (() => {
     const [x1, y1, x2, y2] = latest.bbox_xyxy_px;
     const w = latest.image_width, h = latest.image_height;
     return `<div class="bbox" style="left:${(x1 / w) * 100}%;top:${(y1 / h) * 100}%;width:${((x2 - x1) / w) * 100}%;height:${((y2 - y1) / h) * 100}%">
       <span>사람 ${latest.confidence.toFixed(2)}</span></div>`;
   })() : "";
   const media = aiOn ? `<img class="feed" src="/overlay.mjpg" alt="사람 탐지 합성 영상">`
-    : ui.live && st.video.available
-    ? `<img class="feed" src="/video.mjpg" alt="드론 카메라 실시간 영상">`
-    : `<div class="placeholder">${!ui.live ? "영상 연결 전 · 960×720"
-      : st.video.enabled === false ? "영상 수신 안 함 · 게이트웨이가 --no-video로 실행됐습니다"
-      : st.video.on === false ? "영상 꺼짐 · 지상에서 켜 두면 기체가 뜨거워집니다. 이륙하면 자동으로 켜집니다"
-      : "영상 없음 · 게이트웨이가 아직 프레임을 받지 못했습니다"}</div>`;
-  const tof = st.front_tof.valid ? `앞 ${meters(st.front_tof.m)}` : "앞 거리 없음";
+    : showing ? `<img class="feed" src="/video.mjpg" alt="드론 카메라 실시간 영상">`
+    : `<div class="placeholder">${esc(videoWhy(st))}</div>`;
+  // 높이는 상태 카드에 있어 영상 위에는 앞 거리(확장 키트가 있을 때)만 적는다.
+  const front = st.front_tof.valid ? `<span class="overlay bl">앞 ${meters(st.front_tof.m)}</span>` : "";
+  const rate = !showing ? "" : aiOn ? `AI 합성 ${st.overlay.fps ?? "?"}fps · 원본 ${st.video.fps ?? "?"}fps`
+    : ui.feed === "ai" ? `원본 ${st.video.fps ?? "?"}fps · AI 합성 끊김` : `원본 ${st.video.fps ?? "?"}fps`;
   return `<section class="panel video ${big ? "" : "small"}" aria-label="드론 영상">
-    <header><h2>영상</h2>${src("video")}${chip(aiOn ? "합성: 사람 탐지" : "탐지 상자: 사람 탐지", "neutral", "src-inline")}${feedSelect(st)}${videoControl(st)}</header>
+    <header><h2>영상</h2><span class="src" title="이 칸을 채우는 파트">${aiOn ? "드론 영상 · 사람 탐지 합성" : "드론 영상 · 사람 탐지"}</span>${feedSelect(st, aiOn)}${videoControl(st)}</header>
     <div class="frame-wrap"><div class="frame">
       <div class="media" data-part="media">${media}</div>
-      <div class="overlays" data-part="overlay">${box}
-        <span class="overlay bl">${tof} · 높이 ${meters(st.height_m)}</span>
-        <span class="overlay br">${!st.video.available ? "영상 없음"
-          : aiOn ? `AI 합성 ${st.overlay.fps ?? "?"}fps · 원본 ${st.video.fps ?? "?"}fps`
-          : ui.live && ui.feed === "ai" ? `원본 ${st.video.fps ?? "?"}fps · AI 합성 끊김`
-          : `${st.video.fps ?? "?"}fps`}</span></div>
+      <div class="overlays" data-part="overlay">${box}${front}${rate ? `<span class="overlay br">${rate}</span>` : ""}</div>
     </div></div>
     ${big ? detailLine(st) : ""}
   </section>`;
@@ -647,11 +656,11 @@ function controlBar(st) {
 }
 
 function detailItems(st) {
-  const recv = st.link.state_hz != null ? `${st.link.state_hz}Hz · ${st.link.rtt_ms}ms`
+  const recv = ui.live && !ui.wsOpen ? "게이트웨이 끊김"
+    : st.link.state_hz != null ? `${st.link.state_hz}Hz · ${st.link.rtt_ms}ms`
     : st.state_age_s != null ? `${Math.round(st.state_age_s * 1000)}ms 전` : "없음";
-  return [
+  return [   // 높이(하방)는 상태 카드에 있어 뺀다
     ["온도", st.temp_high_c == null ? "없음" : `${st.temp_high_c}°C`],
-    ["하방", st.down_tof.valid ? meters(st.down_tof.m) : "없음"],
     ["전방", st.front_tof.valid ? meters(st.front_tof.m) : "없음"],
     ["상태 수신", recv],
     ["개입", `${st.operator_interventions ?? 0}회`],
@@ -1007,6 +1016,13 @@ document.addEventListener("click", (ev) => {
     document.querySelectorAll("[data-event]").forEach((el) => el.classList.toggle("sel", el.dataset.event === pick.dataset.event));
     return;
   }
+  const ol = ev.target.closest("[data-outline]");
+  if (ol) {
+    if (ol.classList.contains("off")) return toast("사람 윤곽: AI 합성 영상에는 윤곽선이 들어 있습니다");
+    ui.outline = !ui.outline;
+    savePref("controller.outline", ui.outline ? "on" : "off");
+    return render();
+  }
   const fb = ev.target.closest("[data-feed]");
   if (fb) {
     if (fb.classList.contains("off")) return toast("AI 합성: 사람 탐지 프로그램이 합성 영상을 보내고 있지 않습니다");
@@ -1027,7 +1043,8 @@ document.addEventListener("click", (ev) => {
   const name = b.dataset.cmd;
   if (name === "return_home") return toast("복귀는 자율 비행 쪽과 맞춘 뒤 연결합니다 (화면 자리만)");
   if (b.classList.contains("off")) {
-    const why = name === "auto_start" && ui.live ? "자율 비행이 연결되지 않았습니다"
+    const why = ui.live && !ui.wsOpen ? "게이트웨이에 연결되지 않았습니다"
+      : name === "auto_start" && ui.live ? "자율 비행이 연결되지 않았습니다"
       : name.startsWith("video_") ? REASON.video_disabled : "지금 상태에서는 할 수 없습니다";
     return toast(`${CMD_LABEL[name]}: ${why}`);
   }
