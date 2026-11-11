@@ -243,3 +243,6 @@ body[data-view=map] #app{flex:1;min-height:0;max-width:none;width:100%;padding:0
 .to-go{display:flex;align-items:center;gap:10px}.to-go>.muted{flex:1}
 button.primary{background:var(--accent);border-color:var(--accent);color:var(--on-accent);font-weight:700;padding:8px 20px}
 button.primary.off{background:var(--neutral-soft);border-color:var(--line);color:var(--muted)}
+/* 영상 칸 보기 고르기: 원본/AI 합성 + 사람 윤곽 켜고 끄기 */
+.view-sel{display:inline-flex;align-items:center;gap:6px;margin-left:8px}.view-sel .feed-sel{margin-left:0}
+.outline-btn{padding:3px 10px;font-size:12px}
