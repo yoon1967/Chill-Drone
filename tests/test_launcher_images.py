@@ -76,11 +76,7 @@ class ImageInputsTests(unittest.TestCase):
         write(self.root, {'Dockerfile': 'FROM scratch\nCOPY gone.txt /x\n'})
         self.assertIn('README.md', self.names())
 
-    def test_real_build_folders(self):   # 저장소의 MoNA·ORB-SLAM3 Dockerfile을 실제로 읽는다
-        mona = {p.relative_to(docker_assets.MONA_SOURCE).as_posix() for p in docker_assets.image_inputs(docker_assets.MONA_SOURCE)}
-        self.assertTrue({'Dockerfile', 'requirements.txt', 'upstream.lock.json', 'prepare_workspace.py',
-                         'runtime/gateway_bridge.py', 'runtime/live.sh'} <= mona, mona)
-        self.assertFalse({'README.md', 'run.ps1', 'export_da2_onnx.py'} & mona)
+    def test_real_build_folders(self):   # 저장소의 ORB-SLAM3 Dockerfile을 실제로 읽는다
         orb = {p.relative_to(docker_assets.ORB_SOURCE).as_posix() for p in docker_assets.image_inputs(docker_assets.ORB_SOURCE)}
         self.assertTrue({'Dockerfile', 'CMakeLists.txt', 'bridge.cpp', 'safe_sim3.hpp', 'apply_guard.cmake'} <= orb, orb)
 

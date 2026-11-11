@@ -27,7 +27,7 @@
 
 Windows에서는 `scripts/start.cmd`를 더블클릭해 1이나 2를 고른다([실행기 안내](../launcher/README.md)).
 1 체험(`scripts\start.cmd fake`)은 가짜 드론 + 사람 탐지 + 가짜 지도, 2 실기체 관제(`scripts\start.cmd real`)는 게이트웨이 +
-사람 탐지 + 3D 지도(자동 시작) + MoNA 자율을 모두 켠다. 끌 때는 실행기 창에서 Enter(실기체가 공중이면 끄지 않는다).
+사람 탐지 + 3D 지도(자동 시작)를 모두 켠다. 끌 때는 실행기 창에서 Enter(실기체가 공중이면 끄지 않는다).
 브라우저를 자동으로 열지 않으려면 `--no-browser`, 옵션 안내는 `--help`를 사용한다.
 
 허병우 팀원의 별도 자율비행 웹 서버는 `.\.venv\Scripts\python.exe -B infra\autonomy-web\launcher.py docker`(Docker) 또는

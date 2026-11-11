@@ -1,8 +1,6 @@
 """실행기 준비(apps/launcher/prepare.py): 빠진 패키지·모델·웹 의존성만 받기. 다운로드 없이."""
-from hashlib import sha256
 from pathlib import Path
 import subprocess
-import tempfile
 import unittest
 from unittest.mock import patch
 
@@ -12,22 +10,17 @@ from apps.launcher import docker_assets, prepare
 class HostCheckTests(unittest.TestCase):
     def test_docker_checks_read_only_and_explain_what_to_prepare(self):
         endpoint = 'npipe:////./pipe/dockerDesktopLinuxEngine'
-        wsl_engine = 'linux|6.6.87-microsoft-standard-WSL2'
-        for installed, replies, mona, hint in (
-            (False, [], False, 'Docker Desktop을 설치'),
-            (True, ['ssh://other-pc'], False, '이 PC의 Linux 엔진'),
-            (True, [endpoint, None], False, 'Linux 엔진이 시작'),
-            (True, [endpoint, 'windows|10.0'], False, 'Linux 컨테이너 모드'),
-            (True, [endpoint, 'linux|6.12-linuxkit'], True, 'WSL 2 기반 엔진'),
-            (True, [endpoint, wsl_engine, None], True, 'NVIDIA GPU 드라이버'),
-            (True, [endpoint, wsl_engine], False, None),
-            (True, [endpoint, wsl_engine, '591.44'], True, None),
+        for installed, replies, hint in (
+            (False, [], 'Docker Desktop을 설치'),
+            (True, ['ssh://other-pc'], '이 PC의 Linux 엔진'),
+            (True, [endpoint, None], 'Linux 엔진이 시작'),
+            (True, [endpoint, 'windows'], 'Linux 컨테이너 모드'),
+            (True, [endpoint, 'linux'], None),
         ):
-            with self.subTest(hint=hint, mona=mona), patch.dict(docker_assets.os.environ, clear=True), \
-                    patch.object(docker_assets.sys, 'platform', 'win32'), \
+            with self.subTest(hint=hint), patch.dict(docker_assets.os.environ, clear=True), \
                     patch.object(docker_assets, 'installed_program', return_value=installed), \
                     patch.object(docker_assets, 'probe', side_effect=replies) as probe:
-                problem = docker_assets.docker_problem(mona=mona)
+                problem = docker_assets.docker_problem()
                 if hint:
                     self.assertIn(hint, problem)
                 else:
@@ -154,8 +147,6 @@ class ModelAndWebTests(unittest.TestCase):
                 patch.object(prepare, 'ensure_models', return_value=True) as models, \
                 patch.object(prepare, 'ensure_console_web', return_value=True), \
                 patch.object(docker_assets, 'ensure_image', return_value=True) as build, \
-                patch.object(docker_assets, 'ensure_mona_model', return_value=True), \
-                patch.object(docker_assets, 'probe', return_value=None), \
                 patch.object(docker_assets.subprocess, 'call', return_value=0) as docker:
             self.assertTrue(prepare.ensure_all())
             models.assert_not_called()
@@ -164,31 +155,8 @@ class ModelAndWebTests(unittest.TestCase):
             self.assertTrue(prepare.prepare_flight())
         models.assert_called_once()
         self.assertEqual([item.args[0] for item in build.call_args_list],
-                         [docker_assets.ORB_IMAGE, docker_assets.MONA_IMAGE])
-        self.assertEqual(docker.call_args.args[0][:5], ['docker', 'run', '--rm', '--gpus', 'all'])
-
-    def test_mona_reuses_verified_model_and_never_publishes_invalid_export(self):
-        payload = b'verified model'
-
-        def export(command, **_):
-            (Path(command[-1]) / docker_assets.DA_V2_FP16_FILE).write_bytes(payload)
-            return 0
-
-        with tempfile.TemporaryDirectory() as folder, \
-                patch.object(docker_assets, 'MONA_OUTPUT', Path(folder)), \
-                patch.object(docker_assets, 'DA_V2_FP16_SHA256', sha256(payload).hexdigest()), \
-                patch.object(docker_assets, 'export_python', return_value='python'), \
-                patch.object(docker_assets.subprocess, 'call', side_effect=export) as call:
-            self.assertTrue(docker_assets.ensure_mona_model())
-            self.assertTrue(docker_assets.ensure_mona_model())
-            call.assert_called_once()
-            model = Path(folder) / 'models' / docker_assets.DA_V2_FP16_FILE
-            model.write_bytes(b'broken existing file')
-            payload = b'invalid export'
-            self.assertFalse(docker_assets.ensure_mona_model())
-            self.assertEqual(model.read_bytes(), b'broken existing file')
-            self.assertEqual(list(model.parent.iterdir()), [model])
-
+                         [docker_assets.ORB_IMAGE])
+        docker.assert_not_called()
 
 if __name__ == '__main__':
     unittest.main()

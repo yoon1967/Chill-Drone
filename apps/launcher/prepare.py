@@ -27,17 +27,17 @@ def console_install_command():
     return [npx, '--yes', 'pnpm@10'] if npx else None
 
 
-def check_host(*, mona):
+def check_host(*, docker):
     """호스트 설정을 바꾸거나 프로젝트 파일을 만들지 않고 확인한다."""
     problems = []
     if sys.version_info[:2] != (3, 12) or sys.maxsize <= 2**32:
         problems.append('Python 3.12(64비트)를 설치해 주세요. https://www.python.org/downloads/windows/')
     if not console_web_ready() and not console_install_command():
         problems.append(NODE_INSTALL_HINT)
-    if mona:
-        docker = docker_assets.docker_problem(mona=True)
-        if docker:
-            problems.append(docker)
+    if docker:
+        problem = docker_assets.docker_problem()
+        if problem:
+            problems.append(problem)
     if problems:
         print('[실행 전 확인] 이 PC에 필요한 설정이 있습니다.', flush=True)
         for problem in problems:
@@ -154,7 +154,6 @@ def ensure_all():
 
 
 def prepare_flight():
-    """실시간 지도, 사람 탐지, MoNA에 필요한 파일을 요청한 경우에 준비한다."""
+    """실시간 지도와 사람 탐지에 필요한 파일을 요청한 경우에 준비한다."""
     return (ensure_all() and ensure_models()
-            and docker_assets.ensure_image(docker_assets.ORB_IMAGE, docker_assets.ORB_SOURCE)
-            and docker_assets.ensure_mona())
+            and docker_assets.ensure_image(docker_assets.ORB_IMAGE, docker_assets.ORB_SOURCE))

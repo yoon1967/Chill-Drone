@@ -13,7 +13,7 @@ param([ValidateSet('Build','Check','Graph','Smoke','Capture','Infer','Inspect','
       [switch]$AutoStart,
       [switch]$NoLandOnFinish)
 $ErrorActionPreference='Stop'
-$repoRoot=(Resolve-Path (Join-Path $PSScriptRoot '../../..')).Path
+$repoRoot=(Resolve-Path (Join-Path $PSScriptRoot '../../../..')).Path
 $outputRoot=Join-Path $repoRoot 'data/outputs/mona-bench'
 New-Item -ItemType Directory -Force -Path $outputRoot | Out-Null
 if ($Action -eq 'Build') {
