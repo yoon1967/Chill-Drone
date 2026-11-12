@@ -7,6 +7,7 @@
 - 드론 상태 sensor.jsonl(받은 시각), 모드 변화·영상 켜고 끔 events.jsonl
 - 영상 video/part_NNNN.h264 + 색인(패킷을 받은 시각대로 같은 디코더에 넣는다. 영상 원본이 없는 회차는 영상 없음)
 - 사람 탐지 detections.jsonl·detections/(발견은 기록된 finding_id로 다시 묶는다, 영상 위 윤곽선용 detection 메시지)
+  확인·오탐(review 줄)은 그 시각에 detection_review로 다시 보내고 발견 목록에도 싣는다. 재생 중에는 바꿀 수 없다(409)
 - 3D 지도 map/snapshots(없으면 map/latest.json 하나)
 - 자율 autonomy/: 위치·경로·찾은 사람·임무 상태·연결
 시간은 원래 회차의 UTC 시각 그대로 흐른다(`--replay-speed`, `--replay-loop`). drone_state.replay에 재생 위치가 있다.
@@ -101,8 +102,9 @@ class Recording:
         vids = [(t, e["detail"]) for t, e in zip(self.event_t, self.events)
                 if e.get("type") == "gateway_video" and (e.get("detail") or {}).get("ok")]
         self.video_t, self.video_on = [v[0] for v in vids], [v[1] for v in vids]
-        det = [r for r in _jsonl(os.path.join(run_dir, "detections.jsonl")) if r.get("type") == "event"]
-        self.det_t, self.dets = _timed(det, "received_at")
+        det_rows = _jsonl(os.path.join(run_dir, "detections.jsonl"))
+        self.det_t, self.dets = _timed([r for r in det_rows if r.get("type") == "event"], "received_at")
+        self.review_t, self.reviews = _timed([r for r in det_rows if r.get("type") == "review" and r.get("finding_id")], "at")
         self.map_t, self.map_files, self.map_lines = self._maps()
         a = os.path.join(run_dir, "autonomy")
         self.pose_t, self.poses = _timed(_jsonl(os.path.join(a, "pose.jsonl")), "at")
@@ -112,8 +114,8 @@ class Recording:
         self.parts = self._video_parts()
         if not self.sensor_t and not self.event_t:
             raise ValueError(f"재생할 상태·이벤트가 없다: {run_dir}")
-        lists = [self.sensor_t, self.event_t, self.det_t, self.map_t, self.pose_t, self.path_t, self.people_t, self.auto_t,
-                 [p["start"] for p in self.parts], [p["end"] for p in self.parts]]
+        lists = [self.sensor_t, self.event_t, self.det_t, self.review_t, self.map_t, self.pose_t, self.path_t, self.people_t,
+                 self.auto_t, [p["start"] for p in self.parts], [p["end"] for p in self.parts]]
         self.t0 = min(ts[0] for ts in lists if ts)
         self.t1 = max(ts[-1] for ts in lists if ts)
 
@@ -283,7 +285,7 @@ class ReplayGateway:
         self._stop = threading.Event()
         self._thread: threading.Thread | None = None
         self._last_wall: float | None = None
-        self._event_i = self._det_i = 0
+        self._event_i = self._det_i = self._review_i = 0
         self._map_file: str | None = None
         self._video_input: str | None = None
 
@@ -317,7 +319,7 @@ class ReplayGateway:
         """재생 시각이 지난 사건을 화면에 보낸다(모드·영상 변화, 사람 탐지, 지도 새 버전). 되감기면 처음부터 센다."""
         t = self.clock.wall()
         if self._last_wall is not None and t < self._last_wall:
-            self._event_i = self._det_i = 0
+            self._event_i = self._det_i = self._review_i = 0
             self._map_file = None
             self._emit({"schema_version": SCHEMA_VERSION, "type": "event", "at": now_iso(t), "kind": "replay_restarted",
                         "detail": {"run_id": self.rec.run_id}})
@@ -340,6 +342,11 @@ class ReplayGateway:
                 self._emit({"schema_version": SCHEMA_VERSION, "type": "detection", "at": r.get("received_at"), "event": r["event"],
                             "finding": finding, "latency_ms": r.get("latency_ms"),
                             "photo_url": f"/api/detections/{r['event']['event_id']}.jpg" if r.get("photo") else None})
+        while self._review_i < len(rec.reviews) and rec.review_t[self._review_i] <= t:
+            r = rec.reviews[self._review_i]
+            self._review_i += 1
+            self._emit({"schema_version": SCHEMA_VERSION, "type": "detection_review", "at": r.get("at"),
+                        "finding_id": r["finding_id"], "review": r.get("review"), "previous": r.get("previous")})
         snap_file = _at(rec.map_t, rec.map_files, t)[0]
         if snap_file and snap_file != self._map_file:
             self._map_file = snap_file
@@ -469,7 +476,8 @@ class _Detections:
             seen = r.get("frame_time") or r.get("received_at")
             g = groups.get(fid)
             if g is None:
-                g = groups[fid] = {"finding_id": fid, "first_seen": seen, "events": 0, "max_people": 0, "best": None}
+                g = groups[fid] = {"finding_id": fid, "first_seen": seen, "events": 0, "max_people": 0, "best": None,
+                                   "review": "unreviewed", "review_at": None}
             g["last_seen"] = seen
             g["events"] += 1
             g["max_people"] = max(g["max_people"], len(people))
@@ -479,6 +487,11 @@ class _Detections:
                 g["best"] = {"event_id": ev["event_id"], "frame_id": ev.get("frame_id"), "confidence": best["confidence"],
                              "people": len(people), "image": ev.get("image"), "detections": people, "seen_at": seen,
                              "drone": r.get("drone"), "photo_url": f"/api/detections/{ev['event_id']}.jpg" if r.get("photo") else None}
+        upto = bisect.bisect_right(self.rec.review_t, self.gw.clock.wall())   # 재생 시각까지의 확인·오탐(마지막 것이 지금 값)
+        for r in self.rec.reviews[:upto]:
+            g = groups.get(r["finding_id"])
+            if g is not None and r.get("review"):
+                g["review"], g["review_at"] = r["review"], r.get("at")
         return groups
 
     def finding_at(self, fid: str, n: int) -> dict | None:
@@ -505,6 +518,9 @@ class _Detections:
         return 409, {"ok": False, "reason": "replay_source"}
 
     def put_photo(self, event_id: str, jpeg: bytes):
+        return 409, {"ok": False, "reason": "replay_source"}
+
+    def set_review(self, finding_id: str, review):
         return 409, {"ok": False, "reason": "replay_source"}
 
     def photo_path(self, event_id: str) -> str | None:

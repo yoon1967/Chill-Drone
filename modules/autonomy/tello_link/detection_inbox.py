@@ -7,7 +7,9 @@
 - 사람이 없는 이벤트도 모두 기록한다(탐지가 동작 중이었다는 근거). 화면에는 사람이 있을 때만 보낸다.
 - 발견: 사람이 GAP_S 넘게 안 보이다 다시 보이면 새 발견. 사람 구분(추적)은 하지 않는다. 대표 사진은 신뢰도가 가장 높은 장면.
 - 사진 저장은 발견마다 초당 1장까지, 대표 장면이 바뀌면 항상 저장한다.
-회차 폴더: detections.jsonl(이벤트마다 한 줄), detections/<event_id>.jpg
+- 확인·오탐: 사람(화면)이 발견마다 고른 판단(`review`: unreviewed·confirmed·false_positive)을 여기 둔다.
+  모든 화면에 `detection_review`로 알리고 회차 기록에 남긴다. 저장에 실패하면 되돌린다(화면과 기록이 어긋나지 않게).
+회차 폴더: detections.jsonl(이벤트마다 한 줄, 확인·오탐은 type review 줄), detections/<event_id>.jpg
 """
 
 from __future__ import annotations
@@ -35,6 +37,7 @@ PHOTO_MIN_INTERVAL_S = 1.0  # 발견마다 사진 저장 최소 간격(대표 �
 ALIVE_S = 2.0               # 이벤트가 이 시간 안에 왔으면 탐지 동작 중
 MAX_IMAGE_BYTES = 3_000_000
 SEEN_IDS = 5000             # 중복 판정에 기억하는 event_id 수
+REVIEWS = ("unreviewed", "confirmed", "false_positive")   # 발견마다 사람이 고르는 판단(처음은 unreviewed)
 
 
 class DetectionInbox:
@@ -174,6 +177,32 @@ class DetectionInbox:
         return {"schema_version": SCHEMA_VERSION, "detection_schema": DETECTION_SCHEMA,
                 "findings": findings, "status": self.status()}
 
+    # ---------- 확인·오탐 ----------
+    def set_review(self, finding_id: str, review) -> tuple[int, dict]:
+        """화면이 고른 확인·오탐. (HTTP 상태, 응답). 200 저장(같은 값이면 changed false), 400 모르는 값, 404 모르는 발견, 500 저장 실패.
+        바뀌면 회차 기록에 남기고 모든 화면에 detection_review로 알린다. 기록에 못 남기면 되돌린다."""
+        if review not in REVIEWS:
+            return 400, {"ok": False, "reason": "invalid_review", "detail": f"review must be one of {', '.join(REVIEWS)}"}
+        at = _iso(time.time())
+        with self._lock:
+            finding = next((f for f in self.findings if f["finding_id"] == finding_id), None)
+            if finding is None:
+                return 404, {"ok": False, "reason": "unknown_finding"}
+            previous, previous_at = finding["review"], finding["review_at"]
+            if previous == review:
+                return 200, {"ok": True, "finding_id": finding_id, "review": review, "review_at": previous_at, "changed": False}
+            finding["review"], finding["review_at"] = review, at
+        try:
+            self._append("review", {"at": at, "finding_id": finding_id, "review": review, "previous": previous})
+        except OSError as e:
+            with self._lock:
+                if finding["review_at"] == at:   # 그사이 다른 화면이 다시 바꾸지 않았으면 되돌린다
+                    finding["review"], finding["review_at"] = previous, previous_at
+            return 500, {"ok": False, "reason": "store_failed", "detail": str(e)}
+        self.emit({"schema_version": SCHEMA_VERSION, "type": "detection_review", "at": at,
+                   "finding_id": finding_id, "review": review, "previous": previous})
+        return 200, {"ok": True, "finding_id": finding_id, "review": review, "review_at": at, "changed": True}
+
     # ---------- 내부 ----------
     def _update_finding(self, event, record, frame, now) -> tuple[dict, bool]:
         self.person_events += 1
@@ -182,7 +211,7 @@ class DetectionInbox:
         current = self.findings[-1] if self.findings else None
         if current is None or self._last_person_mono is None or now - self._last_person_mono > GAP_S:
             current = {"finding_id": f"finding-{len(self.findings) + 1:04d}", "first_seen": _iso(seen_at),
-                       "events": 0, "max_people": 0, "best": None}
+                       "events": 0, "max_people": 0, "best": None, "review": "unreviewed", "review_at": None}
             self.findings.append(current)
         self._last_person_mono = now
         current["last_seen"] = _iso(seen_at)

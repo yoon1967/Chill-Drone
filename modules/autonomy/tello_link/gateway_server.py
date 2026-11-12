@@ -11,6 +11,7 @@
 - GET /snapshot.jpg        최신 프레임 1장 + 헤더 X-Input-Id·X-Frame-Id·X-Frame-Time (탐지 결과 연결용)
 - POST /api/detections    사람 탐지 이벤트(person-detection-event/1.0). 기본은 같은 PC에서만 받는다
 - GET  /api/detections    발견 목록·탐지 상태, GET·PUT /api/detections/<event_id>.jpg 사진
+- POST /api/detections/<finding_id>/review  확인·오탐(화면에서 사람이 고름). 모든 화면에 detection_review로 알리고 회차 기록에 남긴다
 - PUT /api/perception/overlay.jpg  AI 합성 영상 1장(헤더 X-Input-Id·X-Frame-Id = 원본 프레임). 같은 PC에서만
 - GET /overlay.mjpg        AI 합성 영상(최신 장만). 2초 넘게 안 오면 보내지 않는다
 - POST /api/map           3D 지도(gateway-map/0.1, 지도 연결기 gateway_map_bridge.py). 탐지와 같이 기본은 같은 PC에서만 받는다
@@ -52,6 +53,7 @@ DEFAULT_LOG_ROOT = os.path.join(REPO_ROOT, "data", "outputs", "tello")
 CONTROLLER_DIR = os.path.join(REPO_ROOT, "apps", "controller")
 STATE_PERIOD_S = 0.1
 MAX_EVENT_BYTES = 1_000_000
+MAX_REVIEW_BYTES = 1_000     # 확인·오탐 한 건({"review": ...})
 MAX_MAP_BYTES = 16_000_000   # 점 6만 개 × 한 줄 약 60바이트 + 여유
 LOCAL_HOSTS = ("127.0.0.1", "::1", "localhost")
 GRACEFUL_STOP_S = 3   # 끄기(Ctrl+C) 뒤 남은 요청을 기다리는 최대 시간. 넘으면 끊고 회차를 닫는다(metrics.json)
@@ -346,6 +348,20 @@ def build_app(args) -> FastAPI:
         if not detection_sender_ok(request):
             return JSONResponse({"ok": False, "reason": "not_local"}, 403)
         status, out = await asyncio.to_thread(gw.detections.put_photo, event_id, await request.body())
+        return JSONResponse(out, status)
+
+    @app.post("/api/detections/{finding_id}/review")
+    async def review_finding(finding_id: str, request: Request):
+        """확인·오탐 {"review": "confirmed" | "false_positive" | "unreviewed"}. 조종 화면과 같이 어느 화면이든 보낸다(인증 없음).
+        기록 재생에서는 409 replay_source(기록된 확인·오탐을 그대로 보여 준다)."""
+        body = await request.body()
+        if len(body) > MAX_REVIEW_BYTES:
+            return JSONResponse({"ok": False, "reason": "too_large"}, 413)
+        try:
+            review = json.loads(body).get("review")
+        except (ValueError, AttributeError):
+            return JSONResponse({"ok": False, "reason": "invalid_json"}, 400)
+        status, out = await asyncio.to_thread(gw.detections.set_review, finding_id, review)
         return JSONResponse(out, status)
 
     @app.put("/api/perception/overlay.jpg")

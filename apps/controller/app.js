@@ -8,7 +8,8 @@
 const S = window.SAMPLE;
 const $ = (sel, root = document) => root.querySelector(sel);
 const ui = {
-  scenario: "person", reviews: {},      // reviews: event_id → confirmed / false_positive
+  scenario: "person", reviews: {},      // 샘플의 확인·오탐: event_id → confirmed / false_positive(실시간은 게이트웨이가 발견마다 둔다)
+  reviewPending: {},                    // 실시간: 게이트웨이에 보내는 중인 확인·오탐(finding_id → 값). 응답이 오면 지운다
   live: false, ws: null, wsOpen: false, everOpen: false, state: null, timeline: [], seq: 0, cache: {}, view: null,
   findings: new Map(), lastDet: null, newFindingAt: 0,   // 실시간 사람 탐지: finding_id → 발견, 영상 위 윤곽선용 최근 탐지
   feed: loadPref("controller.feed", "raw") === "ai" ? "ai" : "raw",   // 영상 칸: raw(원본) / ai(사람 탐지 합성 영상). 합성이 끊기면 원본을 보여 준다
@@ -109,18 +110,25 @@ function current() {
   return { sc, st: adapt(sc.state), events: events.reverse(), track: S.track.filter((p) => p.t_s <= tNow) };   // 샘플에 없는 값(overlay 등)도 "없음"으로
 }
 
-// 게이트웨이 발견(finding)을 카드 모양으로. 실시간은 발견 하나가 카드 하나다(같은 사람이 보이는 동안 묶임).
+// 실시간 발견 번호는 게이트웨이가 매긴 발견 번호(finding-0003 → 3번)다. 화면마다 받은 순서가 달라도(목록을 받기 전에
+// 새 발견이 먼저 오는 등) 모든 화면에서 같은 번호·같은 순서가 되게 한다. 번호를 못 읽으면 받은 순서.
+const findingSeq = (id) => +(/(\d+)$/.exec(id || "")?.[1] || 0);
+
+// 게이트웨이 발견(finding)을 카드 모양으로(최신순). 실시간은 발견 하나가 카드 하나다(같은 사람이 보이는 동안 묶임).
 function liveFindings() {
-  return [...ui.findings.values()].reverse().map((f, i, all) => {
+  const list = [...ui.findings.values()].map((f, i) => [f, findingSeq(f.finding_id) || i + 1]).sort((a, b) => b[1] - a[1]);
+  return list.map(([f, n]) => {
     const b = f.best, det = b.detections.reduce((a, d) => (d.confidence > a.confidence ? d : a));
     return {
-      event_id: f.finding_id, n: all.length - i, confidence: b.confidence, people: f.max_people, events: f.events,
+      event_id: f.finding_id, n, confidence: b.confidence, people: f.max_people, events: f.events,
       bbox_xyxy_px: det.bbox_xyxy_px, image_width: b.image.width_px, image_height: b.image.height_px,
       seen_at: f.first_seen, last_seen: f.last_seen, frame_id: b.frame_id, photo_url: b.photo_url, drone: b.drone,
-      review: ui.reviews[f.finding_id] || "unreviewed",
+      review: ui.reviewPending[f.finding_id] || f.review || "unreviewed",   // 보내는 중이면 누른 값을 먼저 보인다
     };
   });
 }
+
+const findingNumberOf = (id) => findingSeq(id) || [...ui.findings.keys()].indexOf(id) + 1;   // 카드와 같은 번호
 
 const findingNo = (e) => e.n ?? S.events.findIndex((x) => x.event_id === e.event_id) + 1;
 const findingTime = (e) => (e.seen_at ? hhmmss(e.seen_at) : clock(e.pts_us / 1e6));
@@ -322,12 +330,16 @@ function detectionCard(e, big = false) {
       <div class="det-title">사람 · 신뢰도 ${e.confidence.toFixed(2)} ${chip(state[0], state[1])}</div>
       <div class="muted">${findingTime(e)}${more}</div>
       ${where}
-      <div class="det-actions">
-        <button data-review="confirmed" ${e.review === "confirmed" ? 'aria-pressed="true"' : ""}>확인</button>
-        <button data-review="false_positive" ${e.review === "false_positive" ? 'aria-pressed="true"' : ""}>오탐</button>
-      </div>
+      <div class="det-actions">${reviewButtons(e)}</div>
     </div>
   </article>`;
+}
+
+// 확인·오탐 버튼. 실시간에서 게이트웨이와 끊겼거나 기록 재생이면 흐리게 두고, 누르면 까닭을 알린다(sendReview).
+function reviewButtons(e) {
+  const locked = !ui.live ? "" : !ui.wsOpen ? "게이트웨이에 연결되지 않았습니다" : ui.state?.replay ? "기록 재생 중에는 바꿀 수 없습니다" : "";
+  const b = (value, label) => `<button data-review="${value}"${locked ? ` class="off" title="${locked}"` : ""} aria-pressed="${e.review === value}">${label}</button>`;
+  return b("confirmed", "확인") + b("false_positive", "오탐");
 }
 
 // 탐지 프로그램이 게이트웨이에 결과를 보내고 있는지. 사람이 없어도 결과는 계속 온다.
@@ -1117,6 +1129,8 @@ function onMessage(msg) {
     toast(`${REASON[msg.reason] || msg.reason}${failed ? `: ${failed}` : ""}`);
   } else if (msg.type === "detection") {
     onDetection(msg);
+  } else if (msg.type === "detection_review") {
+    onReview(msg);
   } else if (msg.type === "event") {
     const d = msg.detail || {};
     if (msg.kind === "cmd_ignored") return render();   // 자율이 auto가 아닐 때 보낸 이동 명령(1초에 한 번까지). 기록에는 남기지 않는다
@@ -1142,7 +1156,7 @@ function onDetection(msg) {
   ui.findings.set(f.finding_id, f);
   if (isNew) {
     ui.newFindingAt = Date.now();
-    const n = ui.findings.size, top = ui.timeline[0], conf = f.best.confidence;
+    const n = findingNumberOf(f.finding_id), top = ui.timeline[0], conf = f.best.confidence;
     if (top?.group) {   // 바로 앞 줄도 사람 발견이면 그 줄에 묶는다(시각은 마지막 발견)
       Object.assign(top.group, { last: n, count: top.group.count + 1, best: Math.max(top.group.best, conf) });
       top.time = hhmmss(f.first_seen);
@@ -1150,6 +1164,38 @@ function onDetection(msg) {
       logLine({ time: hhmmss(f.first_seen), kind: "detection", group: { first: n, last: n, count: 1, best: conf } });
     }
   }
+}
+
+// 확인·오탐은 게이트웨이가 발견마다 저장하고 모든 화면에 알린다(이 화면에서 누른 것도 이 메시지로 기록에 남는다).
+const REVIEW_WORD = { confirmed: "확인", false_positive: "오탐으로 표시", unreviewed: "미확인으로 되돌림" };
+function onReview(msg) {
+  const f = ui.findings.get(msg.finding_id);
+  if (!f) return;   // 아직 받지 못한 발견: 다시 연결할 때 목록(GET /api/detections)으로 함께 받는다
+  Object.assign(f, { review: msg.review, review_at: msg.at });
+  logLine({ time: hhmmss(msg.at), kind: "review", text: `발견 ${findingNumberOf(msg.finding_id)}번 ${REVIEW_WORD[msg.review] || msg.review}` });
+}
+
+// 확인·오탐 보내기. 누르면 바로 바뀌어 보이고(보내는 중), 게이트웨이가 저장하면 그 값으로, 못 하면 되돌리고 알린다.
+// 같은 버튼을 다시 누르면 미확인으로 되돌린다. 기록 재생은 기록된 확인·오탐만 보여 주므로 바꿀 수 없다.
+async function sendReview(id, pick) {
+  const f = ui.findings.get(id);
+  if (!f) return;
+  if (!ui.wsOpen) return toast("게이트웨이에 연결되지 않았습니다");
+  if (ui.state?.replay) return toast("기록 재생 중에는 확인·오탐을 바꿀 수 없습니다 · 기록된 확인·오탐을 보여 줍니다");
+  const review = (ui.reviewPending[id] || f.review || "unreviewed") === pick ? "unreviewed" : pick;
+  ui.reviewPending[id] = review;
+  render();
+  try {
+    const r = await fetch(`/api/detections/${encodeURIComponent(id)}/review`, {
+      method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ review }) });
+    const out = await r.json().catch(() => ({}));
+    if (!r.ok || !out.ok) throw new Error(out.reason || String(r.status));
+    Object.assign(f, { review: out.review, review_at: out.review_at });
+  } catch (e) {
+    toast("확인·오탐을 저장하지 못했습니다 · 게이트웨이 연결을 확인하고 다시 눌러 주세요");
+  }
+  if (ui.reviewPending[id] === review) delete ui.reviewPending[id];   // 그사이 다시 누른 값이 있으면 그것을 기다린다
+  render();
 }
 
 async function loadFindings() {  // 화면을 새로 열거나 다시 연결했을 때 그동안의 발견
@@ -1220,7 +1266,8 @@ document.addEventListener("click", (ev) => {
   const rv = ev.target.closest("[data-review]");
   if (rv) {
     const id = rv.closest("[data-event]").dataset.event;
-    ui.reviews[id] = ui.reviews[id] === rv.dataset.review ? "unreviewed" : rv.dataset.review;
+    if (ui.live) return sendReview(id, rv.dataset.review);   // 실시간: 게이트웨이에 저장(모든 화면이 같이 본다)
+    ui.reviews[id] = ui.reviews[id] === rv.dataset.review ? "unreviewed" : rv.dataset.review;   // 샘플: 이 브라우저 안에서만
     return render();
   }
   const pick = ev.target.closest(".det[data-event], .mark[data-event]");
