@@ -137,7 +137,11 @@ main{max-width:1280px;margin:0 auto;padding:16px 20px 90px;display:grid;gap:12px
 .timeline{list-style:none;margin:0;padding:0;display:grid;gap:6px}
 .timeline li{display:flex;gap:10px;font-size:13px;padding:6px 8px;border-left:3px solid var(--line);background:var(--bg);border-radius:0}
 .timeline li.detection{border-left-color:var(--person)}.timeline li.intervention{border-left-color:var(--warning)}.timeline li.mode{border-left-color:var(--accent)}
-.timeline time{color:var(--muted);font-variant-numeric:tabular-nums}
+.timeline li.link{border-left-color:var(--danger)}
+.timeline time{flex:none;color:var(--muted);font-variant-numeric:tabular-nums;white-space:nowrap}
+.timeline li>span{min-width:0}
+/* 탐색 결과: 비행 기록이 길어도 옆 3D 지도 칸 높이쯤에서 기록 안만 스크롤한다(페이지가 끝없이 길어지지 않게) */
+.review-grid .timeline{max-height:360px;overflow-y:auto;align-content:start;overscroll-behavior:contain}
 .phone{max-width:430px;margin:0 auto;width:100%;display:grid;gap:12px}
 .big-grid{display:grid;grid-template-columns:1fr 1fr;gap:10px}
 button.big{height:64px;font-size:17px;font-weight:700;border-radius:12px}

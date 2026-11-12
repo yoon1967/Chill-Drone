@@ -53,6 +53,19 @@ const REASON = {
 };
 const VIDEO_REASON = { operator: "화면", takeoff: "이륙", ground_timeout: "지상 오래 켜짐", link_lost: "드론 연결 끊김" };
 const CHECK = { sdk: "SDK 모드", state: "상태 수신", battery: "배터리", temp: "온도", operator: "주변 확인" };  // 거절 사유 이름
+// 비행 기록에 적는 까닭: 게이트웨이 조종권 관리자(mode_arbiter)가 모드를 바꾼 까닭과 자율 비행이 보낸 임무 까닭을 쉬운 말로.
+// 모르는 코드는 그대로 적는다(지어내지 않는다).
+const WHY = {
+  takeoff: "이륙", land: "착륙 명령", landed: "착륙 끝", emergency: "비상 정지 명령", emergency_stopped: "비상 정지 뒤 멈춤",
+  pause: "일시정지 명령", resume: "다시 시작 명령", auto_start: "자율 시작 명령", auto_stop: "자율 종료 명령",
+  takeover: "넘겨받기", joystick_takeover: "조이스틱으로 넘겨받기",
+  state_lost: "드론 상태 끊김", state_ok: "드론 상태 다시 받음", battery_low: "배터리 부족", overheat: "과열",
+  autonomy_disconnected: "자율 연결 끊김", autonomy_timeout: "자율 응답 없음", autonomy_rejected: "자율이 시작을 거절",
+  autonomy_land: "자율이 착륙 요청", emergency_request: "자율이 비상 요청(제자리 멈춤)",
+  mission_arrived: "임무 끝(도착)", mission_failed: "임무 실패",
+  route_done: "경로 끝", goal_reached: "목표 도착", operator_stop: "사람이 멈춤", pose_not_ready: "위치가 아직 준비되지 않음",
+};
+const reasonText = (code) => (code == null ? "" : WHY[code] || code);
 
 const esc = (s) => String(s).replace(/[&<>"]/g, (c) => ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;" })[c]);
 const pct = (v) => (v == null ? "없음" : `${Math.round(v * 100)}%`);
@@ -147,7 +160,8 @@ function partStates(st, events) {
     : ["warning", "기다림", "영상을 켰지만 아직 프레임이 없습니다"];
   const ds = ui.live ? detectStatus() : null;
   const detect = !ui.live ? (events.length ? ["success", "", "샘플 발견"] : ["neutral", "연결 전", "샘플"])
-    : ds.alive ? ["success", "", ds.text] : ds.ever ? ["warning", "끊김", ds.text] : ["neutral", "연결 전", ds.text];
+    : ds.alive ? ["success", "", ds.text] : ds.idle ? ["neutral", ds.ever ? "쉼" : "연결 전", ds.text]
+    : ds.ever ? ["warning", "끊김", ds.text] : ["neutral", "연결 전", ds.text];
   const mi = ui.live ? mapInfo(st.map, ui.map3d.has) : null;
   const map = !ui.live ? ["neutral", "샘플", "샘플 화면은 지도에 연결하지 않습니다"]
     : [mi[1], mi[1] === "success" ? "" : mi[0].replace(/^지도 /, ""), mi[2] || mi[0]];   // 설명이 있으면 설명만(짧은 말과 겹치지 않게)
@@ -301,11 +315,11 @@ function detectionCard(e, big = false) {
   const where = !big ? ""
     : e.seen_at ? `<div class="muted">그때 드론: ${(MODE[e.drone?.mode] || ["없음"])[0]} · 높이 ${meters(e.drone?.height_m)} · 사람 위치는 아직 없음</div>`
     : `<div class="muted">발견 위치: 그때 드론 위치 (${poseAt(e.pts_us / 1e6).x_m.toFixed(1)}, ${poseAt(e.pts_us / 1e6).y_m.toFixed(1)}) m · 사람 위치는 아직 없음</div>`;
-  const more = e.seen_at ? ` · ${e.people > 1 ? `최대 ${e.people}명 · ` : ""}${e.events}장` : ` · ${esc(e.frame_id)}`;
+  const more = e.seen_at ? ` · ${e.people > 1 ? `최대 ${e.people}명 · ` : ""}${e.events}번 봄` : ` · ${esc(e.frame_id)}`;   // 이 발견으로 묶인 탐지 장면 수
   return `<article class="det ${big ? "big" : ""} ${e.review}" data-event="${esc(e.event_id)}" tabindex="0">
     ${thumb}
     <div class="det-body">
-      <div class="det-title">사람 · ${e.confidence.toFixed(2)} ${chip(state[0], state[1])}</div>
+      <div class="det-title">사람 · 신뢰도 ${e.confidence.toFixed(2)} ${chip(state[0], state[1])}</div>
       <div class="muted">${findingTime(e)}${more}</div>
       ${where}
       <div class="det-actions">
@@ -317,19 +331,30 @@ function detectionCard(e, big = false) {
 }
 
 // 탐지 프로그램이 게이트웨이에 결과를 보내고 있는지. 사람이 없어도 결과는 계속 온다.
+// 영상이 꺼져 있으면 탐지는 영상을 기다리므로 끊김이 아니라 쉼이다. 게이트웨이와 끊기면 마지막 상태 대신 끊겼다고 적는다.
 function detectStatus() {
   const d = ui.state?.detection;
+  if (ui.live && !ui.wsOpen) return { text: "게이트웨이 끊김", tone: "neutral", alive: false, ever: !!d?.events, lost: true };
   if (d?.alive) return { text: `탐지 동작 중 · ${d.events_per_s}장/s`, tone: "success", alive: true, ever: true };
+  if (!ui.state?.video?.available) {   // 영상이 없으면 탐지도 볼 것이 없다(탐지가 켜져 있어도 결과를 안 보낸다)
+    const off = ui.state?.video?.on === false;
+    const word = off ? "영상 꺼짐" : "영상 기다림";
+    return { text: d?.events ? `${word} · 탐지 쉼` : word, tone: "neutral", alive: false, ever: !!d?.events, idle: true, off };
+  }
   if (d?.events) return { text: "탐지 끊김", tone: "warning", alive: false, ever: true };
   return { text: "탐지 연결 전", tone: "neutral", alive: false, ever: false };
 }
 
 function detectionList(events, big = false) {
   const ds = ui.live ? detectStatus() : null;
+  // 빈 칸: 무엇을 기다리는지와 할 일을 쉬운 말로(프로그램 이름 대신). 받은 발견은 끊겨도 그대로 둔다.
   const empty = !ui.live ? "아직 발견한 사람이 없습니다. 탐지 결과가 오면 최신순으로 쌓입니다."
-    : ds.alive ? "탐지 동작 중 · 아직 발견한 사람이 없습니다."
-    : ds.ever ? "탐지 결과가 끊겼습니다. 탐지 프로그램을 확인하세요."
-    : "사람 탐지가 아직 연결되지 않았습니다. 탐지 프로그램이 게이트웨이 영상을 받아 결과를 보내면 발견이 최신순으로 쌓입니다.";
+    : ds.lost ? "게이트웨이에 연결되지 않았습니다 · 연결되면 발견이 최신순으로 쌓입니다"
+    : ds.alive ? "탐지 동작 중 · 아직 발견한 사람이 없습니다"
+    : ds.idle ? (ds.ever ? "영상이 없어 탐지가 쉬고 있습니다 · 영상이 다시 들어오면 이어서 봅니다"
+      : `${ds.off ? "영상이 꺼져 있습니다 · 영상을 켜면" : "영상을 기다리는 중입니다 · 영상이 들어오면"} 사람 탐지가 영상을 보고 발견을 보냅니다`)
+    : ds.ever ? "사람 탐지 결과가 끊겼습니다 · 실행기로 켜면 함께 켜집니다"
+    : "사람 탐지가 아직 연결되지 않았습니다 · 실행기로 켜면 함께 켜지고, 발견은 최신순으로 쌓입니다";
   const body = events.length ? events.map((e) => detectionCard(e, big)).join("") : `<p class="empty">${esc(empty)}</p>`;
   return `<section class="panel dets ${big ? "big" : ""}" data-part="dets" aria-label="발견 목록">
     <header><h2>발견</h2>${src("detect")}${ds ? chip(ds.text, ds.tone, "src-inline") : ""}</header>
@@ -805,7 +830,7 @@ function detailItems(st) {
     ["전방", st.front_tof.valid ? meters(st.front_tof.m) : "없음"],
     ["상태 수신", recv],
     ["개입", `${st.operator_interventions ?? 0}회`],
-    ["미션", st.mission ? `${st.mission.state} · ${PHASE[st.mission.phase] || st.mission.phase}` : "없음"],
+    ["임무", st.mission ? PHASE[st.mission.phase] || st.mission.phase || "없음" : "없음"],   // 자율 비행 내부 단계(state)는 코드라 적지 않는다
   ];
 }
 
@@ -936,14 +961,27 @@ function renderReview() {
     </div>`;
 }
 
-// 비행 기록: 모드 바뀜·자율 연결·발견·거절 등. 실시간은 게이트웨이 이벤트를 모은 것(최근 200개), 샘플은 지금 시각까지.
+// 비행 기록: 모드 바뀜·자율 연결·발견·거절·게이트웨이 끊김. 실시간은 게이트웨이 이벤트를 모은 것(최근 200개), 샘플은 지금 시각까지.
+// 까닭은 코드 대신 쉬운 말(WHY)로 적고, 이어진 사람 발견은 한 줄로 묶는다(발견 하나하나는 발견 칸에 있다).
+function logLine(entry) {
+  ui.timeline.unshift(entry);
+  ui.timeline.length = Math.min(ui.timeline.length, 200);
+}
+
+const findingsText = (g) => (g.count === 1 ? `사람 발견 ${g.first}번 · 신뢰도 ${g.best.toFixed(2)}`
+  : `사람 발견 ${g.count}건 · ${g.first}~${g.last}번 · 가장 높은 신뢰도 ${g.best.toFixed(2)}`);
+
 function timelinePanel(track) {
+  const li = (kind, time, text) => `<li class="${kind}"><time>${esc(time)}</time><span>${esc(text)}</span></li>`;
   const tl = ui.live
-    ? ui.timeline.map((x) => `<li class="${x.kind}"><time>${esc(x.time)}</time>${esc(x.text)}</li>`).join("")
-    : S.timeline.filter((x) => x.t_s <= (track[track.length - 1]?.t_s ?? 0))
-      .map((x) => `<li class="${x.kind}"><time>${clock(x.t_s)}</time>${esc(x.text)}</li>`).join("");
-  return `<section class="panel timeline-panel" data-part="timeline" aria-label="비행 기록"><header><h2>비행 기록</h2>${src("drone")}</header>
-    <ol class="timeline">${tl || '<li class="empty">기록 없음</li>'}</ol></section>`;
+    ? ui.timeline.map((x) => li(x.kind, x.time, x.group ? findingsText(x.group) : x.text)).join("")
+    : S.timeline.filter((x) => x.t_s <= (track[track.length - 1]?.t_s ?? 0)).map((x) => li(x.kind, clock(x.t_s), x.text)).join("");
+  const empty = !ui.live ? "기록 없음"
+    : !ui.wsOpen ? "게이트웨이에 연결되지 않았습니다 · 연결되면 이륙·모드 바뀜·발견·거절이 시각과 함께 쌓입니다"
+    : "아직 기록이 없습니다 · 이륙·모드 바뀜·발견·거절이 시각과 함께 쌓입니다";
+  return `<section class="panel timeline-panel" data-part="timeline" aria-label="비행 기록"><header><h2>비행 기록</h2>
+    <span class="src" title="이 칸을 채우는 파트">드론 · 자율 비행 · 사람 탐지</span></header>
+    <ol class="timeline">${tl || `<li class="empty">${esc(empty)}</li>`}</ol></section>`;
 }
 
 function renderControl() {
@@ -1082,18 +1120,17 @@ function onMessage(msg) {
   } else if (msg.type === "event") {
     const d = msg.detail || {};
     if (msg.kind === "cmd_ignored") return render();   // 자율이 auto가 아닐 때 보낸 이동 명령(1초에 한 번까지). 기록에는 남기지 않는다
-    const text = msg.kind === "mode_changed" ? `${(MODE[d.from] || [d.from])[0]} → ${(MODE[d.to] || [d.to])[0]} (${d.reason})`
-      : msg.kind === "safety_landing" ? `안전 착륙: ${d.reason}`
+    const text = msg.kind === "mode_changed" ? `${(MODE[d.from] || [d.from])[0]} → ${(MODE[d.to] || [d.to])[0]} · ${reasonText(d.reason)}`
+      : msg.kind === "safety_landing" ? `안전 착륙: ${reasonText(d.reason)}`
       : msg.kind === "video_changed" ? `영상 ${d.on ? "켜짐" : "꺼짐"} (${VIDEO_REASON[d.reason] || d.reason})`
       : msg.kind === "autonomy_connected" ? `자율 연결 (${d.ground_origin ? "지상에서" : "공중에서 붙어 자율 시작 불가"})`
       : msg.kind === "autonomy_disconnected" ? "자율 연결 끊김"
-      : msg.kind === "mission_finished" ? `임무 끝: ${d.phase === "arrived" ? "도착" : "실패"}${d.reason ? ` (${d.reason})` : ""}`
-      : msg.kind === "command_rejected" ? `${CMD_LABEL[d.name] || d.name} 거절: ${REASON[d.reason] || d.reason}${d.detail ? ` (${d.detail})` : ""}` : msg.kind;
+      : msg.kind === "mission_finished" ? `임무 끝: ${d.phase === "arrived" ? "도착" : "실패"}${d.reason ? ` · ${reasonText(d.reason)}` : ""}`
+      : msg.kind === "command_rejected" ? `${CMD_LABEL[d.name] || d.name} 거절: ${REASON[d.reason] || d.reason}${d.detail ? ` · ${reasonText(d.detail)}` : ""}` : msg.kind;
     const kind = msg.kind === "mode_changed" || msg.kind.startsWith("autonomy") || msg.kind === "mission_finished" ? "mode"
       : msg.kind === "video_changed" ? "video" : "intervention";
-    ui.timeline.unshift({ time: hhmmss(msg.at), kind, text });
-    ui.timeline.length = Math.min(ui.timeline.length, 200);
-    if (msg.kind === "safety_landing") toast(`안전 착륙: ${d.reason}`);
+    logLine({ time: hhmmss(msg.at), kind, text });
+    if (msg.kind === "safety_landing") toast(`안전 착륙: ${reasonText(d.reason)}`);
     if (msg.kind === "video_changed" && d.reason === "ground_timeout") toast("지상에서 영상이 오래 켜져 있어 껐습니다 (기체 발열)");
   }
   render();
@@ -1105,8 +1142,13 @@ function onDetection(msg) {
   ui.findings.set(f.finding_id, f);
   if (isNew) {
     ui.newFindingAt = Date.now();
-    ui.timeline.unshift({ time: hhmmss(f.first_seen), kind: "detection", text: `사람 발견 ${f.best.confidence.toFixed(2)} (${ui.findings.size}번)` });
-    ui.timeline.length = Math.min(ui.timeline.length, 200);
+    const n = ui.findings.size, top = ui.timeline[0], conf = f.best.confidence;
+    if (top?.group) {   // 바로 앞 줄도 사람 발견이면 그 줄에 묶는다(시각은 마지막 발견)
+      Object.assign(top.group, { last: n, count: top.group.count + 1, best: Math.max(top.group.best, conf) });
+      top.time = hhmmss(f.first_seen);
+    } else {
+      logLine({ time: hhmmss(f.first_seen), kind: "detection", group: { first: n, last: n, count: 1, best: conf } });
+    }
   }
 }
 
@@ -1122,9 +1164,16 @@ async function loadFindings() {  // 화면을 새로 열거나 다시 연결했�
 function connect() {
   const ws = new WebSocket(`${location.protocol === "https:" ? "wss" : "ws"}://${location.host}/ws/drone`);
   ui.ws = ws;
-  ws.onopen = async () => { ui.wsOpen = ui.everOpen = true; await loadFindings(); render(); };
+  const now = () => hhmmss(new Date().toISOString());
+  ws.onopen = async () => {
+    if (ui.everOpen && !ui.wsOpen) logLine({ time: now(), kind: "link", text: "게이트웨이 다시 연결" });   // 끊긴 사이는 기록이 비어 있다
+    ui.wsOpen = ui.everOpen = true; await loadFindings(); render();
+  };
   ws.onmessage = (ev) => { try { onMessage(JSON.parse(ev.data)); } catch (e) { /* 잘못된 메시지는 무시 */ } };
-  ws.onclose = () => { ui.wsOpen = false; resetOperator(); render(); setTimeout(connect, 1000); };
+  ws.onclose = () => {
+    if (ui.wsOpen) logLine({ time: now(), kind: "link", text: "게이트웨이 끊김 · 다시 연결하는 중" });   // 다시 붙기를 시도할 때마다 적지 않는다
+    ui.wsOpen = false; resetOperator(); render(); setTimeout(connect, 1000);
+  };
 }
 
 async function detectGateway() {
