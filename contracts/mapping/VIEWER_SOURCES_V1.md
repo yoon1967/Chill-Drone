@@ -125,10 +125,13 @@ scene에는 그 결과에 결합된 객체만 사용한다. 두 출력 디렉터
 
 `POST /api/saved/roomform?asset=ID`는 저장된 점군에 대해 로컬 추론 작업을 시작한다.
 `asset`은 `/api/saved/run`에서 사용하는 가져오기 ID이며, 명시적으로 실행한 `--result`는 생략한다.
-동일한 저장 버전에 대해 실행 중이거나 최근 완료한 작업은 같은 `id`를 반환한다.
+콘솔은 시작 요청에 `id`(32자리 소문자 16진수)를 지정한다. 같은 `id`로 재요청하면 작업을 재사용한다.
+같은 저장 버전의 완료 결과가 있으면 해당 결과의 `id`를 반환할 수 있다. `id`를 생략한 기존 호출도 지원한다.
 요청에는 콘솔의 `X-Mapping-Client: 1` 헤더와 동일 출처 제한이 적용된다.
 
-`GET /api/saved/roomform?id=ID`는 `status`(`running`, `complete`, `failed`), `tiles_done`, `tiles_total`을 반환한다.
+다른 지도를 선택하면 `POST /api/saved/roomform?action=cancel&id=ID`에 시작 시 지정한 `id`를 보낸다.
+취소는 작업이 다음 중단 지점에 도달해 종료되면 응답한다. 완료한 결과는 보존한다.
+`GET /api/saved/roomform?id=ID`는 `status`(`running`, `cancelling`, `cancelled`, `complete`, `failed`), `tiles_done`, `tiles_total`을 반환한다.
 완료 응답의 `result`는 `roomform-surface/1.0`이며 `origin`, `up`, `scale_estimated`, `device`, `surfaces`를 포함한다.
 `surfaces`의 벽(`wall`), 바닥(`floor`), 천장(`ceiling`)은 각각 `quads`개 사각형과 base64 `positions`를 갖는다.
 좌표는 원본 축과 단위에서 `origin`을 뺀 little-endian float32 XYZ이며, 사각형마다 네 꼭짓점이 둘레 순서로 저장된다.

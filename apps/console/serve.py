@@ -832,11 +832,20 @@ class ViewerHandler(BaseHTTPRequestHandler):
             self.json_response({'error': 'roomform_runtime_missing'}, 503)
             return
         query = parse_qs(urlsplit(self.path).query)
+        key = query.get('id', [None])[0]
         if self.command == 'GET':
             try:
-                self.json_response(self.roomform.status(query.get('id', [''])[0]))
+                self.json_response(self.roomform.status(key))
             except RoomformError as error:
                 self.json_response({'error': str(error)}, 404)
+            return
+
+        cancel = query.get('action') == ['cancel']
+        if (cancel or key is not None) and not re.fullmatch(r'[0-9a-f]{32}', key or ''):
+            self.json_response({'error': 'roomform_job_id_invalid'}, 400)
+            return
+        if cancel:
+            self.json_response(self.roomform.cancel(key))
             return
 
         asset = query.get('asset', [None])[0]
@@ -853,7 +862,7 @@ class ViewerHandler(BaseHTTPRequestHandler):
             status = inside(root, (result / 'status.json').relative_to(root).as_posix())
             if not scene.is_file() or load_json(status).get('status') not in {'complete', 'partial'}:
                 raise ValueError('roomform_source_unavailable')
-            self.json_response(self.roomform.start(scene), 202)
+            self.json_response(self.roomform.start(scene, key), 202)
         except RoomformError as error:
             self.json_response({'error': str(error)}, 409 if str(error) == 'roomform_busy' else 503)
         except (OSError, ValueError, TypeError, KeyError):
