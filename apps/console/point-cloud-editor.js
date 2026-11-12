@@ -171,11 +171,13 @@ function createViewport(host, cloud) {
   };
 }
 
-async function requestRoomform(query, signal, start = false) {
+async function requestRoomform(query, {signal, method = 'GET', timeout = 15000} = {}) {
+  const deadline = AbortSignal.timeout(timeout);
   const response = await fetch('/api/saved/roomform?' + new URLSearchParams(query), {
     cache: 'no-store',
-    signal: AbortSignal.any([signal, AbortSignal.timeout(15000)]),
-    ...(start ? {method: 'POST', headers: {'X-Mapping-Client': '1'}} : {}),
+    method,
+    signal: signal ? AbortSignal.any([signal, deadline]) : deadline,
+    ...(method === 'POST' ? {headers: {'X-Mapping-Client': '1'}} : {}),
   });
   const value = await response.json();
   if (!response.ok || value.status === 'failed') {
@@ -184,11 +186,16 @@ async function requestRoomform(query, signal, start = false) {
   return value;
 }
 
+function cancelRoomform(id) {
+  return requestRoomform({action: 'cancel', id}, {method: 'POST', timeout: 60000});
+}
+
 export function connectRoomformViewer() {
   const $ = id => document.getElementById('editor-' + id);
   const panel = document.getElementById('point-editor');
   const placeholder = document.getElementById('edit-placeholder');
   let current, view, pending, result, mode = 'original';
+  let activeJobId, cancellation;
   let modelRequest, modelStream, modelState;
 
   function showModel({status, percent = 0}) {
@@ -266,6 +273,11 @@ export function connectRoomformViewer() {
     stopModelCheck();
     pending?.abort();
     pending = null;
+    if (activeJobId) {
+      const id = activeJobId;
+      activeJobId = null;
+      cancellation = {id, done: cancelRoomform(id).then(() => true, () => false)};
+    }
     current = result = null;
     view?.dispose();
     view = null;
@@ -286,10 +298,24 @@ export function connectRoomformViewer() {
     $('restore').textContent = 'AI 복원 중';
     $('progress').hidden = false;
     $('progress').removeAttribute('value');
-    $('status').textContent = 'Roomform 준비 중';
     try {
-      let job = await requestRoomform(current.asset ? {asset: current.asset} : {}, signal, true);
-      while (job.status === 'running') {
+      if (cancellation) {
+        const previous = cancellation;
+        $('status').textContent = '이전 영상의 AI 복원 취소 중';
+        if (!await previous.done) {
+          signal.throwIfAborted();
+          await cancelRoomform(previous.id);
+        }
+        if (cancellation === previous) cancellation = null;
+      }
+      signal.throwIfAborted();
+      $('status').textContent = 'Roomform 준비 중';
+      activeJobId ??= crypto.randomUUID().replaceAll('-', '');
+      const query = {id: activeJobId};
+      if (current.asset) query.asset = current.asset;
+      let job = await requestRoomform(query, {signal, method: 'POST'});
+      while (job.status === 'running' || job.status === 'cancelling') {
+        signal.throwIfAborted();
         if (job.tiles_total) {
           $('progress').max = job.tiles_total;
           $('progress').value = job.tiles_done;
@@ -297,13 +323,18 @@ export function connectRoomformViewer() {
         }
         await new Promise(resolve => setTimeout(resolve, 600));
         signal.throwIfAborted();
-        job = await requestRoomform({id: job.id}, signal);
+        job = await requestRoomform({id: job.id}, {signal});
       }
-      if (job.status !== 'complete' || !job.result) {
+      if (job.status === 'complete' && !job.result) {
         // A cached POST returns job metadata only, like a newly started job.
-        job = await requestRoomform({id: job.id}, signal);
+        job = await requestRoomform({id: job.id}, {signal});
       }
       signal.throwIfAborted();
+      activeJobId = null;
+      if (job.status === 'cancelled') {
+        $('status').textContent = 'AI 복원 취소됨';
+        return;
+      }
       view.showResult(job.result);
       result = job.result;
       $('roomform-view').hidden = false;
@@ -311,6 +342,7 @@ export function connectRoomformViewer() {
       show('roomform');
     } catch (error) {
       if (!signal.aborted) {
+        if (error.cause) activeJobId = null;
         if (error.cause === 'roomform_checkpoint_missing') modelState = 'missing';
         else $('status').textContent = error.name === 'TimeoutError'
           ? '응답이 지연됐습니다. AI 복원하기를 눌러 작업 상태를 다시 확인하세요.' : error.message;

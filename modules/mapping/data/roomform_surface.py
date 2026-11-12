@@ -167,19 +167,22 @@ def reconstruct_roomform(scene, checkpoint, progress):
     keys = np.floor((xyz - base) / step).astype(np.int64)
     cells, counts = np.unique(keys, axis=0, return_counts=True)
     tiles = cells[counts >= 16]
-    if not len(tiles):
+    tile_count = len(tiles)
+    if not tile_count:
         raise RoomformError('roomform_too_few_points')
-    progress(0, len(tiles))
+    progress(0, tile_count)
     model, cfg = load_checkpoint(str(checkpoint), device)
     by_kind = defaultdict(list)
     with TemporaryDirectory(prefix='mapping-roomform-') as folder:
         folder = Path(folder)
         for index, cell in enumerate(tiles):
+            progress(index, tile_count)
             low, high = base + cell * step, base + (cell + 1) * step
             keep = np.all((xyz >= low - context) & (xyz < high + context), axis=1)
             scan = folder / 'tile.npz'
             np.savez(scan, pts=xyz[keep], pts_color=colors[keep])
             evidence = build_evidence(str(scan), str(folder / 'evidence.npz'), cfg.vox_m)
+            progress(index, tile_count)
             features = torch.from_numpy(build_input(evidence, cfg))[None].to(device)
             with torch.inference_mode(), torch.autocast(device, dtype=torch.float16, enabled=device == 'cuda'):
                 outputs = model(features)
@@ -198,7 +201,7 @@ def reconstruct_roomform(scene, checkpoint, progress):
                     quads = quads[np.all((centers >= low) & (centers < high), axis=1)]
                     if len(quads):
                         by_kind[kind].append(_join_quads(quads, cfg.vox_m))
-            progress(index + 1, len(tiles))
+        progress(tile_count, tile_count)
     if not by_kind:
         raise RoomformError('roomform_no_surfaces')
     surfaces = {}

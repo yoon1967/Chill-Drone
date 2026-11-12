@@ -65,20 +65,35 @@ test('controller restores a saved point cloud with Roomform inside the map conso
       const quad = {quads: 1, positions: packed.toString('base64')};
       const shell = {schema_version: 'roomform-surface/1.0', origin: [0, 0, 0], up: [0, 1, 0],
         scale_estimated: true, surfaces: {wall: quad, floor: quad, ceiling: quad}};
-      let roomformStarts = 0, roomformDone = false;
+      const roomformStarts = [], roomformCancels = [];
+      let roomformDone = false, releaseFirstStart;
+      const firstStartResponse = new Promise(resolve => { releaseFirstStart = resolve; });
       await page.route('**/api/import/thumbnail?*', route => route.fulfill({contentType: 'image/png',
         body: Buffer.from('iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mP8/x8AAwMCAO+aWQ0AAAAASUVORK5CYII=', 'base64')}));
-      await page.route('**/api/saved/roomform?*', route => {
+      await page.route('**/api/saved/roomform?*', async route => {
         const request = route.request(), query = new URL(request.url()).searchParams;
+        const id = query.get('id');
         if (request.method() === 'POST') {
-          assert.equal(query.get('asset'), saved.id);
           assert.equal(request.headers()['x-mapping-client'], '1');
-          roomformStarts++;
-          return route.fulfill({status: 202, json: {id: 'roomform_test', status: 'running', tiles_done: 1, tiles_total: 2}});
+          assert.match(id, /^[0-9a-f]{32}$/);
+          if (query.get('action') === 'cancel') {
+            roomformCancels.push(id);
+            await route.fulfill({json: {id, status: 'cancelled'}});
+            releaseFirstStart();
+            return;
+          }
+          assert.equal(query.get('asset'), saved.id);
+          roomformStarts.push(id);
+          if (roomformStarts.length === 1) {
+            await firstStartResponse;
+            await route.abort().catch(() => {});
+            return;
+          }
+          return route.fulfill({status: 202, json: {id, status: 'running', tiles_done: 1, tiles_total: 2}});
         }
-        assert.equal(query.get('id'), 'roomform_test');
-        return route.fulfill({json: roomformDone ? {id: 'roomform_test', status: 'complete', result: shell} :
-          {id: 'roomform_test', status: 'running', tiles_done: 1, tiles_total: 2}});
+        assert.equal(id, roomformStarts.at(-1));
+        return route.fulfill({json: roomformDone ? {id, status: 'complete', result: shell} :
+          {id, status: 'running', tiles_done: 1, tiles_total: 2}});
       });
       await page.route('**/api/import/local', route => route.fulfill({json:
         route.request().postDataJSON().local_id === 'saved_checkpoint' ? checkpoint : saved}));
@@ -188,8 +203,27 @@ test('controller restores a saved point cloud with Roomform inside the map conso
       await frame.locator('#editor-status').filter({hasText: '다운로드에 실패했습니다'}).waitFor();
       await downloadAI.click();
       await frame.locator('#editor-progress[value="27"]').waitFor();
-      assert.equal(roomformStarts, 0);
+      assert.equal(roomformStarts.length, 0);
       finishRoomformDownload();
+      const firstStart = page.waitForRequest(request => request.method() === 'POST' &&
+        request.url().includes('/api/saved/roomform?') && !request.url().includes('action=cancel'));
+      await ai.click();
+      await firstStart;
+      async function switchAwayDuringRestore() {
+        const cancelled = page.waitForResponse(response => response.url().includes('/api/saved/roomform?action=cancel&') && response.ok());
+        await frame.getByRole('button', {name: checkpoint.name}).click();
+        await cancelled;
+        await frame.locator('#editor-name').filter({hasText: checkpoint.name}).waitFor();
+        await editor.and(frame.locator('[data-view="original"]')).waitFor();
+        await frame.getByRole('button', {name: saved.name}).click();
+        await frame.locator('#editor-name').filter({hasText: saved.name}).waitFor();
+        assert.equal(await frame.getByRole('button', {name: 'AI 복원 결과'}).count(), 0);
+      }
+      await switchAwayDuringRestore();
+      await ai.click();
+      await frame.locator('#editor-progress[value="1"]').waitFor();
+      await switchAwayDuringRestore();
+      assert.deepEqual(roomformCancels, roomformStarts);
       await ai.click();
       await frame.locator('#editor-progress[value="1"]').waitFor();
       roomformDone = true;
@@ -199,13 +233,14 @@ test('controller restores a saved point cloud with Roomform inside the map conso
       await editor.and(frame.locator('[data-view="original"]')).waitFor();
       await frame.getByRole('button', {name: 'AI 복원 결과'}).click();
       await editor.and(frame.locator('[data-view="roomform"]')).waitFor();
-      assert.equal(roomformStarts, 1);
+      assert.equal(new Set(roomformStarts).size, 3);
       assert.equal(await ai.isVisible(), true);
       await frame.getByRole('button', {name: checkpoint.name}).click();
       await frame.locator('#editor-name').filter({hasText: checkpoint.name}).waitFor();
       await editor.and(frame.locator('[data-view="original"]')).waitFor();
       await ai.waitFor();
       assert.equal(roomformDownloads, 2);
+      assert.equal(roomformCancels.length, 2);
       assert.equal(await frame.getByRole('button', {name: 'AI 복원 결과'}).count(), 0);
       await frame.getByRole('button', {name: saved.name}).click();
       await frame.locator('#editor-name').filter({hasText: saved.name}).waitFor();
