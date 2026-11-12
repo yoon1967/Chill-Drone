@@ -13,8 +13,10 @@ const ui = {
   findings: new Map(), lastDet: null, newFindingAt: 0,   // 실시간 사람 탐지: finding_id → 발견, 영상 위 윤곽선용 최근 탐지
   feed: loadPref("controller.feed", "raw") === "ai" ? "ai" : "raw",   // 영상 칸: raw(원본) / ai(사람 탐지 합성 영상). 합성이 끊기면 원본을 보여 준다
   outline: loadPref("controller.outline", "on") !== "off",   // 영상 칸: 원본 위에 사람 윤곽선을 그릴지(보기 고르기, 이 브라우저에 기억)
-  map3d: { mode: loadPref("map-mode", "3d"), host: null, view: null, revision: undefined, loading: false, has: false },  // 3D 점군(지도 연결기)
+  map3d: { mode: loadPref("map-mode", "3d"), host: null, view: null, revision: undefined, loading: false, has: false,  // 3D 점군(지도 연결기)
+    data: null, plan: null, planOf: null },   // 받은 지도 한 버전과 그것으로 만든 평면도(2D 지도 칸, floorplan.js)
   mapBig: loadPref("map-big", "0") === "1",   // 지도 칸을 가장 큰 칸(기본 프리셋은 영상)과 바꿔 크게 본다
+  mapHidden: new Set(loadPref("controller.map.hidden", "").split(",").filter(Boolean)),   // 지도 칸에서 끈 표시(flown·planned·people)
   preset: new URLSearchParams(location.search).get("preset") || loadPref("controller.preset", ""),   // 실시간 감독 칸 배치(presets.js)
   edit: null,   // 화면 편집 중이면 { draft: 고치는 배치, from: 시작한 프리셋 id }
   console: { frame: null, url: null, slot: null, ro: null, loadedUp: null, height: 0, viewportHeight: 0 },
@@ -148,7 +150,7 @@ function partStates(st, events) {
     : ds.alive ? ["success", "", ds.text] : ds.ever ? ["warning", "끊김", ds.text] : ["neutral", "연결 전", ds.text];
   const mi = ui.live ? mapInfo(st.map, ui.map3d.has) : null;
   const map = !ui.live ? ["neutral", "샘플", "샘플 화면은 지도에 연결하지 않습니다"]
-    : [mi[1], mi[1] === "success" ? "" : mi[0].replace(/^지도 /, ""), `${mi[0]}${mi[2] ? ` · ${mi[2]}` : ""}`];
+    : [mi[1], mi[1] === "success" ? "" : mi[0].replace(/^지도 /, ""), mi[2] || mi[0]];   // 설명이 있으면 설명만(짧은 말과 겹치지 않게)
   const a = st.autonomy || {};
   const auto = !ui.live ? (st.autonomy_used ? ["success", "", "샘플 자율 비행"] : ["neutral", "연결 전", "샘플"])
     : a.connected ? (a.ground_origin ? ["success", "", "자율 연결(지상에서)"] : ["warning", "공중 연결", "이륙 뒤에 연결된 자율이라 자율 시작을 할 수 없습니다"])
@@ -335,17 +337,43 @@ function detectionList(events, big = false) {
   </section>`;
 }
 
-const MAP_MODES = { "2d": "2D 경로", "3d": "3D 점군" };
+const MAP_MODES = { "2d": "2D 지도", "3d": "3D 점군" };
+const MAP_MODE_TIP = { "2d": "자율 비행이 보낸 드론 위치·경로·찾은 사람(1칸 1 m). 자율 비행이 없으면 3D 점군을 위에서 본 평면도", "3d": "지도 파트가 드론 영상으로 만든 3D 점군" };
+
+// 지도 칸 표시 고르기: 범례가 곧 켜고 끄는 버튼이다. 끈 표시는 이 브라우저에 기억한다(controller.map.hidden).
+// 드론 위치와 출발은 늘 그린다. 3D 점군은 지나온 길(카메라 경로)만 고른다(사람 점은 지도 파트가 점군에 칠한다).
+const LAYER_SWATCH = { flown: "flown", planned: "planned", people: "mark" };
+const shown = (key) => !ui.mapHidden.has(key);
+
+function layerButton(key, label, tip) {
+  const on = shown(key);
+  return `<button class="layer" data-map-layer="${key}" aria-pressed="${on}" title="${esc(`${tip} · 누르면 ${on ? "숨깁니다" : "다시 보입니다"}`)}"><i class="lg ${LAYER_SWATCH[key]}"></i>${esc(label)}</button>`;
+}
+
+// 지도 칸 아래 줄: 상태 칩과 설명(왼쪽), 범례 겸 표시 고르기(오른쪽).
+function mapFoot(status, detail, layers, extra = "") {
+  return `<div class="map-foot">${status ? chip(status[0], status[1]) : ""}${detail ? `<span class="muted">${esc(detail)}</span>` : ""}${extra}
+    ${layers ? `<span class="layers" role="group" aria-label="지도에 보일 것">${layers}</span>` : ""}</div>`;
+}
 
 function mapPanel(st, events, track, tall = false) {
   const mode = ui.live && !tall ? ui.map3d.mode : "2d";   // 탐색 결과(tall)는 3D 칸이 따로 있다
+  // 2D인데 자율 비행이 보낸 것이 하나도 없으면, 받은 3D 점군을 위에서 본 평면도를 그린다(점군도 없으면 빈 칸 안내).
+  const plan = ui.live && mode === "2d" && !autonomyHas(st) ? floorPlan() : null;
   const seg = ui.live && !tall ? `<div class="seg map-mode" role="group" aria-label="지도 보기">
-      ${Object.entries(MAP_MODES).map(([m, label]) => `<button data-map-mode="${m}" class="${mode === m ? "on" : ""}" aria-pressed="${mode === m}">${label}</button>`).join("")}</div>
+      ${Object.entries(MAP_MODES).map(([m, label]) => `<button data-map-mode="${m}" class="${mode === m ? "on" : ""}" aria-pressed="${mode === m}" title="${MAP_MODE_TIP[m]}">${label}</button>`).join("")}</div>
       ${!ui.mapCanBig ? "" : `<button class="map-big" data-map-big aria-pressed="${ui.mapBig}" title="${ui.mapBig ? "지도를 원래 칸으로 되돌립니다" : "지도와 가장 큰 칸의 자리를 바꿔 지도를 크게 봅니다"}">${ui.mapBig ? "⤡ 원래대로" : "⤢ 크게"}</button>`}` : "";
-  const head = `<header><h2>지도</h2>${src("map")}${mode === "2d" ? chip("경로: 자율 비행", "neutral", "src-inline") : ""}
-      <span class="spacer"></span>${seg || '<a class="link" href="#/map">지도 콘솔 열기</a>'}</header>`;
+  // 출처는 칩 하나: 2D는 자율 비행이 보낸 위치·경로·찾은 사람, 3D와 평면도는 지도 파트의 점군. 샘플의 발견 지점은 사람 탐지 결과다.
+  const source = mode === "3d" || plan ? "지도 파트" : ui.live ? "자율 비행" : "자율 비행 · 사람 탐지";   // 제목 "지도"와 겹치지 않게 "지도 파트"
+  const head = `<header><h2>지도</h2><span class="src" title="이 칸을 채우는 파트">${source}</span><span class="spacer"></span>${seg || '<a class="link" href="#/map">지도 콘솔 열기</a>'}</header>`;
   if (mode === "3d") return map3dPanel(st, head);
+  if (plan) return floorPlanPanel(st, head, plan, tall);
   if (ui.live) return autonomyMapPanel(st, head, tall);
+  return sampleMapPanel(st, events, track, head, tall);
+}
+
+// 샘플 2D 지도(게이트웨이 없이): 방 구획·지나온 길·계획 경로·발견 지점. 발견 지점은 그때 드론 위치다(사람 위치 아님).
+function sampleMapPanel(st, events, track, head, tall) {
   const pts = [...S.track, ...S.plan, ...S.rooms.flatMap((r) => [{ x_m: r.x, y_m: r.y }, { x_m: r.x + r.w, y_m: r.y + r.h }])];
   const minX = Math.min(...pts.map((p) => p.x_m)) - 0.6, maxX = Math.max(...pts.map((p) => p.x_m)) + 0.6;
   const minY = Math.min(...pts.map((p) => p.y_m)) - 0.6, maxY = Math.max(...pts.map((p) => p.y_m)) + 0.6;
@@ -354,21 +382,23 @@ function mapPanel(st, events, track, tall = false) {
   const Y = (y) => (H - (y - minY) * k - (H - (maxY - minY) * k) / 2).toFixed(1);  // y 왼쪽(위)이 +
   const rooms = S.rooms.map((r) => `<rect class="room" x="${X(r.x)}" y="${Y(r.y + r.h)}" width="${(r.w * k).toFixed(1)}" height="${(r.h * k).toFixed(1)}"/>
     <text class="room-label" x="${+X(r.x) + 8}" y="${+Y(r.y + r.h) + 18}">${esc(r.name)}</text>`).join("");
-  const path = track.length > 1 ? `<polyline class="flown" points="${track.map((p) => `${X(p.x_m)},${Y(p.y_m)}`).join(" ")}"/>` : "";
-  const planned = st.mission && st.mode !== "grounded"
+  const path = shown("flown") && track.length > 1 ? `<polyline class="flown" points="${track.map((p) => `${X(p.x_m)},${Y(p.y_m)}`).join(" ")}"/>` : "";
+  const planned = shown("planned") && st.mission && st.mode !== "grounded"
     ? `<polyline class="planned" points="${S.plan.map((p) => `${X(p.x_m)},${Y(p.y_m)}`).join(" ")}"/>` : "";
-  const marks = events.map((e) => {
+  const marks = !shown("people") ? "" : events.map((e) => {
     const p = poseAt(e.pts_us / 1e6), n = S.events.findIndex((x) => x.event_id === e.event_id) + 1;
     return `<g class="mark ${e.review}" data-event="${esc(e.event_id)}"><circle cx="${X(p.x_m)}" cy="${Y(p.y_m)}" r="10"/><text x="${X(p.x_m)}" y="${+Y(p.y_m) + 4}">${n}</text></g>`;
   }).join("");
   const now = track[track.length - 1] || S.track[0];
   const drone = `<g class="drone" transform="translate(${X(now.x_m)},${Y(now.y_m)})"><path d="M0,-11 L8,7 L0,3 L-8,7 Z"/></g>`;
   const start = `<circle class="start" cx="${X(0)}" cy="${Y(0)}" r="7"/><text class="start-label" x="${+X(0) + 12}" y="${+Y(0) + 4}">출발</text>`;
+  const layers = layerButton("flown", "지나온 길", "드론이 지나온 길") + layerButton("planned", "계획 경로", "자율 비행이 가려는 길")
+    + layerButton("people", "발견 지점", "사람을 발견했을 때 드론이 있던 자리(사람 위치 아님)");
   return `<section class="panel map ${tall ? "tall" : ""}" data-part="map" aria-label="2D 지도">${head}
-    <svg viewBox="0 0 ${W} ${H}" preserveAspectRatio="xMidYMid meet" role="img" aria-label="지나온 경로, 계획 경로, 발견 지점, 현재 드론 위치">
+    <svg viewBox="0 0 ${W} ${H}" preserveAspectRatio="xMidYMid meet" role="img" aria-label="샘플 지도: 지나온 길, 계획 경로, 발견 지점, 지금 드론 위치">
       ${rooms}${path}${planned}${start}${marks}${drone}
     </svg>
-    <p class="legend"><i class="lg flown"></i>지나온 경로 <i class="lg planned"></i>계획 경로 <i class="lg mark"></i>발견 지점 = 그때 드론 위치(사람 위치 아님)</p>
+    ${mapFoot(null, shown("people") && events.length ? "발견 지점은 그때 드론 위치입니다(사람 위치 아님)" : "", layers)}
   </section>`;
 }
 
@@ -389,6 +419,12 @@ function syncAutonomy(st) {
   if ((s.path_revision !== a.pathRev || s.people_revision !== a.peopleRev) && !a.loading) loadAutonomy();
 }
 
+// 자율 비행이 보낸 것(위치·경로·찾은 사람)이 하나라도 있는지. 없으면 2D 지도 칸은 평면도나 빈 칸 안내를 그린다.
+function autonomyHas(st) {
+  const a = ui.autonomy;
+  return !!(st.pose || a.path?.points?.length || a.people?.people?.length || a.people?.unconfirmed?.length);
+}
+
 async function loadAutonomy() {
   const a = ui.autonomy;
   a.loading = true;
@@ -403,13 +439,27 @@ async function loadAutonomy() {
   a.loading = false;
 }
 
+// 2D 지도 상태 [칩, 색, 설명]. 게이트웨이나 자율 비행이 끊겨도 받은 지도는 그대로 두고, 마지막으로 받은 것이라고 적는다.
+function autonomyStatus(st) {
+  const s = st.autonomy || {}, pose = st.pose;
+  const last = "마지막으로 받은 지도입니다 · 다시 연결되면 이어집니다";
+  if (!ui.wsOpen) return ["게이트웨이 끊김", "neutral", last];
+  if (!s.connected) return ["자율 끊김", st.warnings.includes("autonomy_disconnected") ? "danger" : "neutral", last];
+  if (pose && !pose.valid) return ["위치 멈춤", "warning", `마지막 위치 ${pose.age_s ?? "?"}초 전`];
+  return ["자율 연결됨", "success", ""];
+}
+
 function autonomyMapPanel(st, head, tall) {
   const a = ui.autonomy, pose = st.pose, s = st.autonomy || {};
   const path = a.path?.points || [], found = a.people?.people || [], unsure = a.people?.unconfirmed || [];
-  if (!pose && !path.length && !found.length && !unsure.length) {
+  if (!autonomyHas(st)) {
+    // 빈 칸: 무엇을 기다리는지 쉬운 말로. 지도 파트의 3D 점군이 들어오고 있으면 바로 바꿔 볼 수 있게 한다.
+    const why = !ui.wsOpen ? "게이트웨이에 연결되지 않았습니다 · 연결되면 자율 비행이 보낸 지도를 그립니다"
+      : s.connected ? "자율 비행이 연결됐습니다 · 위치가 오면 바로 그립니다"
+      : "자율 비행이 아직 연결되지 않았습니다 · 연결되면 드론 위치·지나온 길·계획 경로·찾은 사람을 1 m 눈금 위에 그립니다";
+    const to3d = !tall && ui.wsOpen && st.map?.alive && st.map.points > 0 ? `<button data-map-mode="3d">3D 점군 보기</button>` : "";
     return `<section class="panel map ${tall ? "tall" : ""}" data-part="map" aria-label="2D 지도">${head}
-      <div class="map-empty">${s.connected ? "자율 비행이 연결됐습니다. 위치 추정이 시작되면 위치·경로·찾은 사람이 m 단위로 그려집니다."
-        : "자율 비행이 연결되면 드론 위치·지나온 길·계획 경로·찾은 사람이 m 단위로 그려집니다."}</div>${mapSaveBar()}</section>`;
+      <div class="map-empty"><span>${esc(why)}</span>${to3d}</div>${mapSaveBar()}</section>`;
   }
   const pts = [[0, 0], ...path, ...a.track, ...found.map((q) => [q.x_m, q.y_m]), ...unsure.map((q) => [q.x_m, q.y_m]),
     ...(pose ? [[pose.x_m, pose.y_m]] : [])];
@@ -431,21 +481,81 @@ function autonomyMapPanel(st, head, tall) {
     const num = cls === "unsure" ? "" : `<text x="${X(q.x_m)}" y="${+Y(q.y_m) + 4}">${n}</text>`;
     return `<g class="mark ${cls}"><title>${esc(tip)}</title><circle cx="${X(q.x_m)}" cy="${Y(q.y_m)}" r="${cls === "unsure" ? 7 : 10}"/>${num}</g>`;
   };
-  const marks = found.map((q, i) => person(q, i + 1, q.gone ? "gone" : "found")).join("")
+  const marks = !shown("people") ? "" : found.map((q, i) => person(q, i + 1, q.gone ? "gone" : "found")).join("")
     + unsure.map((q, i) => person(q, found.length + i + 1, "unsure")).join("");
-  const drone = pose ? `<g class="drone ${pose.valid ? "" : "stale"}" transform="translate(${X(pose.x_m)},${Y(pose.y_m)}) rotate(${(90 - pose.yaw_rad * 180 / Math.PI).toFixed(1)})"><path d="M0,-11 L8,7 L0,3 L-8,7 Z"/></g>` : "";
-  const start = `<circle class="start" cx="${X(0)}" cy="${Y(0)}" r="7"/><text class="start-label" x="${+X(0) + 12}" y="${+Y(0) + 4}">출발</text>`;
+  // 게이트웨이와 끊기거나 위치가 늦으면 드론을 흐리게 그린다(마지막 위치).
+  const drone = pose ? `<g class="drone ${pose.valid && ui.wsOpen ? "" : "stale"}" transform="translate(${X(pose.x_m)},${Y(pose.y_m)}) rotate(${(90 - pose.yaw_rad * 180 / Math.PI).toFixed(1)})"><path d="M0,-11 L8,7 L0,3 L-8,7 Z"/></g>` : "";
+  const start = `<g><title>출발: 자율 비행 지도의 원점(켠 자리)</title><circle class="start" cx="${X(0)}" cy="${Y(0)}" r="7"/><text class="start-label" x="${+X(0) + 12}" y="${+Y(0) + 4}">출발</text></g>`;
   const scale = `<g class="scale"><line x1="12" y1="${H - 12}" x2="${(12 + k).toFixed(1)}" y2="${H - 12}"/><text x="${(16 + k).toFixed(1)}" y="${H - 8}">1 m</text></g>`;
-  const ms = st.mission, people = s.people;
-  const info = [s.connected ? "자율 연결" : "자율 끊김",
-    ms ? `${ms.state || "?"} · ${PHASE[ms.phase] || ms.phase || "?"}${ms.progress != null ? ` · 진행 ${pct(ms.progress)}` : ""}` : null,
-    people ? `찾은 사람 ${people.confirmed}명${people.gone ? ` · 사라짐 ${people.gone}` : ""}${people.unconfirmed ? ` · 미확정 ${people.unconfirmed}` : ""}` : null,
-    pose && !pose.valid ? `위치 ${pose.age_s ?? "?"}초 전` : null].filter(Boolean).join(" · ");
+  // 범례: 고르기 버튼 셋에, 사람 표시가 켜져 있으면 지도에 있는 것만(다시 봤는데 없음·미확정) 덧붙인다.
+  // 임무 진행은 모드 카드에, 자율 연결은 아래 칩에 있어 범례에 다시 적지 않는다.
+  const n = found.filter((q) => !q.gone).length, gone = found.length - n;
+  const keys = !shown("people") ? "" : `${gone ? `<span class="key"><i class="lg mark gone"></i>다시 봤는데 없음 ${gone}</span>` : ""}${unsure.length ? `<span class="key"><i class="lg mark unsure"></i>미확정 ${unsure.length}</span>` : ""}`;
+  const layers = layerButton("flown", "지나온 길", "드론이 지나온 길(화면이 받은 위치를 이어 그림)")
+    + layerButton("planned", "계획 경로", "자율 비행이 가려는 길")
+    + layerButton("people", n ? `사람 ${n}명` : "사람", "자율 비행이 지도에 찍은 사람 위치. 번호는 찾은 사람, 점선은 다시 봤는데 없음, 흐린 점은 미확정");
+  const status = autonomyStatus(st);
   return `<section class="panel map ${tall ? "tall" : ""}" data-part="map" aria-label="2D 지도">${head}
-    <svg viewBox="0 0 ${W} ${H}" preserveAspectRatio="xMidYMid meet" role="img" aria-label="자율 지도: 드론 위치, 지나온 길, 계획 경로, 찾은 사람">
-      <g class="grid">${grid.join("")}</g>${line(path, "planned")}${line(a.track, "flown")}${start}${marks}${drone}${scale}
+    <svg viewBox="0 0 ${W} ${H}" preserveAspectRatio="xMidYMid meet" role="img" aria-label="자율 지도: 드론 위치, 지나온 길, 계획 경로, 찾은 사람(1칸 1 m, 출발이 원점)">
+      <g class="grid">${grid.join("")}</g>${shown("planned") ? line(path, "planned") : ""}${shown("flown") ? line(a.track, "flown") : ""}${start}${marks}${drone}${scale}
     </svg>
-    <p class="legend"><i class="lg flown"></i>지나온 길 <i class="lg planned"></i>계획 경로 <i class="lg mark"></i>찾은 사람 <i class="lg mark gone"></i>다시 봤는데 없음 · ${esc(info)} · 자율 지도(m, 켠 자리 기준)</p>${mapSaveBar()}
+    ${mapFoot(status, status[2], layers + keys)}${mapSaveBar()}
+  </section>`;
+}
+
+// 평면도(2D): 자율 비행 지도가 없으면 2D 지도 칸에 받은 3D 점군을 위에서 본 그림을 그린다(floorplan.js).
+// 좌표는 지도 파트 것이다: 지도를 시작한 카메라 자리가 원점, 그때 본 쪽(앞)이 오른쪽·왼쪽이 위(자율 지도와 같은 방향).
+// 자율 지도와는 원점·방향을 맞춘 적이 없어 한 그림에 겹치지 않는다(자율 비행이 보내기 시작하면 자율 지도를 그린다).
+// 벽 그림은 흰 투명도 그림을 mask로 써서 CSS 토큰(--map-plan)으로 칠한다. 테마가 바뀌어도 그림을 다시 만들지 않는다.
+function floorPlan() {
+  const m = ui.map3d;
+  if (!m.data || !window.FloorPlan) return null;   // floorplan.js를 못 읽었으면(옛 캐시 등) 예전처럼 빈 칸 안내
+  if (m.planOf !== m.data) {   // 지도 한 버전에 한 번만 만든다
+    m.planOf = m.data;
+    try { m.plan = window.FloorPlan.build(m.data); } catch (e) { m.plan = null; }
+  }
+  return m.plan?.png ? m.plan : null;
+}
+
+function floorPlanPanel(st, head, plan, tall) {
+  // 상태는 3D 점군과 같다. 게이트웨이와 끊기거나 지도가 멈춰도 받은 그림은 두고 칩과 마지막 자리(흐리게)로 알린다.
+  const info = !ui.wsOpen ? ["게이트웨이 끊김", "neutral", "마지막으로 받은 지도입니다 · 다시 연결되면 이어집니다"] : mapInfo(st.map, true);
+  const fit = (lo, hi) => { const d = Math.max(plan.metric ? 3 : 0, hi - lo), c = (lo + hi) / 2; return [c - d / 2, c + d / 2]; };
+  const [minX, maxX] = fit(plan.a0, plan.a1), [minY, maxY] = fit(plan.b0, plan.b1);
+  const W = 800, H = tall ? 360 : 260, k = Math.min(W / (maxX - minX), H / (maxY - minY));
+  const X = (x) => ((x - minX) * k + (W - (maxX - minX) * k) / 2).toFixed(1);
+  const Y = (y) => (H - (y - minY) * k - (H - (maxY - minY) * k) / 2).toFixed(1);
+  const grid = [];
+  if (plan.metric) {   // m 단위가 아니면 눈금을 그리지 않는다(1칸이 1 m라고 말할 수 없다)
+    for (let gx = Math.ceil(minX); gx <= maxX; gx++) grid.push(`<line x1="${X(gx)}" y1="0" x2="${X(gx)}" y2="${H}"/>`);
+    for (let gy = Math.ceil(minY); gy <= maxY; gy++) grid.push(`<line x1="0" y1="${Y(gy)}" x2="${W}" y2="${Y(gy)}"/>`);
+  }
+  const box = `x="${X(plan.a0)}" y="${Y(plan.b1)}" width="${((plan.a1 - plan.a0) * k).toFixed(1)}" height="${((plan.b1 - plan.b0) * k).toFixed(1)}"`;
+  const walls = `<mask id="floor-plan-mask" maskUnits="userSpaceOnUse" x="0" y="0" width="${W}" height="${H}" style="mask-type:alpha">
+      <image href="${plan.png}" ${box} preserveAspectRatio="none"/></mask><rect class="floor" ${box} mask="url(#floor-plan-mask)"/>`;
+  // 카메라 경로는 화면에서 1.5px보다 가까운 점은 건너뛴다(긴 비행이면 카메라 자리가 수천 개).
+  const route = [];
+  for (const p of plan.path) {
+    const q = [X(p[0]), Y(p[1])], last = route[route.length - 1];
+    if (!last || Math.hypot(q[0] - last[0], q[1] - last[1]) > 1.5) route.push(q);
+  }
+  const flown = shown("flown") && route.length > 1 ? `<polyline class="flown" points="${route.map((q) => q.join(",")).join(" ")}"/>` : "";
+  const end = plan.path[plan.path.length - 1], fresh = ui.wsOpen && info[1] === "success";
+  const now = end ? `<g class="cam-now ${fresh ? "" : "stale"}"><title>${fresh ? "지도 파트가 마지막으로 추정한 카메라(드론) 자리" : "마지막으로 받은 카메라(드론) 자리 · 지금은 새 지도가 오지 않습니다"}</title><circle cx="${X(end[0])}" cy="${Y(end[1])}" r="7"/></g>` : "";
+  // 출발 글자는 맨 위에 그린다(드론이 출발 근처에 있으면 점이 글자를 가리므로).
+  const startTip = "<title>지도 시작: 지도 파트 좌표의 원점(지도를 시작한 카메라 자리)</title>";
+  const start = `<g>${startTip}<circle class="start" cx="${X(0)}" cy="${Y(0)}" r="7"/></g>`;
+  const startLabel = `<g>${startTip}<text class="start-label" x="${+X(0) + 12}" y="${+Y(0) + 4}">지도 시작</text></g>`;
+  const scale = plan.metric ? `<g class="scale"><line x1="12" y1="${H - 12}" x2="${(12 + k).toFixed(1)}" y2="${H - 12}"/><text x="${(16 + k).toFixed(1)}" y="${H - 8}">1 m</text></g>` : "";
+  const what = !plan.band ? "모든 점" : plan.metric ? `드론 높이 ±${plan.half} m의 점` : "드론 높이 근처의 점";
+  const detail = ["위에서 본 3D 점군", what, plan.metric ? "1칸 1 m" : "실제 크기 모름", info[2]].filter(Boolean).join(" · ");
+  const keys = `<span class="key" title="드론 높이 근처에 점이 많이 쌓인 곳일수록 진합니다"><i class="lg floor"></i>벽·물체</span>`;
+  const layers = layerButton("flown", "지나온 길", "지도 파트가 추정한 카메라 경로. 마지막 자리(큰 점)는 늘 보입니다");
+  return `<section class="panel map ${tall ? "tall" : ""}" data-part="map" aria-label="2D 지도(위에서 본 3D 점군)">${head}
+    <svg viewBox="0 0 ${W} ${H}" preserveAspectRatio="xMidYMid meet" role="img" aria-label="위에서 본 3D 점군: 드론 높이 근처의 점(벽·물체), 지나온 길, 지도 시작 자리${plan.metric ? "(1칸 1 m)" : "(실제 크기 모름)"}">
+      <g class="grid">${grid.join("")}</g>${walls}${flown}${start}${now}${startLabel}${scale}
+    </svg>
+    ${mapFoot(info, detail, keys + layers)}${mapSaveBar()}
   </section>`;
 }
 
@@ -454,22 +564,29 @@ function autonomyMapPanel(st, head, tall) {
 // 지도 칸 상태 [이름, 색, 설명]: 연결기 → 지도 서버 → 지도 세션 → 영상 입력 순으로 본다.
 // 세션이 끝나거나 영상이 끊겨도 받은 점군은 그대로 보여 주고(has) 상태만 바꾼다.
 // 지도 콘솔은 영상이 오래 끊겨 세션을 끝낸 뒤에도 입력 상태를 reconnecting으로 두므로, 세션이 끝났는지를 먼저 본다.
+// 설명은 무엇이 꺼졌는지·무엇을 기다리는지와 할 일을 쉬운 말로 적는다(프로그램 파일 이름 대신).
 function mapInfo(m, has) {
   const ms = m?.mapping_state, lost = ["reconnecting", "failed"].includes(m?.input_state);
-  const videoLost = ["영상 끊겨 지도 끝남", "warning", "영상이 오래 끊겨 지도 콘솔이 지도를 끝냄"];
-  if (!m || !m.alive) return ["지도 연결기 꺼짐", "warning", "지도 서버를 켜고 gateway_map_bridge.py를 실행하면 점군이 들어옵니다."];
-  if (m.upstream === "unreachable") return ["지도 서버 꺼짐", "danger", `${m.source_url || "지도 서버"}에 연결할 수 없습니다.`];
-  if (m.upstream === "error") return ["지도 읽기 오류", "danger", ""];
-  if (ms === "failed") return lost ? videoLost : ["지도 오류로 끝남", "danger", "이유는 지도 콘솔에서 확인"];
-  if (ms === "stopping") return ["지도 마무리 중", "neutral", "지도 콘솔이 마지막 지도를 정리하는 중"];
-  if (["complete", "completed", "stopped", "cancelled"].includes(ms)) return lost ? videoLost : ["지도 끝남", "neutral", "끝난 지도"];
+  const videoLost = ["영상 끊겨 지도 끝남", "warning", "드론 영상이 오래 끊겨 지도 콘솔이 지도를 끝냈습니다"];
+  if (!m || !m.alive) return ["지도 연결기 꺼짐", "warning", "지도 연결기가 꺼져 점군이 들어오지 않습니다 · 실행기로 켜면 함께 켜집니다"];
+  if (m.upstream === "unreachable") {
+    let at = "";
+    try { at = m.source_url ? `(${new URL(m.source_url).host})` : ""; } catch (e) { /* 주소를 못 읽으면 빼고 적는다 */ }
+    return ["지도 서버 꺼짐", "danger", `지도 서버${at}에 연결할 수 없습니다 · 지도 서버가 켜져 있는지 확인하세요`];
+  }
+  if (m.upstream === "error") return ["지도 읽기 오류", "danger", "지도 서버가 오류를 돌려줬습니다 · 지도 콘솔에서 확인하세요"];
+  if (ms === "failed") return lost ? videoLost : ["지도 오류로 끝남", "danger", "까닭은 지도 콘솔에서 볼 수 있습니다"];
+  if (ms === "stopping") return ["지도 마무리 중", "neutral", "지도 콘솔이 마지막 지도를 정리하는 중입니다"];
+  if (["complete", "completed", "stopped", "cancelled"].includes(ms)) return lost ? videoLost : ["지도 끝남", "neutral", "지도를 끝냈습니다"];
   if (m.input_state === "reconnecting") {   // 지도 콘솔이 드론 영상을 다시 기다리는 중(곧 돌아오면 같은 세션)
-    return ["영상 기다리는 중", "warning", `영상${m.input_age_s != null ? ` ${Math.round(m.input_age_s)}초째` : ""} 없음 · 곧 돌아오면 같은 지도로 이어짐`];
+    return ["영상 기다리는 중", "warning", `드론 영상이${m.input_age_s != null ? ` ${Math.round(m.input_age_s)}초째` : ""} 오지 않습니다 · 곧 돌아오면 같은 지도로 이어집니다`];
   }
   if (m.upstream === "no_map") {
-    if (ms && !["idle", "offline"].includes(ms)) return ["지도 시작 중", "neutral", "첫 점군을 기다리는 중"];
-    return has ? ["지도 멈춤", "neutral", "진행 중인 지도 없음"] : ["지도 아직 없음", "neutral", `지도 서버 상태: ${ms || "알 수 없음"}`];
+    if (ms && !["idle", "offline"].includes(ms)) return ["지도 시작 중", "neutral", "첫 점군을 기다리는 중입니다"];
+    return has ? ["지도 멈춤", "neutral", "진행 중인 지도가 없습니다"] : ["지도 아직 없음", "neutral", "아직 시작한 지도가 없습니다 · 영상을 켜면 지도가 시작됩니다"];
   }
+  // 연결기는 지도 서버와 잘 붙어 있다고 하지만 게이트웨이에 점군이 한 번도 오지 않았을 때(예: 게이트웨이만 다시 켬)
+  if (!m.points) return ["점군 기다리는 중", "neutral", "지도 서버와는 연결됐지만 아직 점군이 오지 않았습니다"];
   return ["지도 수신 중", "success", ""];
 }
 
@@ -482,29 +599,38 @@ function mapSaveBar() {
 
 function map3dPanel(st, head, cls = "map") {   // cls: 실시간 감독은 지도 칸(map), 탐색 결과는 3D 칸
   const m = st.map, has = ui.map3d.has;
-  const unit = m?.unit === "m" ? "m" : "임의 단위(m 아님)";
-  const info = mapInfo(m, has);
-  const detail = has && m ? `버전 ${m.revision ?? "?"} · 점 ${m.points}${m.points_total > m.points ? `/${m.points_total}` : ""} · ${unit}${info[2] ? ` · ${info[2]}` : ""}` : info[2];
+  // 게이트웨이와 끊기면 마지막 상태("지도 수신 중" 등) 대신 끊겼다고 적는다. 받은 점군은 그대로 둔다.
+  const info = !ui.wsOpen ? ["게이트웨이 끊김", "neutral", has ? "마지막으로 받은 점군입니다 · 다시 연결되면 이어집니다"
+    : "게이트웨이에 연결되지 않았습니다 · 연결되면 점군이 들어옵니다"] : mapInfo(m, has);
+  const count = (v) => Number(v).toLocaleString("ko-KR");
+  const size = has && m ? `점 ${count(m.points)}개${m.points_total > m.points ? `(전체 ${count(m.points_total)}개 중)` : ""} · ${m.unit === "m" ? "m 단위" : "실제 크기 모름(m 아님)"}` : "";
+  const detail = has ? [size, info[2]].filter(Boolean).join(" · ") : "";   // 점군이 없으면 설명은 빈 칸 안에 적는다
+  // 조작 안내는 지도에 마우스를 올리면 늘 보이고, 아래 줄에는 칸이 넉넉할 때만 적는다(낮은 칸은 그림을 지키려고 CSS가 숨김).
+  const keys = "왼쪽 드래그 회전 · 우클릭 드래그 이동 · 휠/두 손가락 확대 · 두 번 눌러 처음 시점";
+  const extra = has ? `<span class="muted keys-hint">${keys}</span>` : "";
+  const layers = has ? layerButton("flown", "지나온 길", "지도 파트가 추정한 카메라 경로. 지금 위치(큰 점)는 늘 보입니다") : "";
   return `<section class="panel ${cls}" data-part="map3d" aria-label="3D 지도">${head}
-    <div class="map3d-slot">${has ? "" : `<div class="map-empty">${esc(info[2] || "점군을 기다리는 중입니다.")}</div>`}</div>
-    <div class="map3d-info">${chip(info[0], info[1])}<span class="muted">${esc(detail)}</span>
-      ${has ? `<span class="muted keys-hint">왼쪽 드래그 회전 · 우클릭 드래그 이동 · 휠/두 손가락 확대 · 두 번 눌러 처음 시점</span>` : ""}</div>${mapSaveBar()}</section>`;
+    <div class="map3d-slot"${has ? ` title="${keys}"` : ""}>${has ? "" : `<div class="map-empty">${esc(info[2] || "점군을 기다리는 중입니다.")}</div>`}</div>
+    ${mapFoot(info, detail, layers, extra)}${mapSaveBar()}</section>`;
 }
 
 function attachMap3d() {
-  const slot = $("#app .map3d-slot");
-  if (!slot || !ui.live) return;
-  const m = ui.map3d;
+  if (!ui.live) return;
+  const m = ui.map3d, slot = $("#app .map3d-slot");
+  // 점군은 3D 칸이나 2D 지도 칸(자율 지도가 없으면 평면도를 그린다)이 화면에 있을 때 새 버전을 읽는다.
+  const rev = ui.state?.map?.revision;
+  if ((slot || $('#app [data-part="map"]')) && rev != null && rev !== m.revision && !m.loading) loadMap();
+  if (!slot) return;
   if (!m.host) {
     m.host = document.createElement("div");
     m.host.className = "map3d-host";
     m.host.innerHTML = `<canvas aria-label="3D 점군과 카메라 경로"></canvas>`;
     m.view = window.PointView ? new window.PointView(m.host.firstChild) : null;   // map3d.js를 못 읽었으면(옛 캐시 등) 안내만
     if (!m.view?.ok) m.host.innerHTML = `<div class="map-empty">이 브라우저는 WebGL을 쓸 수 없어 3D 점군을 그리지 못합니다.</div>`;
+    else if (m.data) m.view.setData(m.data);   // 2D 지도 칸(평면도)에서 먼저 받아 둔 점군
   }
+  m.view?.setPathVisible?.(shown("flown"));   // 지도 칸 "지나온 길" 고르기(옛 map3d.js면 건너뜀)
   if (m.has && m.host.parentNode !== slot) { slot.replaceChildren(m.host); m.view?.draw(); }
-  const rev = ui.state?.map?.revision;
-  if (rev != null && rev !== m.revision && !m.loading) loadMap();
 }
 
 async function loadMap() {
@@ -515,10 +641,12 @@ async function loadMap() {
     if (r.ok) {
       const map = await r.json();
       m.revision = map.source?.revision;
+      m.data = map;   // 평면도(2D 지도 칸)와 나중에 만드는 3D 보기도 쓴다
       if (m.view?.ok) m.view.setData(map);
       const changed = !m.has;
       m.has = true;
-      if (changed) { ui.cache = {}; render(); }
+      if (changed) ui.cache = {};
+      render();   // 새 버전이면 평면도도 바로 다시 그린다
     }
   } catch (e) { /* 다음 상태 갱신 때 다시 */ }
   m.loading = false;
@@ -802,10 +930,8 @@ function renderReview() {
     <p class="note">임무 후 보고용 화면입니다. 발견마다 확인·오탐을 정하면 요약에 바로 반영됩니다.</p>
     <div class="review-grid">${detectionList(all, true)}${mapPanel(st, all, track, true)}</div>
     <div class="review-grid two">
-      ${ui.live ? map3dPanel(st, `<header><h2>3D 지도</h2>${src("map")}</header>`, "map3d-panel") : `<section class="panel" aria-label="3D 지도"><header><h2>3D 지도</h2>${src("map")}</header>
-        <div class="map3d"><p>팀 지도 화면(<code>apps/console</code>)의 점군·카메라 경로를 여기에 띄울 자리입니다.</p>
-        <p class="muted">게이트웨이에 연결하고 지도 연결기를 켜면 여기에 점군이 그려집니다. 단위·좌표계는 지도 쪽 표시를 따릅니다.</p>
-        <a class="link" href="#/map">지도 콘솔 열기</a></div></section>`}
+      ${ui.live ? map3dPanel(st, `<header><h2>3D 지도</h2>${src("map")}</header>`, "map3d-panel") : `<section class="panel map3d-panel" aria-label="3D 지도"><header><h2>3D 지도</h2>${src("map")}</header>
+        <div class="map3d-slot"><div class="map-empty"><span>샘플 화면에는 3D 점군이 없습니다 · 게이트웨이에 연결하고 지도를 켜면 지도 파트의 점군과 카메라 경로가 여기에 그려집니다</span><a class="link" href="#/map">지도 콘솔 열기</a></div></div></section>`}
       ${timelinePanel(track)}
     </div>`;
 }
@@ -865,6 +991,18 @@ function syncHeader() {
   badge.innerHTML = `<i class="dot ${tone}" aria-hidden="true"></i>${esc(text)}`;
 }
 
+// 다시 그려도 초점을 지킬 버튼: 이륙 전 확인 칸(체크한 뒤 바로 이륙 버튼·T로), 영상·지도 보기 고르기.
+// 칸을 다시 그리면 버튼이 새로 만들어지므로, 같은 data 값을 가진 새 버튼(같은 값이 여럿이면 같은 순서, 없으면 마지막)으로 초점을 옮긴다.
+const KEEP_FOCUS = ["takeoff", "feed", "outline", "mapMode", "mapLayer", "mapBig"];
+
+function focusToKeep() {
+  if (ui.takeoff.focus) return { sel: `[data-takeoff="${ui.takeoff.focus}"]`, i: 0 };
+  const el = document.activeElement, key = el?.dataset && KEEP_FOCUS.find((k) => k in el.dataset);
+  if (!key) return null;
+  const sel = `[data-${key.replace(/[A-Z]/g, (c) => `-${c.toLowerCase()}`)}="${el.dataset[key]}"]`;
+  return { sel, i: Math.max(0, [...document.querySelectorAll(sel)].indexOf(el)) };
+}
+
 function render() {
   liveSave?.setTarget(ui.live ? consoleTarget(ui.state).origin || null : null);
   syncHeader();
@@ -876,10 +1014,13 @@ function render() {
   const parts = [...tpl.content.querySelectorAll("[data-part]")];
   const layout = tpl.content.querySelector("[data-layout]")?.dataset.layout ?? "";
   const keys = `${parts.map((p) => p.dataset.part).join(",")}|${layout}`;
-  // 이륙 전 확인 칸 안의 초점은 칸을 다시 그려도 지킨다(체크한 뒤 바로 이륙 버튼·T로 이어지게).
-  const keep = ui.takeoff.focus || document.activeElement?.dataset?.takeoff;
+  const keep = focusToKeep();
   ui.takeoff.focus = null;
-  const refocus = () => { if (keep && document.activeElement?.dataset?.takeoff !== keep) $(`[data-takeoff="${keep}"]`)?.focus({ preventScroll: true }); };
+  const refocus = () => {
+    const all = keep ? document.querySelectorAll(keep.sel) : [];
+    const el = all[Math.min(keep?.i ?? 0, all.length - 1)];   // 누른 버튼이 사라졌으면(빈 칸의 "3D 점군 보기") 같은 값의 남은 버튼으로
+    if (el && document.activeElement !== el) el.focus({ preventScroll: true });
+  };
   if (ui.view !== v || ui.cache.__keys !== keys) {
     ui.view = v;
     document.body.dataset.view = v;
@@ -1018,6 +1159,13 @@ document.addEventListener("click", (ev) => {
   if (ev.target.closest("[data-map-big]")) {
     ui.mapBig = !ui.mapBig;
     savePref("map-big", ui.mapBig ? "1" : "0");
+    return render();
+  }
+  const ly = ev.target.closest("[data-map-layer]");
+  if (ly) {
+    const key = ly.dataset.mapLayer;
+    if (!ui.mapHidden.delete(key)) ui.mapHidden.add(key);
+    savePref("controller.map.hidden", [...ui.mapHidden].join(","));
     return render();
   }
   const rv = ev.target.closest("[data-review]");

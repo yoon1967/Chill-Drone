@@ -8,7 +8,7 @@
   --danger:#a32d2d;--danger-soft:#fbe6e6;--neutral-soft:#f1f2f4;--map:#ffffff;--video:#20292a;
   --header:#202124;--header-line:#202124;--header-active:#34373c;--header-text:#ffffff;--header-selected:#d9dce1;
   --header-ok:#7fd16b;--header-warn:#f0b44c;--header-bad:#ff8a8a;
-  --map-path:var(--accent);--person:#e24b4a;--person-strong:#b3261e;--person-off:#868d86;--on-strong:#ffffff;
+  --map-path:var(--accent);--map-plan:#4a4f55;--person:#e24b4a;--person-strong:#b3261e;--person-off:#868d86;--on-strong:#ffffff;
   --person-box:#ff6b6b;--person-box-fill:rgba(255,107,107,.18);
   --overlay-bg:rgba(0,0,0,.63);--overlay-text:#e8efe9;--video-muted:#8a9a90;--video-alert:rgba(192,57,43,.87);
   --accent-tint:rgba(31,95,153,.12);--accent-tint-strong:rgba(31,95,153,.28);--danger-tint:rgba(163,45,45,.16);--shadow:0 1px 3px rgba(0,0,0,.13);
@@ -17,7 +17,7 @@
 :root[data-theme=dark]{
   --bg:#0f1216;--panel:#171b21;--line:#2c323a;--text:#e6e8eb;--muted:#9ba3ad;--brand:#e6e8eb;--brand-soft:#262c34;
   --accent:#78aee6;--accent-soft:#1a2c40;--on-accent:#0b1622;--success:#8fd17f;--success-soft:#1c2e1a;--warning:#e8b04a;--warning-soft:#33270f;
-  --danger:#ff8a8a;--danger-soft:#3b1d1f;--neutral-soft:#232830;--map:#12161b;--video:#0a0d10;
+  --danger:#ff8a8a;--danger-soft:#3b1d1f;--neutral-soft:#232830;--map:#12161b;--map-plan:#aab2bb;--video:#0a0d10;
   --header:#0b0e12;--header-line:#2c323a;--header-active:#222831;--header-text:#e6e8eb;--header-selected:#ffffff;
   --person-strong:#ff5148;--person-off:#7d857f;
   --accent-tint:rgba(120,174,230,.14);--accent-tint-strong:rgba(120,174,230,.30);--danger-tint:rgba(255,138,138,.18);--shadow:0 1px 3px rgba(0,0,0,.5);
@@ -102,12 +102,23 @@ main{max-width:1280px;margin:0 auto;padding:16px 20px 90px;display:grid;gap:12px
 .room{fill:var(--panel);stroke:var(--line)}.room-label{font-size:13px;fill:var(--muted)}
 .flown{fill:none;stroke:var(--map-path);stroke-width:3;stroke-linejoin:round}
 .planned{fill:none;stroke:var(--map-path);stroke-width:2;stroke-dasharray:7 6;opacity:.7}
-.start{fill:none;stroke:var(--muted);stroke-width:2}.start-label{font-size:13px;fill:var(--muted)}
+.start{fill:none;stroke:var(--muted);stroke-width:2}.start-label{font-size:13px;fill:var(--muted);paint-order:stroke;stroke:var(--map);stroke-width:4px;stroke-linejoin:round}
 .mark circle{fill:var(--person);stroke:var(--panel);stroke-width:2}.mark.false_positive circle{fill:var(--person-off)}.mark.confirmed circle{fill:var(--person-strong)}
 .mark text{fill:var(--on-strong);font-size:12px;font-weight:700;text-anchor:middle;pointer-events:none}.mark{cursor:pointer}.mark.sel circle{stroke:var(--accent);stroke-width:4}
 .drone path{fill:var(--brand)}
-.legend{font-size:12px;color:var(--muted);margin:8px 2px 0;display:flex;gap:6px;align-items:center;flex-wrap:wrap}
-.lg{display:inline-block;width:18px;height:0;border-top:3px solid var(--map-path);margin-left:8px}.lg.planned{border-top-style:dashed}
+/* 지도 칸 아래 줄: 상태 칩·설명(왼쪽), 범례 겸 표시 고르기(오른쪽). 끈 표시는 점선 테두리·흐린 글자(화면 편집의 칸 고르기와 같은 모양) */
+.map-foot{display:flex;gap:6px 8px;align-items:center;flex-wrap:wrap;margin-top:6px;font-size:12px}
+.map-foot .layers{margin-left:auto;display:inline-flex;gap:4px 6px;align-items:center;flex-wrap:wrap}
+/* 한 화면 배치에서 지도 칸이 낮으면(알림 띠가 뜬 재난 정찰 등) 3D 조작 안내 줄을 빼 그림 자리를 지킨다. 안내는 지도에 마우스를 올리면 보인다 */
+@media (min-width:1100px) and (min-height:700px){
+  .live-main .panel.map{container-type:size}
+  @container (max-height:299px){.map-foot .keys-hint{display:none}}
+}
+.layer{padding:2px 9px;font-size:12px;display:inline-flex;align-items:center;gap:6px}
+.layer[aria-pressed=true]{background:var(--panel);border-color:var(--line)}.layer[aria-pressed=true]:hover{border-color:var(--muted)}
+.layer[aria-pressed=false]{border-style:dashed;color:var(--muted)}.layer[aria-pressed=false] .lg{opacity:.3}
+.key{display:inline-flex;align-items:center;gap:5px;color:var(--muted)}
+.lg{display:inline-block;width:18px;height:0;border-top:3px solid var(--map-path)}.lg.planned{border-top-style:dashed}
 .lg.mark{width:10px;height:10px;border:0;border-radius:50%;background:var(--person)}
 .link{font-size:12px;color:var(--accent)}
 .detail-line{display:flex;flex-wrap:wrap;gap:4px 14px;margin:8px 2px 0;font-size:12px;color:var(--muted)}.detail-line b{color:var(--text);font-weight:600}
@@ -123,7 +134,6 @@ main{max-width:1280px;margin:0 auto;padding:16px 20px 90px;display:grid;gap:12px
 .note{margin:0;color:var(--muted);font-size:13px}
 .review-grid{display:grid;grid-template-columns:minmax(320px,2fr) minmax(0,3fr);gap:12px}.review-grid.two{grid-template-columns:1fr 1fr}
 .dets.big .det-list{max-height:560px}
-.map3d{min-height:180px;border:1px dashed var(--line);border-radius:9px;padding:14px;display:grid;align-content:center;gap:6px}.map3d p{margin:0}
 .timeline{list-style:none;margin:0;padding:0;display:grid;gap:6px}
 .timeline li{display:flex;gap:10px;font-size:13px;padding:6px 8px;border-left:3px solid var(--line);background:var(--bg);border-radius:0}
 .timeline li.detection{border-left-color:var(--person)}.timeline li.intervention{border-left-color:var(--warning)}.timeline li.mode{border-left-color:var(--accent)}
@@ -155,7 +165,6 @@ body[data-view=control] main{padding-bottom:24px}body[data-view=review] main{pad
   .live-main .dets{display:grid;grid-template-rows:auto minmax(0,1fr);min-height:0;overflow:hidden}
   .live-main .dets .det-list{width:100%;height:auto;max-height:100%;min-height:0;overflow-x:hidden;overflow-y:auto;overscroll-behavior:contain;padding-right:4px}
   .live-main .map svg{flex:1;min-height:0;height:100%}
-  .live-main .legend{margin-top:6px}
 }
 @media (max-width:1099px),(max-height:699px){.live-main{display:grid;gap:12px}.side{display:grid;gap:12px}}
 /* 실시간 감독 칸 배치(presets.js 격자). 좁은 화면에서는 프리셋에 적힌 순서(중요한 칸부터)대로 쌓는다 */
@@ -187,14 +196,14 @@ body[data-view=control] main{padding-bottom:24px}body[data-view=review] main{pad
 @media (max-width:520px){.views a{padding:5px 8px;font-size:13px}.scenario{order:5}.controls{padding:8px 16px}}
 /* 게이트웨이 연결(실시간) */
 .feed{position:absolute;inset:0;width:100%;height:100%;object-fit:contain;background:var(--video)}
-.map-empty{flex:1;min-height:120px;display:flex;align-items:center;justify-content:center;text-align:center;padding:16px;color:var(--muted);font-size:13px;background:var(--map);border-radius:9px}
+.map-empty{flex:1;min-height:120px;display:flex;flex-direction:column;gap:10px;align-items:center;justify-content:center;text-align:center;padding:16px;color:var(--muted);font-size:13px;background:var(--map);border-radius:9px}
+.map-empty button{padding:3px 10px;font-size:12px;color:var(--text)}
 .keys-hint{font-size:11px}
 .map3d-slot{flex:1;min-height:220px;display:flex;background:var(--map);border-radius:9px;overflow:hidden}
 .map3d-slot>.map-empty{flex:1}
 .map3d-host{flex:1;display:flex;min-height:0}
 .map3d-host canvas{flex:1;width:100%;height:100%;min-height:220px;display:block;touch-action:none;cursor:grab}
 .map3d-host canvas:active{cursor:grabbing}
-.map3d-info{display:flex;gap:8px;align-items:center;flex-wrap:wrap;margin-top:6px;font-size:12px}
 .live-map-save{display:flex;align-items:center;gap:10px;margin-top:8px;padding-top:8px;border-top:1px solid var(--line);flex-wrap:wrap;flex-shrink:0}
 .live-map-save button{flex:none;min-height:28px;padding:4px 9px;font-size:12px}
 .live-map-save>span{font-size:12px;color:var(--muted);min-width:0;flex:1 1 180px}
@@ -218,7 +227,6 @@ body[data-view=control] main{padding-bottom:24px}body[data-view=review] main{pad
 .console-slot{display:grid;background:var(--map)}
 .console-frame{position:absolute;z-index:4;border:0;background:var(--map)}
 .console-frame.away{display:none}
-.map3d-info .mini{padding:2px 9px;font-size:12px}
 html:has(body[data-view=map]){scrollbar-gutter:stable}
 body[data-view=map]{min-height:100dvh;display:flex;flex-direction:column}
 body[data-view=map]>.top{position:relative;flex-shrink:0}
@@ -229,7 +237,9 @@ body[data-view=map] #app{flex:1;min-height:0;max-width:none;width:100%;padding:0
 .mark.unsure circle{fill:var(--person);opacity:.45}
 .drone.stale path{opacity:.35}
 .scale line{stroke:var(--muted);stroke-width:2}.scale text{font-size:12px;fill:var(--muted)}
-.lg.mark.gone{background:none;border:2px dashed var(--person);width:10px;height:10px}
+.lg.mark.gone{background:none;border:2px dashed var(--person);width:10px;height:10px}.lg.mark.unsure{opacity:.45}
+.floor{fill:var(--map-plan)}.lg.floor{width:12px;height:10px;border:0;border-radius:2px;background:var(--map-plan)}
+.cam-now circle{fill:var(--map-path);stroke:var(--panel);stroke-width:2}.cam-now.stale{opacity:.35}
 /* 움직임 줄이기 설정이면 꾸밈 움직임을 끈다. 비상 정지 길게 누르기 채움은 얼마나 눌렀는지 알려 주므로 남긴다 */
 @media (prefers-reduced-motion:reduce){#toast{transition:none}}
 /* 이륙 전 확인: 이륙을 누르면 조종 줄 위 오른쪽에 뜨는 칸(폰은 큰 버튼 위에 그대로). 기체 점검 → 사람이 주변 확인 체크 → 이륙 */

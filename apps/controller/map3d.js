@@ -1,5 +1,6 @@
 // 3D 점군 보기(외부 라이브러리 없이 WebGL). 게이트웨이 GET /api/map(gateway-map/0.1)을 그린다.
 // 점(색), 카메라 경로(선), 마지막 카메라 위치(큰 점). 왼쪽 드래그 회전, 오른쪽 드래그 이동, 휠·두 손가락 확대.
+// 카메라 경로는 지도 칸의 "지나온 길" 고르기로 숨길 수 있다(setPathVisible). 마지막 위치는 늘 그린다.
 // 경로와 마지막 위치는 색 토큰 --map-path(2D 지도 경로와 같은 파랑)를 따르고, 테마가 바뀌면(theme.js) 다시 그린다.
 // 사용자가 시점을 건드리기 전까지는 지도가 커질 때마다 전체가 보이게 다시 맞춘다.
 // 좌표는 지도 표시 좌표 그대로(단위는 지도 쪽 scale.unit). up은 카메라 화면 위쪽 평균이며 중력 방향이 아니다.
@@ -61,7 +62,7 @@
       this.canvas = canvas;
       const gl = (this.gl = canvas.getContext("webgl", { antialias: true, alpha: true }));
       this.ok = !!gl;
-      this.n = 0; this.pathN = 0;
+      this.n = 0; this.pathN = 0; this.showPath = true;
       this.view = { yaw: -0.9, pitch: 0.55, dist: 5, target: [0, 0, 0] };
       this.basis = { u: [0, 0, 1], a: [1, 0, 0], b: [0, 1, 0] };
       this.home = null; this.key = null; this.touched = false;
@@ -114,6 +115,13 @@
       this.view = { ...this.home, target: [...target] };
     }
 
+    // 지도 칸 "지나온 길" 고르기. 바뀔 때만 다시 그린다.
+    setPathVisible(on) {
+      if (this.showPath === on) return;
+      this.showPath = on;
+      this.draw();
+    }
+
     reset() { if (this.home) { this.touched = false; this.view = { ...this.home, target: [...this.home.target] }; this.draw(); } }
 
     draw() {
@@ -153,7 +161,7 @@
       };
       const path = this.pathColor || (this.pathColor = tokenColor(this.canvas, "--map-path", PATH_FALLBACK));
       if (this.n) draw(this.buf.p, gl.POINTS, this.n, 2, null, false);
-      if (this.pathN > 1) draw(this.buf.path, gl.LINE_STRIP, this.pathN, 1, path, false);
+      if (this.showPath && this.pathN > 1) draw(this.buf.path, gl.LINE_STRIP, this.pathN, 1, path, false);
       if (this.pathN) draw(this.buf.last, gl.POINTS, 1, 11, path, true);
     }
 
