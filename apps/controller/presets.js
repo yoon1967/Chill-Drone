@@ -29,7 +29,7 @@ window.PRESETS = [
   },
   {
     id: "mapping", name: "지도 만들기", grid: [12, 6],
-    note: "3D 점군을 크게. 지도 콘솔 진행 상황은 지도 칸의 '지도 콘솔 ↗'",
+    note: "3D 점군을 크게. 지도 복원·편집은 위 막대의 '지도 콘솔'",
     panels: [
       { id: "map", x: 0, y: 0, w: 8, h: 6, mode: "3d" },
       { id: "video", x: 8, y: 0, w: 4, h: 3 },
