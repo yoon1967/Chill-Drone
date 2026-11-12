@@ -215,14 +215,13 @@ body[data-view=control] main{padding-bottom:24px}body[data-view=review] main{pad
 .overlay.tl{top:8px;bottom:auto;left:8px;background:var(--video-alert);color:var(--on-strong)}
 /* 지도 콘솔 보기(apps/console 화면을 지도 칸에) · 크게 보기 */
 .map-big{padding:3px 10px;font-size:12px;margin-left:6px}
-.console-slot{height:100%;display:grid;background:var(--map)}
+.console-slot{display:grid;background:var(--map)}
 .console-frame{position:absolute;z-index:4;border:0;background:var(--map)}
 .console-frame.away{display:none}
 .map3d-info .mini{padding:2px 9px;font-size:12px}
-.map-open{font-size:12px;color:var(--accent);text-decoration:none;margin-left:8px;padding:3px 8px;border:1px solid var(--line);border-radius:6px;white-space:nowrap}
-.map-open:hover{border-color:var(--accent)}
-body[data-view=map]{height:100dvh;overflow:hidden;display:flex;flex-direction:column}
-body[data-view=map]>.top{flex-shrink:0}
+html:has(body[data-view=map]){scrollbar-gutter:stable}
+body[data-view=map]{min-height:100dvh;display:flex;flex-direction:column}
+body[data-view=map]>.top{position:relative;flex-shrink:0}
 body[data-view=map] #app{flex:1;min-height:0;max-width:none;width:100%;padding:0;display:block}
 /* 자율 지도(2D): 1 m 눈금·찾은 사람(확정/다시 봤는데 없음/미확정)·오래된 위치 */
 .map .grid line{stroke:var(--line);stroke-width:1}

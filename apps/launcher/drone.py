@@ -326,15 +326,12 @@ def run_real(*, phone=False, no_browser=False, interactive=None):
         start_bridge(procs, url(CONSOLE_PORT), gateway)
         keeper = mapkeeper.MapKeeper(gateway, url(CONSOLE_PORT), say)
         say('       지도: 영상이 켜지면(이륙하면 자동) 실행기가 지도를 시작하고 유지해요.')
-        say('       지도 콘솔도 이 게이트웨이의 드론 연결을 보여 줘요(직접 연결 버튼 없음, 지도를 끝낼 땐 "지도 마무리").')
 
     page = gateway + '/#/live'
     say('[5/5] 화면 열기')
     open_page(page, no_browser)
     say()
     say(f'  실시간 감독  {page}')
-    if keeper:
-        say(f'  실시간 지도  {url(CONSOLE_PORT)}/#live (지도 콘솔)')
     say(f'  지도 콘솔    {gateway}/#/map (촬영 영상 복원·3D 지도 편집)')
     say(f'  탐색 결과    {gateway}/#/review')
     if phone and not reuse:

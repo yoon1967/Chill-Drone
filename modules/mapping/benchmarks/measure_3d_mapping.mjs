@@ -124,8 +124,28 @@ try {
       }`);
     await route.fulfill({response,body:source,headers:{...response.headers(),'cache-control':'no-store'}});
   });
-  await page.goto(url+'/#live');
-  await page.evaluate(()=>fetch('/benchmark/ready'));
+  await page.route('**/reconstruct.html', async route => {
+    const response = await route.fetch();
+    const source = (await response.text()).replace('<script type="module" src="/reconstruct.js"></script>', '');
+    await route.fulfill({response, body: source});
+  });
+  await page.goto(url+'/reconstruct.html');
+  await page.evaluate(async () => {
+    document.getElementById('visual').hidden = false;
+    for (const node of document.querySelectorAll('#visual [id^="progressive-"]')) node.id = 'live-' + node.id;
+    const {connectProgressiveMap} = await import('/progressive-map.js');
+    const view = connectProgressiveMap({prefix: 'live-progressive', compact: true});
+    await fetch('/benchmark/ready');
+    async function update() {
+      const response = await fetch('/api/live/state', {cache: 'no-store'});
+      if (response.ok) {
+        const state = await response.json();
+        if (state.depth_job) view.update(state.depth_job);
+      }
+    }
+    setInterval(update, 750);
+    await update();
+  });
   let finished=false;
   for(let i=0;i<900;i++){
     const state=await (await page.request.get(url+'/benchmark/state')).json();

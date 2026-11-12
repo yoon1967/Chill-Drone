@@ -16,7 +16,6 @@ import time
 import zipfile
 from types import SimpleNamespace
 from urllib.parse import parse_qs, unquote, urlsplit
-from urllib.error import HTTPError
 from urllib.request import ProxyHandler, build_opener
 
 APP = Path(__file__).resolve().parent
@@ -25,7 +24,7 @@ sys.path.insert(0, str(APP.parents[1]))
 from modules.mapping.localization.observations import native_observations
 from modules.mapping.data.live_recording import archive_files
 from modules.mapping.data.session_import import ImportManager, ImportedMap, inside
-from modules.mapping.data.capture_library import capture_library, capture_file, select_capture, reconstruction_library, open_capture_folder
+from modules.mapping.data.capture_library import capture_library, capture_file, select_capture, reconstruction_library, open_capture_folder, editable_maps
 from modules.mapping.data.camera_profiles import CameraProfiles
 from modules.mapping.data.calibration_tutorial import CalibrationTutorial, board_svg
 from modules.mapping.data.calibration_report import calibration_report_pdf
@@ -835,6 +834,12 @@ class ViewerHandler(BaseHTTPRequestHandler):
                     self.json_response({'items': self.imports.library(), 'initial': getattr(self.imports, 'initial', None)})
                 elif action == 'reconstruction-library':
                     self.json_response(reconstruction_library(self.imports))
+                elif action == 'editable-maps':
+                    active = self.current.path.resolve() if self.current and not getattr(self.current, 'done', False) else None
+                    items = editable_maps(self.imports, active)
+                    if self.saved_result:
+                        items.insert(0, {'key': 'configured:result', 'name': self.saved_result.name})
+                    self.json_response({'items': items})
                 elif action == 'capture-library':
                     self.json_response(capture_library(self.imports.root))
                 elif action == 'capture-bundle':
@@ -971,28 +976,6 @@ class ViewerHandler(BaseHTTPRequestHandler):
             self.close_connection = True
             self.json_response({'error': str(error)[:400]}, 400)
 
-    def supervisor_cloud(self):
-        gateway = self.tello_map.gateway if self.tello_map else None
-        if not gateway:
-            self.json_response({'error': 'supervisor_gateway_disabled'}, 404)
-            return
-        from modules.mapping.localization.tello_input import NoRedirect
-        opener = build_opener(ProxyHandler({}), NoRedirect())
-        limit = 16_010_000  # Gateway snapshot limit plus the receive timestamp.
-        try:
-            with opener.open(gateway + '/api/map', timeout=5) as response:
-                payload = response.read(limit + 1)
-            if len(payload) > limit:
-                raise ValueError('supervisor_cloud_too_large')
-            cloud = json.loads(payload)
-            if not isinstance(cloud, dict) or cloud.get('schema_version') != 'gateway-map/0.1':
-                raise ValueError('invalid_supervisor_cloud')
-            self.json_payload(payload)
-        except (OSError, ValueError) as error:
-            empty = isinstance(error, HTTPError) and error.code == 404
-            self.json_response({'error': 'supervisor_cloud_empty' if empty else 'supervisor_cloud_unavailable'},
-                               404 if empty else 502)
-
     def do_GET(self):
         host = self.headers.get("Host", "").split(":", 1)[0]
         if host not in {"127.0.0.1", "localhost"}:
@@ -1035,9 +1018,6 @@ class ViewerHandler(BaseHTTPRequestHandler):
             return
         if path == '/api/reconstruction-models' or path.startswith('/api/reconstruction-models/'):
             self.model_request()
-            return
-        if path == '/api/editor/supervisor':
-            self.supervisor_cloud()
             return
         asset = parse_qs(url.query).get('asset', [None])[0]
         if asset and self.imports and path.startswith('/api/saved/'):
@@ -1329,11 +1309,11 @@ class ViewerHandler(BaseHTTPRequestHandler):
                         pass  # Missing/pruned/unsupported bases always fall back to a complete snapshot.
             self.json_response(value)
             return
-        static = {"/": APP / "index.html", "/app.js": APP / "app.js", "/import-view.js": APP / 'import-view.js', "/objects.js": APP / "objects.js", "/capture.js": APP / "capture.js", "/recording-view.js": APP / "recording-view.js", "/point-grid.js": APP / "point-grid.js", "/point-surfaces.js": APP / "point-surfaces.js", "/style.css": APP / "style.css",
+        static = {"/": APP / "reconstruct.html", "/import-api.js": APP / 'import-api.js',
+                  "/point-grid.js": APP / "point-grid.js", "/point-surfaces.js": APP / "point-surfaces.js",
                   "/point-surface-worker.js": APP / "point-surface-worker.js", "/map-delta.js": APP / "map-delta.js",
                   "/map-source.js": APP / "map-source.js", "/wide-surfaces.js": APP / "wide-surfaces.js",
                   "/frame-latency.js": APP / "frame-latency.js",
-                  "/live-depth-view.js": APP / "live-depth-view.js",
                   "/point-display.js": APP / "point-display.js", "/point-worker-state.js": APP / "point-worker-state.js",
                   "/point-spacing-worker.js": APP / "point-spacing-worker.js",
                   "/tracking-preview.js": APP / "tracking-preview.js",
@@ -1349,8 +1329,9 @@ class ViewerHandler(BaseHTTPRequestHandler):
                   '/axis-gizmo.js': APP / 'axis-gizmo.js',
                   '/map-save.js': APP / 'map-save.js',
                   '/video-folder.js': APP / 'video-folder.js',
-                  '/editor.html': APP / 'editor.html', '/editor.js': APP / 'editor.js',
-                  '/editor-data.js': APP / 'editor-data.js', '/editor.css': APP / 'editor.css',
+                  '/editor-data.js': APP / 'editor-data.js',
+                  '/point-cloud-editor.js': APP / 'point-cloud-editor.js',
+                  '/point-cloud-editor.css': APP / 'point-cloud-editor.css',
                   '/reconstruct.html': APP / 'reconstruct.html', '/reconstruct.js': APP / 'reconstruct.js',
                   '/reconstruct.css': APP / 'reconstruct.css',
                   '/reconstruction-models.js': APP / 'reconstruction-models.js',

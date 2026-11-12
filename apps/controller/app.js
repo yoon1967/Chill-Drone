@@ -13,11 +13,11 @@ const ui = {
   findings: new Map(), lastDet: null, newFindingAt: 0,   // 실시간 사람 탐지: finding_id → 발견, 영상 위 윤곽선용 최근 탐지
   feed: loadPref("controller.feed", "raw") === "ai" ? "ai" : "raw",   // 영상 칸: raw(원본) / ai(사람 탐지 합성 영상). 합성이 끊기면 원본을 보여 준다
   outline: loadPref("controller.outline", "on") !== "off",   // 영상 칸: 원본 위에 사람 윤곽선을 그릴지(보기 고르기, 이 브라우저에 기억)
-  map3d: { mode: loadPref("map-mode", "3d"), host: null, view: null, revision: undefined, loading: false, has: false, editable: false },  // 3D 점군(지도 연결기)
+  map3d: { mode: loadPref("map-mode", "3d"), host: null, view: null, revision: undefined, loading: false, has: false },  // 3D 점군(지도 연결기)
   mapBig: loadPref("map-big", "0") === "1",   // 지도 칸을 가장 큰 칸(기본 프리셋은 영상)과 바꿔 크게 본다
   preset: new URLSearchParams(location.search).get("preset") || loadPref("controller.preset", ""),   // 실시간 감독 칸 배치(presets.js)
   edit: null,   // 화면 편집 중이면 { draft: 고치는 배치, from: 시작한 프리셋 id }
-  console: { frame: null, url: null, slot: null, ro: null, loadedUp: null },
+  console: { frame: null, url: null, slot: null, ro: null, loadedUp: null, height: 0, viewportHeight: 0 },
   autonomy: { connected: false, path: null, people: null, pathRev: 0, peopleRev: 0, loading: false, track: [] },  // 자율 지도(/api/autonomy)
   takeoff: { open: false, confirmedAt: null, sampleChecked: false, focus: null },   // 이륙 전 확인 칸(열림, 주변 확인 보낸 시각, 샘플 체크, 다시 그린 뒤 초점)
 };
@@ -339,13 +339,11 @@ const MAP_MODES = { "2d": "2D 경로", "3d": "3D 점군" };
 
 function mapPanel(st, events, track, tall = false) {
   const mode = ui.live && !tall ? ui.map3d.mode : "2d";   // 탐색 결과(tall)는 3D 칸이 따로 있다
-  const live = ui.live && !tall ? consoleLiveUrl(st) : null;
   const seg = ui.live && !tall ? `<div class="seg map-mode" role="group" aria-label="지도 보기">
       ${Object.entries(MAP_MODES).map(([m, label]) => `<button data-map-mode="${m}" class="${mode === m ? "on" : ""}" aria-pressed="${mode === m}">${label}</button>`).join("")}</div>
-      ${live ? `<a class="map-open" href="${esc(live)}" target="_blank" rel="noopener" title="지도 파트 콘솔의 실시간 지도를 새 탭에서 엽니다">실시간 지도 ↗</a>` : ""}
       ${!ui.mapCanBig ? "" : `<button class="map-big" data-map-big aria-pressed="${ui.mapBig}" title="${ui.mapBig ? "지도를 원래 칸으로 되돌립니다" : "지도와 가장 큰 칸의 자리를 바꿔 지도를 크게 봅니다"}">${ui.mapBig ? "⤡ 원래대로" : "⤢ 크게"}</button>`}` : "";
   const head = `<header><h2>지도</h2>${src("map")}${mode === "2d" ? chip("경로: 자율 비행", "neutral", "src-inline") : ""}
-      <span class="spacer"></span>${seg || `<a class="link" href="${CONSOLE_URL}" target="_blank" rel="noopener">3D 지도 열기 (apps/console)</a>`}</header>`;
+      <span class="spacer"></span>${seg || '<a class="link" href="#/map">지도 콘솔 열기</a>'}</header>`;
   if (mode === "3d") return map3dPanel(st, head);
   if (ui.live) return autonomyMapPanel(st, head, tall);
   const pts = [...S.track, ...S.plan, ...S.rooms.flatMap((r) => [{ x_m: r.x, y_m: r.y }, { x_m: r.x + r.w, y_m: r.y + r.h }])];
@@ -487,12 +485,9 @@ function map3dPanel(st, head, cls = "map") {   // cls: 실시간 감독은 지�
   const unit = m?.unit === "m" ? "m" : "임의 단위(m 아님)";
   const info = mapInfo(m, has);
   const detail = has && m ? `버전 ${m.revision ?? "?"} · 점 ${m.points}${m.points_total > m.points ? `/${m.points_total}` : ""} · ${unit}${info[2] ? ` · ${info[2]}` : ""}` : info[2];
-  const target = cls === "map" && ui.map3d.editable && m?.points > 0 ? consoleTarget(st) : null;
-  const editor = target?.url && new URL("/editor.html?source=supervisor", target.url).href;
   return `<section class="panel ${cls}" data-part="map3d" aria-label="3D 지도">${head}
     <div class="map3d-slot">${has ? "" : `<div class="map-empty">${esc(info[2] || "점군을 기다리는 중입니다.")}</div>`}</div>
     <div class="map3d-info">${chip(info[0], info[1])}<span class="muted">${esc(detail)}</span>
-      ${editor ? `<a class="map-open" href="${esc(editor)}" target="_blank" rel="noopener">3D 지도 편집 ↗</a>` : ""}
       ${has ? `<span class="muted keys-hint">왼쪽 드래그 회전 · 우클릭 드래그 이동 · 휠/두 손가락 확대 · 두 번 눌러 처음 시점</span>` : ""}</div>${mapSaveBar()}</section>`;
 }
 
@@ -521,17 +516,15 @@ async function loadMap() {
       const map = await r.json();
       m.revision = map.source?.revision;
       if (m.view?.ok) m.view.setData(map);
-      const editable = map.source?.pose_source !== "fake";   // 체험의 가짜 지도 서버는 편집기를 제공하지 않는다.
-      const changed = !m.has || m.editable !== editable;
+      const changed = !m.has;
       m.has = true;
-      m.editable = editable;
       if (changed) { ui.cache = {}; render(); }
     }
   } catch (e) { /* 다음 상태 갱신 때 다시 */ }
   m.loading = false;
 }
 
-// 지도 콘솔 화면(#/map): 촬영 영상 복원 전용 화면을 연다.
+// 지도 콘솔 화면(#/map): 지도 복원·편집 탭을 연다.
 // 그래서 iframe은 #app 밖(body)에 한 번만 만들고 이 화면의 자리(.console-slot) 위에 겹쳐 둔다(placeConsole).
 // 화면을 다시 그리거나 실시간 감독 등 다른 화면으로 가도 콘솔이 새로 열리지 않는다(다른 화면에서는 숨기기만).
 const CONSOLE_URL = "http://127.0.0.1:8790/";   // 지도 연결기가 콘솔 주소를 알려 주기 전 기본값(apps/console 기본 포트)
@@ -549,12 +542,6 @@ function consoleTarget(st) {
   return { url: new URL("/reconstruct.html", u).href, origin: u.origin };
 }
 
-// 지도 칸 "실시간 지도 ↗": 지도 콘솔 첫 화면의 실시간 지도 탭(#live). #/map은 영상 복원 전용이라 따로 연다.
-function consoleLiveUrl(st) {
-  const target = consoleTarget(st);
-  return target.url ? new URL("/#live", target.origin).href : null;   // 이 기기에서 못 여는 주소면 링크를 안 보인다
-}
-
 function placeConsole() {
   const c = ui.console;
   const slot = view() === "map" ? $("#app .console-slot") : null;
@@ -564,12 +551,14 @@ function placeConsole() {
   if (!c.frame && t?.url) {   // 콘솔 보기를 처음 고를 때 연다
     c.frame = document.createElement("iframe");
     c.frame.className = "console-frame away";
-    c.frame.title = "촬영 영상 복원";
+    c.frame.title = "지도 콘솔";
     c.frame.allow = "fullscreen";
+    c.frame.addEventListener("load", () => { c.viewportHeight = 0; placeConsole(); });
     document.body.append(c.frame);
   }
   if (!c.frame) return;
   if (t?.url && c.url !== t.url) {
+    c.height = c.viewportHeight = 0;
     c.url = t.url; c.frame.src = t.url; c.loadedUp = up;
   }
   if (c.slot !== slot) {   // 칸이 다시 그려지면 새 자리의 크기 변화를 따라간다
@@ -579,10 +568,26 @@ function placeConsole() {
     c.ro?.observe(slot);
   }
   if (!slot || !t?.url) return c.frame.classList.add("away");   // 숨기기만 한다(콘솔은 계속 살아 있음)
+  const viewportHeight = Math.max(1, Math.floor(innerHeight - (slot.getBoundingClientRect().top + scrollY)));
+  slot.style.minHeight = `${Math.max(viewportHeight, c.height)}px`;
   const r = slot.getBoundingClientRect();
   Object.assign(c.frame.style, { left: `${r.left + scrollX}px`, top: `${r.top + scrollY}px`, width: `${r.width}px`, height: `${r.height}px` });
   c.frame.classList.remove("away");
+  if (viewportHeight !== c.viewportHeight) {
+    c.viewportHeight = viewportHeight;
+    c.frame.contentWindow.postMessage({ type: "mapping-console-viewport", height: viewportHeight }, t.origin);
+  }
 }
+
+// The parent page scrolls the header and iframe together.
+window.addEventListener("message", event => {
+  const c = ui.console;
+  if (!c.url || event.source !== c.frame?.contentWindow || event.origin !== new URL(c.url).origin) return;
+  const { type, height } = event.data || {};
+  if (type !== "mapping-console-height" || !Number.isSafeInteger(height) || height <= 0 || height === c.height) return;
+  c.height = height;
+  placeConsole();
+});
 
 const CMD_LABEL = {
   takeoff: "이륙", land: "착륙", pause: "일시정지", resume: "다시 시작", takeover: "넘겨받기",
@@ -800,7 +805,7 @@ function renderReview() {
       ${ui.live ? map3dPanel(st, `<header><h2>3D 지도</h2>${src("map")}</header>`, "map3d-panel") : `<section class="panel" aria-label="3D 지도"><header><h2>3D 지도</h2>${src("map")}</header>
         <div class="map3d"><p>팀 지도 화면(<code>apps/console</code>)의 점군·카메라 경로를 여기에 띄울 자리입니다.</p>
         <p class="muted">게이트웨이에 연결하고 지도 연결기를 켜면 여기에 점군이 그려집니다. 단위·좌표계는 지도 쪽 표시를 따릅니다.</p>
-        <a class="link" href="http://127.0.0.1:8790/" target="_blank" rel="noopener">3D 지도 열기</a></div></section>`}
+        <a class="link" href="#/map">지도 콘솔 열기</a></div></section>`}
       ${timelinePanel(track)}
     </div>`;
 }

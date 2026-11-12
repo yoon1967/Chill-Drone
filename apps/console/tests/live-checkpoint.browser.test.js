@@ -99,6 +99,24 @@ test('supervisor saves cumulative live captures through the actual cross-origin 
         await page.setViewportSize({width: 1440, height: 1000});
         await page.screenshot({path: process.env.MAPPING_CHECKPOINT_SCREENSHOT, fullPage: true});
       }
+      const originalScene = join(saved.path, 'reconstruction/scene.json');
+      const beforeEdit = await readFile(originalScene);
+      await page.getByRole('link', {name: '지도 콘솔', exact: true}).click();
+      const frame = page.frameLocator('.console-frame');
+      await frame.getByRole('tab', {name: '지도 편집'}).click();
+      const checkpoint = frame.getByRole('button', {name: new RegExp(captureId)});
+      await checkpoint.click();
+      await frame.locator('#editor-viewport canvas').waitFor().catch(async error => {
+        throw new Error(await frame.locator('#edit-load-status').textContent(), {cause: error});
+      });
+      await frame.getByRole('button', {name: '전체 선택'}).click();
+      await frame.getByRole('button', {name: '선택에 적용'}).click();
+      assert.deepEqual(await readFile(originalScene), beforeEdit, 'editor leaves the saved map on disk intact');
+      const alias = await (await page.request.get(consoleUrl + '/api/import/editable-maps')).json();
+      assert.equal(alias.items.find(item => item.key === captureId).asset?.startsWith('import_'), true);
+      await frame.getByRole('button', {name: '새로고침', exact: true}).click();
+      assert.equal(await checkpoint.getAttribute('aria-pressed'), 'true');
+      assert.deepEqual(errors, []);
     } finally {
       await browser?.close();
       if (python && python.exitCode === null) { python.stdin.write('quit\n'); await once(python, 'exit'); }

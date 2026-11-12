@@ -8,7 +8,12 @@ test('top and bottom axis selection preserve the orbit frame during drag, pan an
   const browser = await chromium.launch({headless: true, channel: 'msedge'});
   try {
     const page = await browser.newPage();
-    await page.goto(url + '/#saved');
+    await page.goto(url + '/reconstruct.html');
+    await page.addStyleTag({content: `
+      #axis-probe .axis-gizmo { position: absolute; top: 0; right: 0; width: 128px; height: 128px; }
+      #axis-probe .axis-gizmo svg { position: absolute; width: 100%; pointer-events: none; }
+      #axis-probe .axis-gizmo button { position: absolute; transform: translate(-50%, -50%); min-height: 20px; padding: 0 4px; }
+    `});
     for (const up of [1, -1]) {
       await page.evaluate(async up => {
         const THREE = await import('/vendor/three.module.js');
@@ -46,41 +51,5 @@ test('top and bottom axis selection preserve the orbit frame during drag, pan an
         assert.ok((await snapshot()).distance > panned.distance, 'wheel zoom works after axis selection');
       }
     }
-  } finally { await browser.close(); }
-});
-
-test('restored maps use interactive world axes and never start retired hologram analysis', {skip: !url, timeout: 30000}, async () => {
-  const {chromium} = process.env.MAPPING_PLAYWRIGHT_MODULE ? createRequire(import.meta.url)(process.env.MAPPING_PLAYWRIGHT_MODULE) : await import('../node_modules/playwright/index.mjs');
-  const browser = await chromium.launch({headless: true, channel: 'msedge'});
-  try {
-    const page = await browser.newPage({viewport: {width: 1440, height: 1000}});
-    const errors = [], workers = []; page.on('pageerror', e => errors.push(e.message)); page.on('worker', worker => workers.push(worker.url()));
-    const fixture = {source: 'saved', schema_version: 'phone-sfm-result/1.2', input_run_id: 'axis-test', created_utc: '2026-11-03T00:00:00Z',
-      pose_source: 'orb_slam3_depth', scale: {unit: 'arbitrary'}, segment_id: 0,
-      points: [[0, 0, 0, 1, 255, 0, 0, 0, 1], [1, 1, 0, 1, 0, 255, 0, 0, 1], [2, 0, 1, 1, 0, 0, 255, 0, 1]],
-      cameras: [0, 1].map(i => ({frame_id: `frame_${i}.jpg`, timestamp_s: i, position: [i, 0, 0], width: 32, height: 32, params: [20, 20, 16, 16], world_from_camera_rotation: [[1, 0, 0], [0, 1, 0], [0, 0, 1]]})),
-      quality: {result_status: 'complete', input_frames: 2, registered_frames: 2, registration_ratio: 1, excluded_frames: [], processing_seconds: 1, mean_reprojection_error_px: null, bounds: {min: [0, 0, 1], max: [1, 1, 1]}}};
-    await page.route('**/api/saved/state*', route => route.fulfill({json: {source: 'saved', status: 'offline', map_available: true}}));
-    await page.route('**/api/saved/run*', route => route.fulfill({json: fixture}));
-    await page.route('**/api/import/status?*', route => route.fulfill({json: {id: 'import_1111111111111111', status: 'complete', summary: {kind: 'result', name: 'axis-test', media: []}}}));
-    await page.goto(url + '/?asset=import_1111111111111111&mode=hologram#saved');
-    await page.locator('#viewport .axis-gizmo button:not(:disabled)').first().waitFor();
-    assert.equal(await page.locator('.view-buttons,[data-mode="hologram"],#reset,#progressive-fit').count(), 0);
-    for (const axis of ['+X', '+Y', '+Z', '-X', '-Y', '-Z']) {
-      await page.locator(`#viewport [data-axis="${axis}"]`).click();
-      await page.waitForTimeout(80);
-      const actual = (await page.locator('#viewport').getAttribute('data-camera-direction')).split(',').map(Number);
-      const expected = [0, 0, 0]; expected['XYZ'.indexOf(axis[1])] = axis[0] === '+' ? -1 : 1;
-      actual.forEach((value, i) => assert.ok(Math.abs(value - expected[i]) < .0001, `${axis} points at the orbit target`));
-    }
-    const before = await page.locator('#viewport [data-axis="+X"]').getAttribute('style');
-    const canvas = await page.locator('#viewport canvas').boundingBox();
-    await page.mouse.move(canvas.x + canvas.width / 2, canvas.y + canvas.height / 2);
-    await page.mouse.down(); await page.mouse.move(canvas.x + canvas.width / 2 + 120, canvas.y + canvas.height / 2 + 60, {steps: 8}); await page.mouse.up();
-    await page.waitForTimeout(150);
-    assert.notEqual(await page.locator('#viewport [data-axis="+X"]').getAttribute('style'), before, 'axis widget follows orbit rotation');
-    assert.equal(await page.locator('#hologram-controls').isVisible(), false);
-    assert.deepEqual(workers.filter(worker => /point-spacing|surface/.test(worker)), []);
-    assert.deepEqual(errors, []);
   } finally { await browser.close(); }
 });

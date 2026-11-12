@@ -590,7 +590,7 @@ class ImportManager:
             self._save(self.jobs[key])
             return self.public(key)
 
-    def library(self):
+    def library(self, *, limit=100):
         rows = []
         seen_maps = set()
         for folder in sorted(self.root.iterdir(), key=lambda p: p.stat().st_mtime, reverse=True):
@@ -628,7 +628,7 @@ class ImportManager:
         for row in rows:
             folder = inside(self.root, row.get('local_id', row.get('id')))
             row['updated_at'] = folder.stat().st_mtime
-        return rows[:100]
+        return rows[:limit]
 
     def open_local(self, name):
         if not re.fullmatch(r'[A-Za-z0-9_-]{1,96}', name):
