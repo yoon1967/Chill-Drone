@@ -1,5 +1,5 @@
 .edit-workbench {
-  display: grid; grid-template-columns: minmax(180px, 245px) minmax(0, 1fr);
+  display: grid; grid-template-columns: minmax(190px, 250px) minmax(0, 1fr);
   gap: 16px; align-items: start;
 }
 .edit-library, .edit-stage { min-width: 0; background: #fff; border: 1px solid var(--border); border-radius: 12px; }
@@ -9,9 +9,10 @@
 .edit-status { margin: 10px 14px; }
 #edit-list { max-height: clamp(215px, calc(var(--workspace-height) - 155px), 650px); padding: 3px; margin: 8px -3px 0; }
 .edit-record {
-  width: 100%; display: grid; justify-content: stretch; gap: 2px; text-align: left;
-  padding: 8px 10px; overflow-wrap: anywhere;
+  width: 100%; display: grid; justify-content: stretch; gap: 5px; text-align: left;
+  padding: 7px; overflow-wrap: anywhere;
 }
+.edit-record img { width: 100%; aspect-ratio: 16 / 9; object-fit: cover; border-radius: 5px; background: #e8eeeb; }
 .edit-record span, #editor-unit, #editor-guide { font-size: 12px; color: var(--muted); }
 .edit-record:hover, .editor-modes button:hover { background: #f4f7f5; }
 .edit-record[aria-pressed="true"], .editor-modes button[aria-pressed="true"] {
@@ -26,33 +27,25 @@
   padding: 12px; border-bottom: 1px solid var(--border);
 }
 .editor-document { flex: 1 1 155px; min-width: 0; }
-.editor-modes, .editor-history, .editor-paint { display: flex; flex-wrap: wrap; gap: 6px; align-items: center; }
-.editor-toolbar button, .editor-inspector button { min-height: 34px; padding: 5px 9px; font-size: 13px; }
-.editor-body { display: grid; grid-template-columns: minmax(0, 1fr) 172px; }
+.editor-controls, .editor-modes, .editor-layers { display: flex; flex-wrap: wrap; gap: 6px; align-items: center; }
+.editor-controls { gap: 8px 14px; margin-bottom: 8px; }
+.editor-toolbar button, .editor-controls button { min-height: 34px; padding: 5px 9px; font-size: 13px; }
+.editor-layers label { display: flex; align-items: center; gap: 5px; font-size: 13px; }
+.editor-layers input { accent-color: var(--accent); }
 .editor-view { min-width: 0; padding: 10px; }
 #editor-viewport {
-  height: clamp(300px, calc(var(--workspace-height) - 190px), 750px);
-  background: #152126; border-radius: 8px; touch-action: none;
+  height: clamp(300px, calc(var(--workspace-height) - 220px), 750px);
+  background: #101921; border-radius: 8px; touch-action: none;
 }
-#editor-viewport canvas { z-index: auto; outline-offset: -3px; }
-#editor-viewport[data-tool="box"] canvas { cursor: crosshair; }
-#editor-selection-box {
-  position: absolute; z-index: 1; border: 1px solid #ffcd7c;
-  background: rgb(255 205 124 / 20%); pointer-events: none;
-}
+#editor-viewport canvas { z-index: auto; outline-offset: -3px; cursor: grab; }
+#editor-viewport canvas:active { cursor: grabbing; }
 #editor-guide { margin-top: 8px; }
-.editor-inspector { border-left: 1px solid var(--border); background: #f8faf9; padding: 12px; }
-.editor-inspector section { display: grid; gap: 6px; padding-top: 11px; margin-top: 11px; border-top: 1px solid var(--border); }
-.editor-inspector h3 { margin: 0 0 2px; font-size: 13px; }
-.editor-count { font-size: 13px; font-variant-numeric: tabular-nums; }
-.editor-paint input { width: 37px; height: 34px; padding: 3px; border: 1px solid var(--border); border-radius: 8px; background: #fff; }
-@media (max-width: 1000px) {
-  .editor-body { grid-template-columns: minmax(0, 1fr); }
-  .editor-inspector { border-left: 0; border-top: 1px solid var(--border); }
-  .editor-inspector section { display: flex; align-items: center; flex-wrap: wrap; }
-}
+#editor-status { color: var(--muted); font-size: 13px; margin: 5px 0 8px; }
+#editor-status:empty { display: none; }
+#editor-progress { width: 100%; margin-bottom: 8px; }
 @media (max-width: 680px) {
   .edit-workbench { grid-template-columns: minmax(0, 1fr); }
-  #edit-list { max-height: 160px; }
+  #edit-list { max-height: 180px; }
+  .edit-record img { max-height: 92px; object-position: center; }
   #edit-placeholder { min-height: 175px; }
 }

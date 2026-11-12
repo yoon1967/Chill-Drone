@@ -15,7 +15,7 @@ import threading
 import time
 import zipfile
 from types import SimpleNamespace
-from urllib.parse import parse_qs, unquote, urlsplit
+from urllib.parse import parse_qs, quote, unquote, urlsplit
 from urllib.request import ProxyHandler, build_opener
 
 APP = Path(__file__).resolve().parent
@@ -29,6 +29,8 @@ from modules.mapping.data.camera_profiles import CameraProfiles
 from modules.mapping.data.calibration_tutorial import CalibrationTutorial, board_svg
 from modules.mapping.data.calibration_report import calibration_report_pdf
 from apps.console.video_folder import video_folder
+from apps.console.roomform_jobs import RoomformJobs
+from modules.mapping.data.roomform_errors import RoomformError
 
 
 def scene_delta(previous, current):
@@ -189,11 +191,13 @@ def result_metadata(path, modified_ns, size):
 class ViewerHandler(BaseHTTPRequestHandler):
     tello_input_lock = threading.Lock()
     def __init__(self, *args, result=None, session=None, objects=None, live=None, tello=None, tello_map=None,
-                 timeline=None, observations=None, demo=None, demo_camera=None, imports=None, profiles=None, calibrations=None, drones=None, **kwargs):
+                 timeline=None, observations=None, demo=None, demo_camera=None, imports=None, profiles=None,
+                 calibrations=None, drones=None, roomform=None, **kwargs):
         self.drones = drones
         self.calibrations = calibrations
         self.profiles = profiles
         self.imports = imports
+        self.roomform = roomform
         self.imported = None
         self.saved_result = Path(result).resolve() if result else None
         self.recorded_session = Path(session).resolve() if session else None
@@ -325,6 +329,9 @@ class ViewerHandler(BaseHTTPRequestHandler):
             return
         if urlsplit(self.path).path.startswith('/api/import/'):
             self.import_request()
+            return
+        if urlsplit(self.path).path == '/api/saved/roomform':
+            self.roomform_request()
             return
         if urlsplit(self.path).path == '/api/reconstruction-models/download':
             self.model_request()
@@ -820,6 +827,38 @@ class ViewerHandler(BaseHTTPRequestHandler):
             self.close_connection = True
             self.json_response({'error': str(error)[:200]}, 400)
 
+    def roomform_request(self):
+        if self.roomform is None:
+            self.json_response({'error': 'roomform_runtime_missing'}, 503)
+            return
+        query = parse_qs(urlsplit(self.path).query)
+        if self.command == 'GET':
+            try:
+                self.json_response(self.roomform.status(query.get('id', [''])[0]))
+            except RoomformError as error:
+                self.json_response({'error': str(error)}, 404)
+            return
+
+        asset = query.get('asset', [None])[0]
+        try:
+            if asset is not None:
+                record = self.imports.resolve(asset) if self.imports else None
+                result = record.result() if record else None
+                root = record.root if record else None
+            else:
+                result = root = self.saved_result
+            if result is None:
+                raise ValueError('roomform_source_unavailable')
+            scene = inside(root, (result / 'scene.json').relative_to(root).as_posix())
+            status = inside(root, (result / 'status.json').relative_to(root).as_posix())
+            if not scene.is_file() or load_json(status).get('status') not in {'complete', 'partial'}:
+                raise ValueError('roomform_source_unavailable')
+            self.json_response(self.roomform.start(scene), 202)
+        except RoomformError as error:
+            self.json_response({'error': str(error)}, 409 if str(error) == 'roomform_busy' else 503)
+        except (OSError, ValueError, TypeError, KeyError):
+            self.json_response({'error': 'roomform_source_unavailable'}, 404)
+
     def import_request(self):
         if not self.imports:
             self.json_response({'error': 'imports_not_enabled'}, 404)
@@ -838,7 +877,15 @@ class ViewerHandler(BaseHTTPRequestHandler):
                     active = self.current.path.resolve() if self.current and not getattr(self.current, 'done', False) else None
                     items = editable_maps(self.imports, active)
                     if self.saved_result:
-                        items.insert(0, {'key': 'configured:result', 'name': self.saved_result.name})
+                        item = {'key': 'configured:result', 'name': self.saved_result.name}
+                        try:
+                            assets = load_json(inside(self.saved_result, 'local_assets.json'))
+                            frames = assets.get('frames') if isinstance(assets, dict) else None
+                            if isinstance(frames, list) and frames and isinstance(frames[len(frames) // 2], str):
+                                item['thumbnail'] = '/api/saved/frame/' + quote(frames[len(frames) // 2], safe='')
+                        except (OSError, ValueError, TypeError):
+                            pass
+                        items.insert(0, item)
                     self.json_response({'items': items})
                 elif action == 'capture-library':
                     self.json_response(capture_library(self.imports.root))
@@ -1015,6 +1062,9 @@ class ViewerHandler(BaseHTTPRequestHandler):
             return
         if path.startswith('/api/import/'):
             self.import_request()
+            return
+        if path == '/api/saved/roomform':
+            self.roomform_request()
             return
         if path == '/api/reconstruction-models' or path.startswith('/api/reconstruction-models/'):
             self.model_request()
@@ -1384,7 +1434,14 @@ class ViewerHandler(BaseHTTPRequestHandler):
             if name not in assets["frames"] or Path(name).name != name:
                 self.send_error(404)
                 return
-            root = self.imported.image_root(result) if self.imported and self.source == 'saved' else Path(assets["images_root"]).resolve()
+            if self.imported and self.source == 'saved':
+                root = self.imported.image_root(result)
+            else:
+                images = Path(assets["images_root"])
+                root = (result / images).resolve()
+                if not images.is_absolute() and not root.is_relative_to(result.resolve()):
+                    self.send_error(404)
+                    return
             if root is None:
                 self.send_error(404)
                 return
@@ -1422,6 +1479,9 @@ def main():
     parser.add_argument('--import-source', type=Path, help='Explicit local ZIP, session, video or frames to inspect in the saved tab')
     parser.add_argument("--tello-only", action="store_true", help="Open the console for Tello person detection without a map")
     parser.add_argument("--objects", type=Path, help="Optional planar object bundle for an offline result")
+    parser.add_argument('--roomform-checkpoint', type=Path,
+                        default=os.environ.get('ROOMFORM_CHECKPOINT') or None,
+                        help='Use an explicitly selected local Roomform checkpoint')
     parser.add_argument("--port", type=int, default=8790)
     parser.add_argument("--enable-camera", action="store_true", help="Enable local browser camera -> Docker ORB-SLAM3")
     parser.add_argument("--enable-tello-map", action="store_true", help="Enable Tello camera -> live 3D map (no flight commands)")
@@ -1449,7 +1509,8 @@ def main():
         parser.error("Select a complete or partial reconstruction result")
     if not (APP / "node_modules/three/build/three.module.js").is_file():
         parser.error("Install apps/console dependencies first: pnpm install --frozen-lockfile")
-    imports = ImportManager(args.live_root, APP.parents[1] / 'data/real_data/03_movie_source')
+    imports = ImportManager(args.live_root, APP.parents[1] / 'data/real_data/03_movie_source',
+                            roomform_checkpoint=args.roomform_checkpoint.resolve() if args.roomform_checkpoint else None)
     live = None
     if args.enable_camera or args.enable_tello_map or args.tello_gateway:
         from modules.mapping.localization.orbslam3_live import LiveManager
@@ -1493,7 +1554,8 @@ def main():
         initial = imports.add_local(args.import_source)
         imports.initial = initial
         print(f'Import selected: {initial}', flush=True)
-    server = ViewerServer(("127.0.0.1", args.port), partial(ViewerHandler, result=result, imports=imports, profiles=profiles, calibrations=calibrations, drones=drones,
+    roomform = RoomformJobs(imports.models)
+    server = ViewerServer(("127.0.0.1", args.port), partial(ViewerHandler, result=result, imports=imports, profiles=profiles, calibrations=calibrations, drones=drones, roomform=roomform,
         session=args.session, objects=args.objects, live=live, tello=tello, tello_map=tello_map, timeline=Timeline(), observations=ObservationCache(),
         demo=demo, demo_camera=demo_camera))
     print(f"Phone mapping viewer: http://127.0.0.1:{args.port}/", flush=True)
@@ -1503,6 +1565,7 @@ def main():
         pass
     finally:
         server.server_close()
+        roomform.shutdown()
         drones.release()
         calibrations.shutdown()
         if tello_map:

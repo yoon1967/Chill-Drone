@@ -160,6 +160,17 @@ async function refreshEditableMaps() {
       button.type = 'button';
       button.className = 'edit-record';
       button.dataset.mapKey = record.key;
+      const thumbnailKey = record.local_id || record.asset;
+      const thumbnail = record.thumbnail || (thumbnailKey &&
+        '/api/import/thumbnail?' + new URLSearchParams({local_id: thumbnailKey}));
+      if (thumbnail) {
+        const image = document.createElement('img');
+        image.alt = '';
+        image.loading = 'lazy';
+        image.addEventListener('error', () => image.remove(), {once: true});
+        image.src = thumbnail;
+        button.append(image);
+      }
       const name = document.createElement('strong');
       name.textContent = record.name;
       button.append(name);
@@ -174,7 +185,7 @@ async function refreshEditableMaps() {
     }));
     markEditedMap();
     label.hidden = items.length > 0;
-    label.textContent = '편집할 수 있는 저장 지도가 없습니다.';
+    label.textContent = '열 수 있는 저장 지도가 없습니다.';
   } catch {
     if (version !== editLibraryVersion) return;
     label.hidden = false;
@@ -197,28 +208,30 @@ async function resolveEditAsset(record, signal) {
 async function openEditableMap(record) {
   editChoice++;
   if (editLoad?.key === record.key) return;
+  if (record.key === pointEditor?.key) {
+    pointEditor.showOriginal();
+    return;
+  }
   editLoad?.controller.abort();
+  pointEditor?.close();
+  markEditedMap();
   const label = $('edit-load-status');
-  label.hidden = record.key === pointEditor?.key;
-  if (label.hidden) { editLoad = null; return; }
+  label.hidden = false;
   const controller = new AbortController();
   editLoad = {key: record.key, controller};
   const signal = AbortSignal.any([controller.signal, AbortSignal.timeout(60000)]);
   label.textContent = `${record.name} 점군을 불러오는 중입니다.`;
   try {
-    const {connectPointCloudEditor} = await import('./point-cloud-editor.js');
+    const {connectRoomformViewer} = await import('./point-cloud-editor.js');
     signal.throwIfAborted();
-    pointEditor ??= connectPointCloudEditor();
-    let cloud;
-    if (!pointEditor.hasDraft(record.key)) {
-      const asset = await resolveEditAsset(record, signal);
-      const query = asset ? '?' + new URLSearchParams({asset}) : '';
-      const response = await fetch('/api/saved/run' + query, {cache: 'no-store', signal});
-      if (!response.ok) throw new Error('저장된 점군을 읽을 수 없습니다.');
-      cloud = editorCloud(await response.json());
-    }
+    pointEditor ??= connectRoomformViewer();
+    const asset = await resolveEditAsset(record, signal);
+    const query = asset ? '?' + new URLSearchParams({asset}) : '';
+    const response = await fetch('/api/saved/run' + query, {cache: 'no-store', signal});
+    if (!response.ok) throw new Error('저장된 점군을 읽을 수 없습니다.');
+    const cloud = editorCloud(await response.json());
     signal.throwIfAborted();
-    pointEditor.open(record, cloud);
+    pointEditor.open(record, cloud, asset);
     label.hidden = true;
   } catch (error) {
     if (!controller.signal.aborted) label.textContent = error.name === 'TimeoutError'
