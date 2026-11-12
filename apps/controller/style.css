@@ -8,8 +8,8 @@
   --danger:#a32d2d;--danger-soft:#fbe6e6;--neutral-soft:#f1f2f4;--map:#ffffff;--video:#20292a;
   --header:#202124;--header-line:#202124;--header-active:#34373c;--header-text:#ffffff;--header-selected:#d9dce1;
   --header-ok:#7fd16b;--header-warn:#f0b44c;--header-bad:#ff8a8a;
-  --map-path:var(--accent);--map-plan:#4a4f55;--person:#e24b4a;--person-strong:#b3261e;--person-off:#868d86;--on-strong:#ffffff;
-  --person-box:#ff6b6b;--person-box-fill:rgba(255,107,107,.18);
+  --map-path:var(--accent);--map-plan:#4a4f55;--person:#d6336c;--person-strong:#a61e4d;--person-soft:#fce4ec;--person-off:#868d86;--on-strong:#ffffff;
+  --person-box:#e64995;--person-box-fill:rgba(230,73,149,.18);
   --overlay-bg:rgba(0,0,0,.63);--overlay-text:#e8efe9;--video-muted:#8a9a90;--video-alert:rgba(192,57,43,.87);
   --accent-tint:rgba(31,95,153,.12);--accent-tint-strong:rgba(31,95,153,.28);--danger-tint:rgba(163,45,45,.16);--shadow:0 1px 3px rgba(0,0,0,.13);
   color-scheme:light;
@@ -19,7 +19,7 @@
   --accent:#78aee6;--accent-soft:#1a2c40;--on-accent:#0b1622;--success:#8fd17f;--success-soft:#1c2e1a;--warning:#e8b04a;--warning-soft:#33270f;
   --danger:#ff8a8a;--danger-soft:#3b1d1f;--neutral-soft:#232830;--map:#12161b;--map-plan:#aab2bb;--video:#0a0d10;
   --header:#0b0e12;--header-line:#2c323a;--header-active:#222831;--header-text:#e6e8eb;--header-selected:#ffffff;
-  --person-strong:#ff5148;--person-off:#7d857f;
+  --person:#f06595;--person-strong:#f783ac;--person-soft:#3a1d2b;--person-off:#7d857f;
   --accent-tint:rgba(120,174,230,.14);--accent-tint-strong:rgba(120,174,230,.30);--danger-tint:rgba(255,138,138,.18);--shadow:0 1px 3px rgba(0,0,0,.5);
   color-scheme:dark;
 }
@@ -75,6 +75,9 @@ main{max-width:1280px;margin:0 auto;padding:16px 20px 90px;display:grid;gap:12px
 .alert{display:flex;gap:12px;align-items:center;padding:10px 14px;border-radius:12px;border:1px solid}
 .alert.danger{background:var(--danger-soft);color:var(--danger);border-color:var(--danger)}
 .alert.warning{background:var(--warning-soft);color:var(--warning);border-color:var(--warning)}
+.alert.person{background:var(--person-soft);color:var(--person-strong);border-color:var(--person);flex-wrap:wrap}
+.alert-photo{flex:none;display:block;width:72px;height:54px;border-radius:8px;overflow:hidden;background:var(--video)}.alert-photo img{width:100%;height:100%;object-fit:cover;display:block}
+.alert-text{flex:1 1 200px;min-width:0;display:flex;flex-direction:column;gap:2px}.alert-actions{display:flex;gap:6px;flex-wrap:wrap}
 .alert span{flex:1}.alert button{color:inherit;border-color:currentColor;background:transparent;font-weight:600}.alert.slim{padding:8px 12px}
 .panel{background:var(--panel);border:1px solid var(--line);border-radius:12px;padding:12px;min-width:0}
 .panel>header{display:flex;align-items:center;flex-wrap:wrap;gap:2px;margin-bottom:10px}
@@ -152,6 +155,9 @@ button.big{height:64px;font-size:17px;font-weight:700;border-radius:12px}
 .estop.wide{width:100%;height:64px;font-size:17px;border-radius:12px}
 #toast{position:fixed;left:50%;bottom:84px;transform:translateX(-50%) translateY(20px);opacity:0;background:var(--text);color:var(--bg);padding:8px 14px;border-radius:8px;font-size:13px;transition:.2s;pointer-events:none;z-index:9}
 #toast.show{opacity:1;transform:translateX(-50%)}
+#flash{position:fixed;inset:0;pointer-events:none;border:6px solid var(--person);border-radius:4px;opacity:0;z-index:8}#flash.on{animation:flash 1.4s ease-out}
+@keyframes flash{0%{opacity:0}15%{opacity:1}100%{opacity:0}}
+.top .toggle{font:inherit;font-size:12px;background:var(--panel);color:var(--text);border:1px solid var(--line);border-radius:6px;padding:4px 8px}.top .toggle[aria-pressed=true]{background:var(--brand-soft);border-color:var(--brand)}
 body[data-view=control] main{padding-bottom:24px}body[data-view=review] main{padding-bottom:24px}
 /* 실시간 감독: 모니터 한 화면(1366×768 이상)에 스크롤 없이 */
 @media (min-width:1100px) and (min-height:700px){
@@ -245,7 +251,7 @@ body[data-view=map] #app{flex:1;min-height:0;max-width:none;width:100%;padding:0
 .floor{fill:var(--map-plan)}.lg.floor{width:12px;height:10px;border:0;border-radius:2px;background:var(--map-plan)}
 .cam-now circle{fill:var(--map-path);stroke:var(--panel);stroke-width:2}.cam-now.stale{opacity:.35}
 /* 움직임 줄이기 설정이면 꾸밈 움직임을 끈다. 비상 정지 길게 누르기 채움은 얼마나 눌렀는지 알려 주므로 남긴다 */
-@media (prefers-reduced-motion:reduce){#toast{transition:none}}
+@media (prefers-reduced-motion:reduce){#toast{transition:none}#flash.on{animation:none}}
 /* 이륙 전 확인: 이륙을 누르면 조종 줄 위 오른쪽에 뜨는 칸(폰은 큰 버튼 위에 그대로). 기체 점검 → 사람이 주변 확인 체크 → 이륙 */
 .takeoff-pop{position:absolute;right:8px;bottom:calc(100% + 8px);z-index:8;width:min(560px,calc(100vw - 32px));display:grid;gap:10px;
   background:var(--panel);border:2px solid var(--accent);border-radius:12px;padding:12px 14px;box-shadow:var(--shadow)}

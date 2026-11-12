@@ -10,6 +10,7 @@ const $ = (sel, root = document) => root.querySelector(sel);
 const ui = {
   scenario: "person", reviews: {},      // 샘플의 확인·오탐: event_id → confirmed / false_positive(실시간은 게이트웨이가 발견마다 둔다)
   reviewPending: {},                    // 실시간: 게이트웨이에 보내는 중인 확인·오탐(finding_id → 값). 응답이 오면 지운다
+  alertFirst: 0,                        // 사람 발견 알림이 묶고 있는 새 발견의 첫 번호(알림이 닫힌 뒤 오는 발견부터 새로 센다)
   live: false, ws: null, wsOpen: false, everOpen: false, state: null, timeline: [], seq: 0, cache: {}, view: null,
   findings: new Map(), lastDet: null, newFindingAt: 0,   // 실시간 사람 탐지: finding_id → 발견, 영상 위 윤곽선용 최근 탐지
   feed: loadPref("controller.feed", "raw") === "ai" ? "ai" : "raw",   // 영상 칸: raw(원본) / ai(사람 탐지 합성 영상). 합성이 끊기면 원본을 보여 준다
@@ -205,15 +206,29 @@ function statusStrip(st, events, compact = false) {
   </section>`;
 }
 
-function alertBox(sc, events) {
+// 사람 발견 알림(분홍: 위험 빨강과 나눔). 사진·번호·신뢰도를 보이고 확인·오탐을 바로 누르게 한다(누르면 알림이 닫힌다).
+// 알림이 떠 있는 동안 이어진 새 발견은 알림 하나로 묶어 "새 발견 3건"이라고 적는다. 사진·버튼은 가장 최근 발견 것이다.
+// "여기서 멈추기"는 게이트웨이가 멈추기(pause)를 받을 때(자율 탐색 중)만 둔다. 땅·수동 비행에서는 멈출 것이 없다.
+function personAlert(events, st) {
+  const e = events[0], n = findingNo(e);
+  const burst = ui.live ? events.filter((x) => x.review === "unreviewed" && x.n >= ui.alertFirst).length : 1;
+  const stop = st.allowed.includes("pause") ? `<button data-cmd="pause">여기서 멈추기</button>` : "";
+  const photo = e.photo_url ? `<a class="alert-photo" href="${esc(e.photo_url)}" target="_blank" rel="noopener" title="사진 크게 보기"><img src="${esc(e.photo_url)}" alt="발견 ${n}번 사진"></a>` : "";
+  const more = [`신뢰도 ${e.confidence.toFixed(2)}`, findingTime(e), e.people > 1 ? `최대 ${e.people}명` : "",
+    burst > 1 ? `새 발견 ${burst}건(${ui.alertFirst}~${n}번)` : "", stop ? "자동으로 멈추지 않습니다" : ""].filter(Boolean).join(" · ");
+  return `<div class="alert person" role="alert">${photo}
+    <div class="alert-text"><b>사람 발견 ${n}번</b><span>${esc(more)}</span></div>
+    <div class="alert-actions" data-event="${esc(e.event_id)}">${reviewButtons(e)}${stop}</div></div>`;
+}
+
+function alertBox(sc, events, st) {
   let body = "";
   if (sc.alert === "connecting") {
     body = `<div class="alert warning slim" role="status"><b>게이트웨이 연결 중</b><span>연결되면 버튼이 열립니다.</span></div>`;
   } else if (sc.alert === "gateway") {
     body = `<div class="alert danger" role="alert"><b>게이트웨이 연결 끊김</b><span>다시 연결하는 중입니다. 이 화면에서 보낸 조종 입력은 0으로 처리됩니다.</span></div>`;
   } else if (sc.alert === "person" && events[0]) {
-    body = `<div class="alert danger" role="alert"><b>사람 발견</b><span>신뢰도 ${events[0].confidence.toFixed(2)} · ${ui.live ? "발견" : "지도"} ${findingNo(events[0])}번. 자동으로 멈추지 않습니다.</span>
-      <button data-cmd="pause">여기서 멈추기</button></div>`;
+    body = personAlert(events, st);
   } else if (sc.alert === "link") {
     body = `<div class="alert warning" role="alert"><b>통신 약함</b><span>더 진행하지 않고 멈췄습니다. 다시 시작하면 연결이 끊길 수 있습니다.</span>
       <button data-cmd="return_home">출발점으로 복귀</button></div>`;
@@ -943,7 +958,7 @@ function renderLive() {  // 모니터 한 화면(1366×768 이상)에 스크롤 
   const ctx = current();
   const locked = ui.edit && editLocked();   // 편집 중에 이륙했거나 창이 좁아지면 편집을 닫는다(저장 안 함)
   if (locked) { ui.edit = null; syncEditbar(); toast(EDIT_CLOSED[locked]); }
-  return `${statusStrip(ctx.st, ctx.events)}${alertBox(ctx.sc, ctx.events)}${board(ctx, livePreset())}${controlBar(ctx.st)}`;
+  return `${statusStrip(ctx.st, ctx.events)}${alertBox(ctx.sc, ctx.events, ctx.st)}${board(ctx, livePreset())}${controlBar(ctx.st)}`;
 }
 
 function renderMap() {
@@ -1004,8 +1019,8 @@ function renderControl() {
   const grounded = onGround(st);
   return `<div class="phone">
     ${statusStrip(st, events, true)}
-    ${alertBox(sc, events)}
-    <div data-part="latest">${latest ? `<div class="alert danger slim"><b>최근 발견</b><span>사람 ${latest.confidence.toFixed(2)} · ${findingTime(latest)}</span></div>` : ""}</div>
+    ${alertBox(sc, events, st)}
+    <div data-part="latest">${latest ? `<div class="alert person slim"><b>최근 발견</b><span>사람 ${latest.confidence.toFixed(2)} · ${findingTime(latest)}</span></div>` : ""}</div>
     <p class="note">현장에서 드론 옆에 두는 화면입니다. 자율 시작은 PC 감독 화면에서만 할 수 있습니다.</p>
     ${takeoffPanel(st, true)}
     <div class="big-grid" data-part="big">
@@ -1056,6 +1071,7 @@ function focusToKeep() {
 function render() {
   liveSave?.setTarget(ui.live ? consoleTarget(ui.state).origin || null : null);
   syncHeader();
+  syncTitle();
   const v = view();
   const html = { live: renderLive, map: renderMap, review: renderReview, control: renderControl }[v]();
   const app = $("#app");
@@ -1155,8 +1171,11 @@ function onDetection(msg) {
   const f = msg.finding, isNew = !ui.findings.has(f.finding_id);
   ui.findings.set(f.finding_id, f);
   if (isNew) {
-    ui.newFindingAt = Date.now();
     const n = findingNumberOf(f.finding_id), top = ui.timeline[0], conf = f.best.confidence;
+    if (Date.now() - ui.newFindingAt >= PERSON_ALERT_MS) ui.alertFirst = n;   // 알림이 떠 있지 않았으면 새 묶음의 첫 번호
+    ui.newFindingAt = Date.now();
+    flashPerson();
+    beep();
     if (top?.group) {   // 바로 앞 줄도 사람 발견이면 그 줄에 묶는다(시각은 마지막 발견)
       Object.assign(top.group, { last: n, count: top.group.count + 1, best: Math.max(top.group.best, conf) });
       top.time = hhmmss(f.first_seen);
@@ -1196,6 +1215,62 @@ async function sendReview(id, pick) {
   }
   if (ui.reviewPending[id] === review) delete ui.reviewPending[id];   // 그사이 다시 누른 값이 있으면 그것을 기다린다
   render();
+}
+
+// 브라우저 탭 제목에 미확인 사람 발견 수: 다른 창을 보고 있어도 알 수 있게(확인·오탐을 하면 줄어든다).
+const BASE_TITLE = document.title;
+function syncTitle() {
+  const n = ui.live ? liveFindings().filter((e) => e.review === "unreviewed").length : 0;
+  const title = n ? `(${n}) 사람 발견 · ${BASE_TITLE}` : BASE_TITLE;
+  if (document.title !== title) document.title = title;
+}
+
+// 새 사람 발견 때 화면 가장자리를 한 번 분홍으로 깜빡인다(#flash는 다시 그리는 칸 밖에 있어 깜빡임이 끊기지 않는다).
+// 움직임 줄이기 설정이면 CSS가 깜빡이지 않는다.
+function flashPerson() {
+  const el = $("#flash");
+  if (!el) return;
+  el.classList.remove("on");
+  void el.offsetWidth;   // 이어진 발견이면 처음부터 다시
+  el.classList.add("on");
+}
+
+// 새 사람 발견 소리(위 막대 "소리", 기본 꺼짐, 이 브라우저에 기억). 짧은 두 음. 브라우저는 사람이 화면을 한 번 눌러야 소리를 내게 하므로
+// 켤 때와 화면을 누를 때 소리 장치를 깨운다. 소리를 못 내도 알림 띠·탭 제목은 그대로다.
+const sound = { on: loadPref("controller.sound", "off") === "on", ctx: null };
+function soundCtx() {
+  const Ctx = window.AudioContext || window.webkitAudioContext;
+  if (!sound.ctx && Ctx) sound.ctx = new Ctx();
+  if (sound.ctx?.state === "suspended") sound.ctx.resume().catch(() => {});
+  return sound.ctx;
+}
+function beep() {
+  if (!sound.on) return;
+  try {
+    const ctx = soundCtx(), t = ctx.currentTime;
+    [[880, 0], [1175, 0.18]].forEach(([hz, d]) => {
+      const o = ctx.createOscillator(), g = ctx.createGain();
+      o.frequency.value = hz;
+      g.gain.setValueAtTime(0.0001, t + d);
+      g.gain.exponentialRampToValueAtTime(0.25, t + d + 0.02);
+      g.gain.exponentialRampToValueAtTime(0.0001, t + d + 0.15);
+      o.connect(g).connect(ctx.destination);
+      o.start(t + d);
+      o.stop(t + d + 0.16);
+    });
+  } catch (e) { /* 소리 장치가 없거나 막힘 */ }
+}
+function syncSound() {
+  const b = $("#sound");
+  if (!b) return;
+  b.setAttribute("aria-pressed", String(sound.on));
+  b.textContent = sound.on ? "소리 켜짐" : "소리 꺼짐";
+}
+function toggleSound() {
+  sound.on = !sound.on;
+  savePref("controller.sound", sound.on ? "on" : "off");
+  syncSound();
+  if (sound.on) beep();   // 켠 것을 바로 들려준다(누른 순간이라 브라우저가 소리를 허용한다)
 }
 
 async function loadFindings() {  // 화면을 새로 열거나 다시 연결했을 때 그동안의 발견
@@ -1692,6 +1767,9 @@ document.addEventListener("click", (ev) => {
 // ---------- 시작 ----------
 (async () => {
   ui.live = await detectGateway();
+  $("#sound")?.addEventListener("click", toggleSound);
+  syncSound();
+  document.addEventListener("pointerdown", () => { if (sound.on) soundCtx(); }, { passive: true });   // 다음 알림 소리를 위해 장치를 깨워 둔다
   const sel = $("#scenario");
   const badge = $("#conn");
   if (ui.live) {

@@ -15,6 +15,7 @@ TEXT_PAIRS = [
     ('--success', '--success-soft'), ('--warning', '--warning-soft'),
     ('--danger', '--danger-soft'), ('--danger', '--panel'),
     ('--success', '--panel'), ('--warning', '--panel'), ('--person-strong', '--panel'),   # 상태 카드 값, 연결 카드 짧은 말
+    ('--person-strong', '--person-soft'), ('--text', '--person-soft'),   # 사람 발견 알림
     ('--header-text', '--header'), ('--header-text', '--header-active'), ('--header-selected', '--header-active'),
 ]
 # (그림, 바탕): 글자가 아닌 표시 3:1
