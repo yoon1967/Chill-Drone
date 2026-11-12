@@ -30,6 +30,7 @@
         <option value="auto">자동</option><option value="light">밝게</option><option value="dark">어둡게</option>
       </select>
     </label>
+    <button type="button" class="toggle" id="sound" aria-pressed="false" title="새 사람 발견 때 짧은 소리를 냅니다(이 브라우저에 기억)">소리 꺼짐</button>
     <span class="badge sample" id="conn" title="서버에 연결하지 않고 계약 형식의 샘플 데이터로 그린 화면입니다">샘플 데이터</span>
   </header>
   <div class="editbar" id="editbar" role="toolbar" aria-label="화면 편집" hidden>
@@ -44,6 +45,7 @@
   </div>
   <main id="app"></main>
   <div id="toast" role="status" aria-live="polite"></div>
+  <div id="flash" aria-hidden="true"></div>
   <script src="sample.js"></script>
   <script src="map3d.js"></script>
   <script src="floorplan.js"></script>
