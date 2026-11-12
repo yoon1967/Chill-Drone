@@ -21,7 +21,8 @@ TEXT_PAIRS = [
 # (그림, 바탕): 글자가 아닌 표시 3:1
 GRAPHIC_PAIRS = [('--map-path', '--map'), ('--map-plan', '--map'), ('--person', '--map'), ('--person-strong', '--map'), ('--person-off', '--map'),
                  ('--header-ok', '--header-active'), ('--header-warn', '--header-active'), ('--header-bad', '--header-active'),
-                 ('--success', '--panel'), ('--warning', '--panel'), ('--danger', '--panel'), ('--muted', '--panel')]   # 머리줄·연결 카드 점
+                 ('--success', '--panel'), ('--warning', '--panel'), ('--danger', '--panel'), ('--muted', '--panel'),   # 머리줄·연결 카드 점
+                 ('--on-strong', '--person'), ('--on-person-strong', '--person-strong')]   # 지도 사람·발견 지점 위 번호(굵은 글자)
 
 
 def block(selector):

@@ -23,6 +23,7 @@ const ui = {
   edit: null,   // 화면 편집 중이면 { draft: 고치는 배치, from: 시작한 프리셋 id }
   console: { frame: null, url: null, slot: null, ro: null, loadedUp: null, height: 0, viewportHeight: 0 },
   autonomy: { connected: false, path: null, people: null, pathRev: 0, peopleRev: 0, loading: false, track: [] },  // 자율 지도(/api/autonomy)
+  selFinding: null,                     // 고른 발견(event_id): 발견 카드와 지도의 발견 지점을 같이 강조한다
   takeoff: { open: false, confirmedAt: null, sampleChecked: false, focus: null },   // 이륙 전 확인 칸(열림, 주변 확인 보낸 시각, 샘플 체크, 다시 그린 뒤 초점)
 };
 if (!["2d", "3d"].includes(ui.map3d.mode)) ui.map3d.mode = "3d";   // 지도 콘솔은 따로 화면(#/map)
@@ -335,11 +336,12 @@ function detectionCard(e, big = false) {
   const thumb = e.photo_url
     ? `<a class="thumb photo" href="${esc(e.photo_url)}" target="_blank" rel="noopener" title="사진 크게 보기"><img src="${esc(e.photo_url)}" alt="발견 ${n} 사진" loading="lazy"><span>${n}</span></a>`
     : `<div class="thumb" aria-hidden="true"><span>${n}</span></div>`;
+  const spot = e.drone?.pose?.frame === "map" ? e.drone.pose : null;   // 그때 자율 위치(사진을 찍을 때 드론 자리)
   const where = !big ? ""
-    : e.seen_at ? `<div class="muted">그때 드론: ${(MODE[e.drone?.mode] || ["없음"])[0]} · 높이 ${meters(e.drone?.height_m)} · 사람 위치는 아직 없음</div>`
+    : e.seen_at ? `<div class="muted">${spot ? `그때 드론 위치 (${spot.x_m.toFixed(1)}, ${spot.y_m.toFixed(1)}) m · 지도의 ${n}번 네모` : "그때 드론 위치 없음(자율 비행 연결 전)"} · ${(MODE[e.drone?.mode] || ["없음"])[0]} · 높이 ${meters(e.drone?.height_m)} · 사람 위치는 아직 없음</div>`
     : `<div class="muted">발견 위치: 그때 드론 위치 (${poseAt(e.pts_us / 1e6).x_m.toFixed(1)}, ${poseAt(e.pts_us / 1e6).y_m.toFixed(1)}) m · 사람 위치는 아직 없음</div>`;
   const more = e.seen_at ? ` · ${e.people > 1 ? `최대 ${e.people}명 · ` : ""}${e.events}번 봄` : ` · ${esc(e.frame_id)}`;   // 이 발견으로 묶인 탐지 장면 수
-  return `<article class="det ${big ? "big" : ""} ${e.review}" data-event="${esc(e.event_id)}" tabindex="0">
+  return `<article class="det ${big ? "big" : ""} ${e.review}${ui.selFinding === e.event_id ? " sel" : ""}" data-event="${esc(e.event_id)}" tabindex="0">
     ${thumb}
     <div class="det-body">
       <div class="det-title">사람 · 신뢰도 ${e.confidence.toFixed(2)} ${chip(state[0], state[1])}</div>
@@ -394,8 +396,17 @@ const MAP_MODE_TIP = { "2d": "자율 비행이 보낸 드론 위치·경로·찾
 
 // 지도 칸 표시 고르기: 범례가 곧 켜고 끄는 버튼이다. 끈 표시는 이 브라우저에 기억한다(controller.map.hidden).
 // 드론 위치와 출발은 늘 그린다. 3D 점군은 지나온 길(카메라 경로)만 고른다(사람 점은 지도 파트가 점군에 칠한다).
-const LAYER_SWATCH = { flown: "flown", planned: "planned", people: "mark" };
+const LAYER_SWATCH = { flown: "flown", planned: "planned", people: "mark", finds: "find" };
 const shown = (key) => !ui.mapHidden.has(key);
+
+// 발견 지점: 그 발견(사람 탐지 파트)의 대표 사진을 찍을 때 드론이 있던 자리. 사람 위치가 아니다.
+// 자율 비행이 찍은 사람(원)과 나누려고 번호 네모로 그린다. 번호는 발견 칸 번호, 색은 확인 상태(미확인·확인·오탐).
+const REVIEW_LABEL = { confirmed: "확인됨", false_positive: "오탐", unreviewed: "미확인" };
+function findMark(x, y, e, n) {
+  const tip = `발견 ${n}번 · ${REVIEW_LABEL[e.review] || "미확인"} · 그때 드론 위치(사람 위치 아님) · 누르면 발견 칸에서 찾습니다`;
+  return `<g class="find ${e.review}${ui.selFinding === e.event_id ? " sel" : ""}" data-event="${esc(e.event_id)}"><title>${esc(tip)}</title>`
+    + `<rect x="${(+x - 9).toFixed(1)}" y="${(+y - 9).toFixed(1)}" width="18" height="18" rx="4"/><text x="${x}" y="${(+y + 4).toFixed(1)}">${n}</text></g>`;
+}
 
 function layerButton(key, label, tip) {
   const on = shown(key);
@@ -420,7 +431,7 @@ function mapPanel(st, events, track, tall = false) {
   const head = `<header><h2>지도</h2><span class="src" title="이 칸을 채우는 파트">${source}</span><span class="spacer"></span>${seg || '<a class="link" href="#/map">지도 콘솔 열기</a>'}</header>`;
   if (mode === "3d") return map3dPanel(st, head);
   if (plan) return floorPlanPanel(st, head, plan, tall);
-  if (ui.live) return autonomyMapPanel(st, head, tall);
+  if (ui.live) return autonomyMapPanel(st, head, tall, events);
   return sampleMapPanel(st, events, track, head, tall);
 }
 
@@ -437,20 +448,20 @@ function sampleMapPanel(st, events, track, head, tall) {
   const path = shown("flown") && track.length > 1 ? `<polyline class="flown" points="${track.map((p) => `${X(p.x_m)},${Y(p.y_m)}`).join(" ")}"/>` : "";
   const planned = shown("planned") && st.mission && st.mode !== "grounded"
     ? `<polyline class="planned" points="${S.plan.map((p) => `${X(p.x_m)},${Y(p.y_m)}`).join(" ")}"/>` : "";
-  const marks = !shown("people") ? "" : events.map((e) => {
-    const p = poseAt(e.pts_us / 1e6), n = S.events.findIndex((x) => x.event_id === e.event_id) + 1;
-    return `<g class="mark ${e.review}" data-event="${esc(e.event_id)}"><circle cx="${X(p.x_m)}" cy="${Y(p.y_m)}" r="10"/><text x="${X(p.x_m)}" y="${+Y(p.y_m) + 4}">${n}</text></g>`;
+  const marks = !shown("finds") ? "" : events.map((e) => {
+    const p = poseAt(e.pts_us / 1e6);
+    return findMark(X(p.x_m), Y(p.y_m), e, findingNo(e));
   }).join("");
   const now = track[track.length - 1] || S.track[0];
   const drone = `<g class="drone" transform="translate(${X(now.x_m)},${Y(now.y_m)})"><path d="M0,-11 L8,7 L0,3 L-8,7 Z"/></g>`;
   const start = `<circle class="start" cx="${X(0)}" cy="${Y(0)}" r="7"/><text class="start-label" x="${+X(0) + 12}" y="${+Y(0) + 4}">출발</text>`;
   const layers = layerButton("flown", "지나온 길", "드론이 지나온 길") + layerButton("planned", "계획 경로", "자율 비행이 가려는 길")
-    + layerButton("people", "발견 지점", "사람을 발견했을 때 드론이 있던 자리(사람 위치 아님)");
+    + layerButton("finds", "발견 지점", "사람을 발견했을 때 드론이 있던 자리(사람 위치 아님). 번호는 발견 칸 번호");
   return `<section class="panel map ${tall ? "tall" : ""}" data-part="map" aria-label="2D 지도">${head}
     <svg viewBox="0 0 ${W} ${H}" preserveAspectRatio="xMidYMid meet" role="img" aria-label="샘플 지도: 지나온 길, 계획 경로, 발견 지점, 지금 드론 위치">
       ${rooms}${path}${planned}${start}${marks}${drone}
     </svg>
-    ${mapFoot(null, shown("people") && events.length ? "발견 지점은 그때 드론 위치입니다(사람 위치 아님)" : "", layers)}
+    ${mapFoot(null, shown("finds") && events.length ? "발견 지점은 그때 드론 위치입니다(사람 위치 아님)" : "", layers)}
   </section>`;
 }
 
@@ -501,9 +512,11 @@ function autonomyStatus(st) {
   return ["자율 연결됨", "success", ""];
 }
 
-function autonomyMapPanel(st, head, tall) {
+function autonomyMapPanel(st, head, tall, events = []) {
   const a = ui.autonomy, pose = st.pose, s = st.autonomy || {};
   const path = a.path?.points || [], found = a.people?.people || [], unsure = a.people?.unconfirmed || [];
+  // 발견 지점: 게이트웨이가 탐지 사진에 붙인 그때 자율 위치가 있는 발견만(자율 연결 전에 찍힌 발견은 위치가 없다)
+  const spots = events.filter((e) => e.drone?.pose?.frame === "map");
   if (!autonomyHas(st)) {
     // 빈 칸: 무엇을 기다리는지 쉬운 말로. 지도 파트의 3D 점군이 들어오고 있으면 바로 바꿔 볼 수 있게 한다.
     const why = !ui.wsOpen ? "게이트웨이에 연결되지 않았습니다 · 연결되면 자율 비행이 보낸 지도를 그립니다"
@@ -514,7 +527,7 @@ function autonomyMapPanel(st, head, tall) {
       <div class="map-empty"><span>${esc(why)}</span>${to3d}</div>${mapSaveBar()}</section>`;
   }
   const pts = [[0, 0], ...path, ...a.track, ...found.map((q) => [q.x_m, q.y_m]), ...unsure.map((q) => [q.x_m, q.y_m]),
-    ...(pose ? [[pose.x_m, pose.y_m]] : [])];
+    ...spots.map((e) => [e.drone.pose.x_m, e.drone.pose.y_m]), ...(pose ? [[pose.x_m, pose.y_m]] : [])];
   const span = (vals) => {
     const lo = Math.min(...vals) - 0.6, hi = Math.max(...vals) + 0.6, d = Math.max(3, hi - lo), c = (lo + hi) / 2;
     return [c - d / 2, c + d / 2];
@@ -535,6 +548,7 @@ function autonomyMapPanel(st, head, tall) {
   };
   const marks = !shown("people") ? "" : found.map((q, i) => person(q, i + 1, q.gone ? "gone" : "found")).join("")
     + unsure.map((q, i) => person(q, found.length + i + 1, "unsure")).join("");
+  const finds = !shown("finds") ? "" : [...spots].reverse().map((e) => findMark(X(e.drone.pose.x_m), Y(e.drone.pose.y_m), e, findingNo(e))).join("");   // 최근 것이 위에
   // 게이트웨이와 끊기거나 위치가 늦으면 드론을 흐리게 그린다(마지막 위치).
   const drone = pose ? `<g class="drone ${pose.valid && ui.wsOpen ? "" : "stale"}" transform="translate(${X(pose.x_m)},${Y(pose.y_m)}) rotate(${(90 - pose.yaw_rad * 180 / Math.PI).toFixed(1)})"><path d="M0,-11 L8,7 L0,3 L-8,7 Z"/></g>` : "";
   const start = `<g><title>출발: 자율 비행 지도의 원점(켠 자리)</title><circle class="start" cx="${X(0)}" cy="${Y(0)}" r="7"/><text class="start-label" x="${+X(0) + 12}" y="${+Y(0) + 4}">출발</text></g>`;
@@ -545,11 +559,12 @@ function autonomyMapPanel(st, head, tall) {
   const keys = !shown("people") ? "" : `${gone ? `<span class="key"><i class="lg mark gone"></i>다시 봤는데 없음 ${gone}</span>` : ""}${unsure.length ? `<span class="key"><i class="lg mark unsure"></i>미확정 ${unsure.length}</span>` : ""}`;
   const layers = layerButton("flown", "지나온 길", "드론이 지나온 길(화면이 받은 위치를 이어 그림)")
     + layerButton("planned", "계획 경로", "자율 비행이 가려는 길")
-    + layerButton("people", n ? `사람 ${n}명` : "사람", "자율 비행이 지도에 찍은 사람 위치. 번호는 찾은 사람, 점선은 다시 봤는데 없음, 흐린 점은 미확정");
+    + layerButton("people", n ? `사람 ${n}명` : "사람", "자율 비행이 지도에 찍은 사람 위치(원). 번호는 찾은 사람, 점선은 다시 봤는데 없음, 흐린 점은 미확정")
+    + (spots.length ? layerButton("finds", `발견 지점 ${spots.length}`, "사람 탐지가 사람을 찍을 때 드론이 있던 자리(네모, 사람 위치 아님). 번호는 발견 칸 번호") : "");
   const status = autonomyStatus(st);
   return `<section class="panel map ${tall ? "tall" : ""}" data-part="map" aria-label="2D 지도">${head}
     <svg viewBox="0 0 ${W} ${H}" preserveAspectRatio="xMidYMid meet" role="img" aria-label="자율 지도: 드론 위치, 지나온 길, 계획 경로, 찾은 사람(1칸 1 m, 출발이 원점)">
-      <g class="grid">${grid.join("")}</g>${shown("planned") ? line(path, "planned") : ""}${shown("flown") ? line(a.track, "flown") : ""}${start}${marks}${drone}${scale}
+      <g class="grid">${grid.join("")}</g>${shown("planned") ? line(path, "planned") : ""}${shown("flown") ? line(a.track, "flown") : ""}${start}${marks}${finds}${drone}${scale}
     </svg>
     ${mapFoot(status, status[2], layers + keys)}${mapSaveBar()}
   </section>`;
@@ -1345,9 +1360,15 @@ document.addEventListener("click", (ev) => {
     ui.reviews[id] = ui.reviews[id] === rv.dataset.review ? "unreviewed" : rv.dataset.review;   // 샘플: 이 브라우저 안에서만
     return render();
   }
-  const pick = ev.target.closest(".det[data-event], .mark[data-event]");
-  if (pick) {
-    document.querySelectorAll("[data-event]").forEach((el) => el.classList.toggle("sel", el.dataset.event === pick.dataset.event));
+  const pick = ev.target.closest(".det[data-event], .find[data-event]");
+  if (pick) {   // 발견 카드 ↔ 지도의 발견 지점: 같이 강조하고, 지도에서 고르면 그 카드가 보이게 스크롤한다
+    const id = pick.dataset.event;
+    ui.selFinding = ui.selFinding === id ? null : id;
+    render();
+    if (ui.selFinding && pick.classList.contains("find")) {
+      const still = matchMedia("(prefers-reduced-motion: reduce)").matches;
+      $(`#app .det[data-event="${CSS.escape(id)}"]`)?.scrollIntoView({ block: "nearest", behavior: still ? "auto" : "smooth" });
+    }
     return;
   }
   const ol = ev.target.closest("[data-outline]");

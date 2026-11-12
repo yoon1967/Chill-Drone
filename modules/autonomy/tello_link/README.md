@@ -242,7 +242,7 @@ python modules/autonomy/tello_link/gateway_server.py             # 실제 Tello 
 - 화면 연결이 끊기면 그 화면의 rc는 바로 0이다. `height_m`은 하방 tof 값이며 무효면 `null`이다.
 - 사람 탐지 연결(`detection_inbox.py`): 탐지 프로그램은 `/snapshot.jpg`를 받아 처리하고, 헤더의 `X-Input-Id`·`X-Frame-Id`를 이벤트
   `input_id`·`frame_id`에, `X-Frame-Time`을 `detected_at_utc`에 넣어 `POST /api/detections`로 보낸다. 사람이 없어도 보낸다(동작 중 근거).
-  - 게이트웨이는 같은 프레임의 사진·수신 시각·그때 드론 상태(모드·높이·배터리)를 붙여 회차 폴더 `detections.jsonl`·`detections/<event_id>.jpg`에 남기고,
+  - 게이트웨이는 같은 프레임의 사진·수신 시각·그때 드론 상태(모드·높이·배터리, 자율 위치가 새 값이면 `pose`(frame map))를 붙여 회차 폴더 `detections.jsonl`·`detections/<event_id>.jpg`에 남기고,
     사람이 있으면 화면에 `detection` 메시지를 보낸다. `drone_state.detection`에 동작 여부·초당 처리 수·발견 수가 있다.
   - 발견: 사람이 3초 넘게 안 보이다 다시 보이면 새 발견(사람 구분은 하지 않음). 대표 사진은 신뢰도가 가장 높은 장면, 사진은 발견마다 초당 1장까지.
   - 기본은 같은 PC에서 온 결과만 받는다(인증이 없음). 다른 PC에서 탐지를 돌리면 `--allow-remote-detections`(같은 망 시험에서만).

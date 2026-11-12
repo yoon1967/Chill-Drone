@@ -137,6 +137,20 @@ class GatewayAutonomyTest(GatewayCase):
         self.say("cmd_vel", vx_mps=0.3, vy_mps=0, vz_mps=0, yaw_rate_rps=0, frame="body", seq=99)
         self.assertEqual(self.gw.arbiter.mode, "manual")   # 자율 명령으로 다시 auto가 되지 않는다
 
+    def test_frames_carry_fresh_autonomy_pose(self):
+        """탐지 사진(프레임)에 붙는 그때 드론 상태에 자율 위치가 새 값일 때만 실린다(발견 지점을 지도에 찍는 근거)."""
+        self.assertIsNone(self.gw._drone_brief()["pose"])   # 자율이 없으면 비운다
+        self.assertTrue(self.open())
+        self.say("pose", x_m=1.23456, y_m=-0.5, yaw_rad=0.3, sigma_m=0.2, frame="map")
+        self.assertEqual(self.gw._drone_brief()["pose"],
+                         {"x_m": 1.235, "y_m": -0.5, "yaw_rad": 0.3, "sigma_m": 0.2, "frame": "map"})
+        clock = self.gw.autonomy.clock
+        self.gw.autonomy.clock = lambda: clock() + 5   # 늦은 위치는 붙이지 않는다(지어내지 않는다)
+        try:
+            self.assertIsNone(self.gw._drone_brief()["pose"])
+        finally:
+            self.gw.autonomy.clock = clock
+
     def sent_events(self):
         return [m for m in self.sent if m.get("type") == "event"]
 
