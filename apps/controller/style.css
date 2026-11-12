@@ -8,7 +8,7 @@
   --danger:#a32d2d;--danger-soft:#fbe6e6;--neutral-soft:#f1f2f4;--map:#ffffff;--video:#20292a;
   --header:#202124;--header-line:#202124;--header-active:#34373c;--header-text:#ffffff;--header-selected:#d9dce1;
   --header-ok:#7fd16b;--header-warn:#f0b44c;--header-bad:#ff8a8a;
-  --map-path:var(--accent);--map-plan:#4a4f55;--person:#d6336c;--person-strong:#a61e4d;--person-soft:#fce4ec;--person-off:#868d86;--on-strong:#ffffff;
+  --map-path:var(--accent);--map-plan:#4a4f55;--person:#d6336c;--person-strong:#a61e4d;--person-soft:#fce4ec;--on-person-strong:#ffffff;--person-off:#868d86;--on-strong:#ffffff;
   --person-box:#e64995;--person-box-fill:rgba(230,73,149,.18);
   --overlay-bg:rgba(0,0,0,.63);--overlay-text:#e8efe9;--video-muted:#8a9a90;--video-alert:rgba(192,57,43,.87);
   --accent-tint:rgba(31,95,153,.12);--accent-tint-strong:rgba(31,95,153,.28);--danger-tint:rgba(163,45,45,.16);--shadow:0 1px 3px rgba(0,0,0,.13);
@@ -19,7 +19,7 @@
   --accent:#78aee6;--accent-soft:#1a2c40;--on-accent:#0b1622;--success:#8fd17f;--success-soft:#1c2e1a;--warning:#e8b04a;--warning-soft:#33270f;
   --danger:#ff8a8a;--danger-soft:#3b1d1f;--neutral-soft:#232830;--map:#12161b;--map-plan:#aab2bb;--video:#0a0d10;
   --header:#0b0e12;--header-line:#2c323a;--header-active:#222831;--header-text:#e6e8eb;--header-selected:#ffffff;
-  --person:#f06595;--person-strong:#f783ac;--person-soft:#3a1d2b;--person-off:#7d857f;
+  --person:#e64995;--person-strong:#f783ac;--person-soft:#3a1d2b;--on-person-strong:#2a0d1a;--person-off:#7d857f;
   --accent-tint:rgba(120,174,230,.14);--accent-tint-strong:rgba(120,174,230,.30);--danger-tint:rgba(255,138,138,.18);--shadow:0 1px 3px rgba(0,0,0,.5);
   color-scheme:dark;
 }
@@ -108,6 +108,9 @@ main{max-width:1280px;margin:0 auto;padding:16px 20px 90px;display:grid;gap:12px
 .start{fill:none;stroke:var(--muted);stroke-width:2}.start-label{font-size:13px;fill:var(--muted);paint-order:stroke;stroke:var(--map);stroke-width:4px;stroke-linejoin:round}
 .mark circle{fill:var(--person);stroke:var(--panel);stroke-width:2}.mark.false_positive circle{fill:var(--person-off)}.mark.confirmed circle{fill:var(--person-strong)}
 .mark text{fill:var(--on-strong);font-size:12px;font-weight:700;text-anchor:middle;pointer-events:none}.mark{cursor:pointer}.mark.sel circle{stroke:var(--accent);stroke-width:4}
+.find rect{fill:var(--person);stroke:var(--panel);stroke-width:2}.find.confirmed rect{fill:var(--person-strong)}.find.false_positive rect{fill:var(--person-off)}
+.find text{fill:var(--on-strong);font-size:11px;font-weight:700;text-anchor:middle;pointer-events:none}.find{cursor:pointer}.find.sel rect{stroke:var(--accent);stroke-width:4}
+.mark.confirmed text,.find.confirmed text{fill:var(--on-person-strong)}
 .drone path{fill:var(--brand)}
 /* 지도 칸 아래 줄: 상태 칩·설명(왼쪽), 범례 겸 표시 고르기(오른쪽). 끈 표시는 점선 테두리·흐린 글자(화면 편집의 칸 고르기와 같은 모양) */
 .map-foot{display:flex;gap:6px 8px;align-items:center;flex-wrap:wrap;margin-top:6px;font-size:12px}
@@ -122,7 +125,7 @@ main{max-width:1280px;margin:0 auto;padding:16px 20px 90px;display:grid;gap:12px
 .layer[aria-pressed=false]{border-style:dashed;color:var(--muted)}.layer[aria-pressed=false] .lg{opacity:.3}
 .key{display:inline-flex;align-items:center;gap:5px;color:var(--muted)}
 .lg{display:inline-block;width:18px;height:0;border-top:3px solid var(--map-path)}.lg.planned{border-top-style:dashed}
-.lg.mark{width:10px;height:10px;border:0;border-radius:50%;background:var(--person)}
+.lg.mark{width:10px;height:10px;border:0;border-radius:50%;background:var(--person)}.lg.find{width:10px;height:10px;border:0;border-radius:3px;background:var(--person)}
 .link{font-size:12px;color:var(--accent)}
 .detail-line{display:flex;flex-wrap:wrap;gap:4px 14px;margin:8px 2px 0;font-size:12px;color:var(--muted)}.detail-line b{color:var(--text);font-weight:600}
 .controls{position:fixed;left:0;right:0;bottom:0;z-index:6;display:flex;gap:8px;align-items:center;flex-wrap:wrap;padding:10px max(20px,calc((100vw - 1240px)/2));background:var(--panel);border-top:1px solid var(--line)}

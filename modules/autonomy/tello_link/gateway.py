@@ -401,12 +401,20 @@ class Gateway:
         return (frame, None) if frame is not None else (None, "no_frame")
 
     def _drone_brief(self) -> dict:
-        """프레임에 붙이는 그때 드론 상태 요약. 위치(pose)는 자율 비행 연결 전이라 없다."""
+        """프레임에 붙이는 그때 드론 상태 요약. 위치(pose)는 그때 자율 위치(frame map, 자율이 켜진 자리가 원점)이고,
+        자율이 연결돼 있고 위치가 새 값(POSE_STALE_S 안)일 때만 붙인다. 없거나 늦으면 None(지어내지 않는다).
+        사람 탐지 발견의 대표 사진에 붙어 화면이 지도에 "발견 지점"(그때 드론 위치, 사람 위치 아님)을 찍는다."""
         si = (self.link.latest_state() or {}).get("si") or {}
         with self._lock:
             mode = self.arbiter.mode
+        pose = self.autonomy.pose_state()
+        if pose is not None and pose.get("valid"):
+            pose = {"x_m": round(pose["x_m"], 3), "y_m": round(pose["y_m"], 3), "yaw_rad": round(pose["yaw_rad"], 3),
+                    "sigma_m": pose.get("sigma_m"), "frame": pose.get("frame", "map")}
+        else:
+            pose = None
         return {"mode": mode, "height_m": si.get("tof_m") if si.get("tof_valid") else None,
-                "yaw_rad": si.get("yaw_rad"), "battery_pct": si.get("battery_pct"), "pose": None}
+                "yaw_rad": si.get("yaw_rad"), "battery_pct": si.get("battery_pct"), "pose": pose}
 
     def _video_auto(self, on: bool, reason: str) -> None:
         try:
