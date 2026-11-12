@@ -22,7 +22,7 @@
           <button id="change" type="button" hidden>다른 영상</button>
           <button id="cancel" type="button" hidden>취소</button>
           <button id="retry" type="button" hidden>다시 시도</button>
-          <button id="edit-result" type="button" hidden>점군 편집</button>
+          <button id="edit-result" type="button" hidden>지도 편집에서 열기</button>
           <a id="download" class="primary" download hidden>지도 저장</a>
         </div>
 
@@ -134,48 +134,33 @@
             <p id="edit-empty" role="status">저장된 지도를 확인하는 중입니다.</p>
             <ul id="edit-list" class="library-list"></ul>
           </section>
-          <section class="edit-stage" aria-label="점군 작업 영역">
+          <section class="edit-stage" aria-label="저장 점군과 AI 복원 지도">
             <p id="edit-load-status" class="edit-status" role="status" hidden></p>
-            <div id="edit-placeholder">왼쪽 목록에서 편집할 지도를 선택하세요.</div>
+            <div id="edit-placeholder">저장된 지도 사진을 선택하면 원본 점군을 볼 수 있습니다.</div>
             <div id="point-editor" hidden>
               <header class="editor-toolbar">
                 <div class="editor-document"><h2 id="editor-name"></h2><span id="editor-unit"></span></div>
-                <div class="editor-modes" role="group" aria-label="마우스 도구">
-                  <button id="editor-orbit" type="button" aria-pressed="true">보기</button>
-                  <button id="editor-box" type="button" aria-pressed="false">사각형 선택</button>
-                  <button id="editor-fit" type="button">전체 맞춤</button>
-                </div>
-                <button id="editor-export" class="primary" type="button">PLY 내보내기</button>
+                <button id="editor-restore" class="primary" type="button" disabled>AI 복원모델 확인 중</button>
               </header>
-              <div class="editor-body">
-                <div class="editor-view">
-                  <div id="editor-viewport" class="media" aria-label="3D 점군 뷰어">
-                    <div id="editor-selection-box" hidden></div>
+              <div class="editor-view">
+                <div class="editor-controls">
+                  <div class="editor-modes" role="group" aria-label="지도 종류">
+                    <button id="editor-original" type="button" aria-pressed="true">원본 점군</button>
+                    <button id="editor-roomform-view" type="button" aria-pressed="false" hidden>AI 복원 결과</button>
                   </div>
-                  <p id="editor-guide"></p>
+                  <div class="editor-modes" role="group" aria-label="지도 시점">
+                    <button id="editor-fit" type="button">3D</button>
+                    <button id="editor-top" type="button">위에서 보기</button>
+                  </div>
+                  <div id="editor-layers" class="editor-layers" hidden>
+                    <label><input id="editor-overlay" type="checkbox" checked> 점군 겹쳐 보기</label>
+                    <label id="editor-ceiling-label"><input id="editor-ceiling" type="checkbox"> 천장 표시</label>
+                  </div>
                 </div>
-                <aside class="editor-inspector" aria-label="점군 편집 도구">
-                  <div class="editor-count" id="editor-count" role="status"></div>
-                  <section>
-                    <h3>선택 영역</h3>
-                    <button id="editor-select-all" type="button">전체 선택</button>
-                    <button id="editor-clear" type="button">선택 해제</button>
-                    <button id="editor-delete" type="button">선택한 점 삭제</button>
-                    <button id="editor-keep" type="button">선택한 점만 남기기</button>
-                  </section>
-                  <section>
-                    <h3>점 색상</h3>
-                    <div class="editor-paint"><label><input id="editor-color" type="color" value="#62cead" aria-label="적용할 점 색상"></label>
-                      <button id="editor-paint" type="button">선택에 적용</button></div>
-                  </section>
-                  <section>
-                    <h3>편집 이력</h3>
-                    <div class="editor-history">
-                      <button id="editor-undo" type="button">실행 취소</button>
-                      <button id="editor-redo" type="button">다시 실행</button>
-                    </div>
-                  </section>
-                </aside>
+                <p id="editor-status" role="status"></p>
+                <progress id="editor-progress" aria-label="Roomform 복원 진행률" hidden></progress>
+                <div id="editor-viewport" class="media" aria-label="3D 지도 뷰어"></div>
+                <p id="editor-guide">왼쪽 드래그로 회전 · 오른쪽 드래그로 이동 · 휠로 확대</p>
               </div>
             </div>
           </section>

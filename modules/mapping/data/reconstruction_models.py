@@ -1,6 +1,7 @@
-"""Pinned model catalog and on-demand asset preparation for saved-video mapping."""
+"""Pinned model catalog and on-demand asset preparation for map reconstruction."""
 from dataclasses import dataclass
-from hashlib import sha256
+from hashlib import file_digest, sha256
+from importlib.util import find_spec
 from pathlib import Path, PurePosixPath
 import logging
 import re
@@ -31,6 +32,7 @@ COMPATIBLE_POSE_IMAGES = frozenset({
 DEPTH_V2 = 'depth-anything-v2-metric-indoor-small'
 VIDEO_DEPTH = 'metric-video-depth-anything-small'
 MOGE = 'moge-2-small'
+ROOMFORM = 'roomform'
 
 
 @dataclass(frozen=True)
@@ -79,6 +81,18 @@ MOGE_REPO = 'Ruicheng/moge-2-vits-normal'
 MOGE_REVISION = '26b477f41595707c5db6770294c0d1721e8ed4ed'
 VIDEO_WEIGHT = 'metric_video_depth_anything_vits.pth'
 MOGE_WEIGHT = 'model.pt'
+ROOMFORM_REPO = 'jchiu/roomform'
+ROOMFORM_REVISION = '219272c20d8f8a71382405e54dbf1c6e7020f5ad'
+ROOMFORM_WEIGHT = 'patch-graph-joint-rgb-55m-offset-head-r2.pt'
+ROOMFORM_ASSETS = (
+    weights(ROOMFORM_REPO, ROOMFORM_REVISION, ROOMFORM_WEIGHT, 219854562,
+            '9a1255fb73eba8b0d34f9a09960f20369c7d2457c2e50cb69de87e8429867fb5'),
+    source('johnathanchiu/roomform', '083a2bf7c8fc6f002881ce2b9abb968156b6bf7f', 44241211,
+           'b4dc3ab4e105d4f8eb6d402ab09a53599a97c75179ffd62042bff3940d5444fd', 'roomform'),
+    Asset('trimesh.whl',
+          'https://files.pythonhosted.org/packages/51/14/78624d9c89bab76c2a2e1e839c7641fa686828c2c1c8fb64aedf3b371a5d/trimesh-5.2.0-py3-none-any.whl',
+          751459, '04db2c7ec62afdd7763fb04c82bb5f257ddd984993a19ee83697f475fc58fd29', ('trimesh',)),
+)
 VISTA_REPO = 'zhangganlin/vista_slam'
 VISTA_REVISION = '734e79548d29adf930903bb87d2fcaff8f05b60b'
 VISTA_ASSETS = (
@@ -127,6 +141,9 @@ CATALOG = {
         source('EasternJournalist/utils3d', '3fab839f0be9931dac7c8488eb0e1600c236e183', 172304,
                'ad4dbdf7605c31806194374189051cf4c82a3b6bd186ec2bc9b53c81d301d520', 'utils3d'),
     ), ('moge/model/v2.py', 'utils3d/__init__.py')),
+    ROOMFORM: Model('structure', 'Roomform', ROOMFORM_ASSETS[0].size, 6, ROOMFORM_REPO, ROOMFORM_REVISION,
+                   ROOMFORM_ASSETS, ('roomform/inference/local.py', 'roomform/pipe/evidence/build.py',
+                                    'roomform/model/convformer.py', 'roomform/planes.py', 'trimesh/__init__.py')),
 }
 
 
@@ -185,8 +202,8 @@ def asset_location(key, model, root):
     return None
 
 
-def copy_asset(model, asset, target, report):
-    cached = cached_asset(model, asset)
+def copy_asset(model, asset, target, report, *, local=None):
+    cached = local or cached_asset(model, asset)
     digest = sha256()
     received = 0
     if cached and not ready_file(cached, asset.size):
@@ -201,6 +218,18 @@ def copy_asset(model, asset, target, report):
             report(received)
     if received != asset.size or digest.hexdigest() != asset.checksum:
         raise OSError('model_checksum_mismatch')
+
+
+def legacy_roomform_weight(root, asset):
+    path = root.parent / ROOMFORM / ROOMFORM_WEIGHT
+    if ready_file(path, asset.size):
+        try:
+            with path.open('rb') as stream:
+                if file_digest(stream, 'sha256').hexdigest() == asset.checksum:
+                    return path
+        except OSError:
+            pass
+    return None
 
 
 def extract_packages(archive, runtime, asset):
@@ -229,7 +258,9 @@ def install_assets(key, root, progress):
         staging.mkdir()
         for asset in model.assets:
             path = staging / asset.name
-            copy_asset(model, asset, path, lambda received: progress(min(99, (completed + received) * 100 // total)))
+            local = legacy_roomform_weight(root, asset) if key == ROOMFORM and asset.name == ROOMFORM_WEIGHT else None
+            copy_asset(model, asset, path, lambda received: progress(min(99, (completed + received) * 100 // total)),
+                       local=local)
             completed += asset.size
             if asset.packages:
                 extract_packages(path, staging / 'runtime', asset)
@@ -317,10 +348,21 @@ def build_pose_image(image, source_path, target, progress):
 
 class ReconstructionModels:
     """Share one download per model and broadcast its progress to local tabs."""
-    def __init__(self, root=MODEL_ROOT):
+    def __init__(self, root=MODEL_ROOT, *, roomform_checkpoint=None):
         self.root = Path(root)
+        self.roomform_checkpoint = Path(roomform_checkpoint) if roomform_checkpoint else None
         self.changed = threading.Condition()
         self.jobs = {}
+
+    def roomform_assets(self):
+        folder = asset_location(ROOMFORM, model_for(ROOMFORM), self.root)
+        runtime = folder / 'runtime' if folder else None
+        if (self.roomform_checkpoint is not None and ready_file(self.roomform_checkpoint)
+                and (runtime is not None or find_spec('roomform') is not None)):
+            return self.roomform_checkpoint, runtime
+        if folder:
+            return folder / ROOMFORM_WEIGHT, runtime
+        return None
 
     def local_status(self, key):
         model = model_for(key)
@@ -334,6 +376,9 @@ class ReconstructionModels:
             except RuntimeError as error:
                 return dict(status='missing') if str(error) == 'slam_image_missing' else dict(status='blocked', error=str(error))
             if model.assets and pose_location(key, self.root) is None:
+                return dict(status='missing')
+        elif key == ROOMFORM:
+            if self.roomform_assets() is None:
                 return dict(status='missing')
         elif depth_location(key, self.root) is None:
             return dict(status='missing')

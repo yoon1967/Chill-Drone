@@ -326,7 +326,7 @@ def detect_root(root):
 
 
 class ImportManager:
-    def __init__(self, root, drone_recordings_root=None):
+    def __init__(self, root, drone_recordings_root=None, *, roomform_checkpoint=None):
         self.root = Path(root).resolve()
         self.root.mkdir(parents=True, exist_ok=True)
         self.drone_recording_roots = tuple(dict.fromkeys(
@@ -338,7 +338,7 @@ class ImportManager:
         from modules.mapping.data.depth_worker import DepthWorker
         self.depth_worker = DepthWorker()
         from modules.mapping.data.reconstruction_models import ReconstructionModels
-        self.models = ReconstructionModels()
+        self.models = ReconstructionModels(roomform_checkpoint=roomform_checkpoint)
         self.thumbnail_cache = {}
 
     def create(self, name='불러온 자료'):

@@ -561,6 +561,43 @@ class SessionImportTests(unittest.TestCase):
                 self.assertTrue(options['causal_video'])
                 self.assertEqual(options['sample_fps'], 5)
 
+    def test_roomform_download_publishes_verified_assets_and_detects_them_after_restart(self):
+        from dataclasses import replace
+        from hashlib import sha256
+        from modules.mapping.data import reconstruction_models as models
+
+        root = self.root / 'models' / 'reconstruction'
+        checkpoint = b'roomform weights'
+        archive = BytesIO()
+        with zipfile.ZipFile(archive, 'w') as zipped:
+            zipped.writestr('roomform/__init__.py', '# packaged runtime')
+        packages = archive.getvalue()
+        definition = models.CATALOG[models.ROOMFORM]
+        assets = (replace(definition.assets[0], size=len(checkpoint), checksum=sha256(checkpoint).hexdigest()),
+                  models.Asset('runtime.zip', 'https://example.invalid/roomform', len(packages),
+                               sha256(packages).hexdigest(), ('roomform',)))
+        model = replace(definition, assets=assets, runtime_files=('roomform/__init__.py',))
+        previous = root.parent / models.ROOMFORM / models.ROOMFORM_WEIGHT
+        previous.parent.mkdir(parents=True)
+        previous.write_bytes(checkpoint)
+
+        with patch.dict(models.CATALOG, {models.ROOMFORM: model}), \
+                patch.object(models, 'urlopen', return_value=BytesIO(packages)) as transfer:
+            manager = models.ReconstructionModels(root)
+            self.assertEqual(manager.status(models.ROOMFORM), {'status': 'missing'})
+            self.assertIsNone(manager.roomform_assets())
+            self.assertEqual(manager.download(models.ROOMFORM)['status'], 'downloading')
+            with manager.changed:
+                self.assertTrue(manager.changed.wait_for(lambda: manager.jobs[models.ROOMFORM]['status'] != 'downloading', 5))
+            transfer.assert_called_once_with(assets[1].url, timeout=45)
+
+            reopened = models.ReconstructionModels(root)
+            installed = root / models.ROOMFORM / model.install_version
+            self.assertEqual(reopened.roomform_assets(), (installed / models.ROOMFORM_WEIGHT, installed / 'runtime'))
+            self.assertEqual((installed / models.ROOMFORM_WEIGHT).read_bytes(), checkpoint)
+            self.assertEqual(reopened.download(models.ROOMFORM), {'status': 'ready', 'percent': 100})
+            transfer.assert_called_once()
+
     def test_default_depth_import_preserves_cumulative_preview_option(self):
         options = {'confirmed': True, 'mode': 'depth_rgbd'}
         self.assertIsNone(validate_options(options, {})['render_window_s'])

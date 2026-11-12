@@ -4,7 +4,7 @@ import {createRequire} from 'node:module';
 
 const gateway = process.env.MAPPING_CONTROLLER_URL;
 
-test('controller edits a saved point cloud inside the map console and retains the supervisor view',
+test('controller restores a saved point cloud with Roomform inside the map console and retains the supervisor view',
   {skip: !gateway, timeout: 45000}, async () => {
     const {chromium} = process.env.MAPPING_PLAYWRIGHT_MODULE ?
       createRequire(import.meta.url)(process.env.MAPPING_PLAYWRIGHT_MODULE) : await import('playwright');
@@ -23,19 +23,34 @@ test('controller edits a saved point cloud inside the map console and retains th
       const pose = 'orb-slam3', depth = 'metric-video-depth-anything-small';
       let installed = false, starts = 0, finishDownload;
       const downloadDone = new Promise(resolve => { finishDownload = resolve; });
+      let roomformInstalled = false, roomformDownloads = 0, finishRoomformDownload;
+      const roomformDownloadDone = new Promise(resolve => { finishRoomformDownload = resolve; });
       await page.route('**/api/reconstruction-models', route => route.fulfill({json: {models: [
         {id: pose, kind: 'pose', name: 'ORB-SLAM3', size_bytes: 145250924, vram_gb: 0},
         {id: depth, kind: 'depth', name: 'Metric Video Depth Anything Small', size_bytes: 116444063, vram_gb: 2},
       ]}}));
       await page.route('**/api/reconstruction-models/status?*', route => {
         const key = new URL(route.request().url()).searchParams.get('id');
+        if (key === 'roomform') return route.fulfill({json: {status: roomformInstalled ? 'ready' : 'missing'}});
         return route.fulfill({json: {status: key === pose || installed ? 'ready' : 'missing'}});
       });
       await page.route('**/api/reconstruction-models/download', route => {
-        assert.deepEqual(route.request().postDataJSON(), {id: depth});
+        const {id} = route.request().postDataJSON();
+        if (id === 'roomform') {
+          roomformDownloads++;
+          return route.fulfill({json: {status: 'downloading', method: 'transfer', percent: 27}});
+        }
+        assert.equal(id, depth);
         return route.fulfill({json: {status: 'downloading', method: 'transfer', percent: 41}});
       });
       await page.route('**/api/reconstruction-models/events?*', async route => {
+        if (new URL(route.request().url()).searchParams.get('id') === 'roomform') {
+          if (roomformDownloads === 1) return route.fulfill({contentType: 'text/event-stream',
+            body: 'data: {"status":"failed","error":"model_download_failed"}\n\n'});
+          await roomformDownloadDone;
+          roomformInstalled = true;
+          return route.fulfill({contentType: 'text/event-stream', body: 'data: {"status":"ready","percent":100}\n\n'});
+        }
         await downloadDone;
         installed = true;
         return route.fulfill({contentType: 'text/event-stream', body: 'data: {"status":"ready","percent":100}\n\n'});
@@ -45,6 +60,26 @@ test('controller edits a saved point cloud inside the map console and retains th
         {key: saved.id, name: saved.name, asset: saved.id},
         {key: 'saved_checkpoint', name: checkpoint.name, local_id: 'saved_checkpoint'},
       ]}}));
+      const packed = Buffer.alloc(48);
+      [0, 0, -2, 1, 0, -2, 1, 1, -2, 0, 1, -2].forEach((value, i) => packed.writeFloatLE(value, i * 4));
+      const quad = {quads: 1, positions: packed.toString('base64')};
+      const shell = {schema_version: 'roomform-surface/1.0', origin: [0, 0, 0], up: [0, 1, 0],
+        scale_estimated: true, surfaces: {wall: quad, floor: quad, ceiling: quad}};
+      let roomformStarts = 0, roomformDone = false;
+      await page.route('**/api/import/thumbnail?*', route => route.fulfill({contentType: 'image/png',
+        body: Buffer.from('iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mP8/x8AAwMCAO+aWQ0AAAAASUVORK5CYII=', 'base64')}));
+      await page.route('**/api/saved/roomform?*', route => {
+        const request = route.request(), query = new URL(request.url()).searchParams;
+        if (request.method() === 'POST') {
+          assert.equal(query.get('asset'), saved.id);
+          assert.equal(request.headers()['x-mapping-client'], '1');
+          roomformStarts++;
+          return route.fulfill({status: 202, json: {id: 'roomform_test', status: 'running', tiles_done: 1, tiles_total: 2}});
+        }
+        assert.equal(query.get('id'), 'roomform_test');
+        return route.fulfill({json: roomformDone ? {id: 'roomform_test', status: 'complete', result: shell} :
+          {id: 'roomform_test', status: 'running', tiles_done: 1, tiles_total: 2}});
+      });
       await page.route('**/api/import/local', route => route.fulfill({json:
         route.request().postDataJSON().local_id === 'saved_checkpoint' ? checkpoint : saved}));
       await page.route('**/api/import/create', route => {
@@ -100,10 +135,7 @@ test('controller edits a saved point cloud inside the map console and retains th
         OrbitControls.prototype.update = function (...args) {
           const updated = update.apply(this, args);
           const camera = this.object;
-          if (this.domElement.closest('#editor-viewport')) {
-            window.editorCamera = camera;
-            return updated;
-          }
+          if (this.domElement.closest('#editor-viewport')) return updated;
           window.mappingView = {orthographic: camera.isOrthographicCamera, up: camera.up.toArray(),
             z: camera.position.z, targetZ: this.target.z};
           return updated;
@@ -143,48 +175,41 @@ test('controller edits a saved point cloud inside the map console and retains th
       assert.deepEqual(await tabs.boundingBox(), tabPosition);
       assert.equal(await editTab.getAttribute('aria-selected'), 'true');
       assert.equal(await frame.getByRole('button', {name: '영상 선택'}).count(), 0);
-      await frame.getByRole('button', {name: saved.name}).click();
-      await frame.locator('#editor-viewport canvas').waitFor();
+      await frame.getByRole('button', {name: saved.name}).locator('img').click();
+      const editor = frame.locator('#editor-viewport');
+      await editor.and(frame.locator('[data-view="original"]')).waitFor();
       assert.equal(page.context().pages().length, 1);
       assert.equal(await frame.locator('#editor-name').textContent(), saved.name);
-      assert.equal(await frame.getByText('실시간 감독 점군', {exact: true}).count(), 0);
-      await frame.getByRole('button', {name: '사각형 선택'}).click();
-      const canvas = await frame.locator('#editor-viewport canvas').boundingBox();
-      const ndc = await consoleFrame.evaluate(async () => {
-        const {Vector3} = await import('/vendor/three.module.js');
-        return new Vector3(-.5, .5, 0).project(window.editorCamera).toArray();
-      });
-      const px = canvas.x + (ndc[0] + 1) * canvas.width / 2;
-      const py = canvas.y + (1 - ndc[1]) * canvas.height / 2;
-      await page.mouse.move(px - 8, py - 8);
-      await page.mouse.down();
-      await page.mouse.move(px + 8, py + 8, {steps: 4});
-      await frame.locator('#editor-selection-box').waitFor();
-      await page.mouse.up();
-      assert.match(await frame.locator('#editor-count').textContent(), /점 4개 · 선택 1개/);
-      await frame.locator('#editor-color').fill('#3366cc');
-      await frame.getByRole('button', {name: '선택에 적용'}).click();
-      await frame.getByRole('button', {name: '선택한 점만 남기기'}).click();
-      assert.match(await frame.locator('#editor-count').textContent(), /점 1개/);
-      await frame.getByRole('button', {name: '실행 취소'}).click();
-      assert.match(await frame.locator('#editor-count').textContent(), /점 4개/);
-      await frame.getByRole('button', {name: '다시 실행'}).click();
-      const downloadPromise = page.waitForEvent('download');
-      await frame.getByRole('button', {name: 'PLY 내보내기'}).click();
-      const chunks = [];
-      for await (const chunk of await (await downloadPromise).createReadStream()) chunks.push(chunk);
-      const ply = Buffer.concat(chunks);
-      const headerEnd = ply.indexOf('end_header\n') + 'end_header\n'.length;
-      assert.match(ply.subarray(0, headerEnd).toString(), /element vertex 1/);
-      assert.equal(ply.length - headerEnd, 27);
-      assert.deepEqual([0, 8, 16].map(offset => ply.readDoubleLE(headerEnd + offset)), [0, 0, -2]);
-      assert.deepEqual([...ply.subarray(headerEnd + 24)], [0x33, 0x66, 0xcc]);
+      assert.match(await frame.locator('#editor-unit').textContent(), /원본 점 4개/);
+      assert.equal(await frame.locator('#editor-box, #editor-delete, #editor-paint, #editor-export').count(), 0);
+      const ai = frame.getByRole('button', {name: 'AI 복원하기'});
+      const downloadAI = frame.getByRole('button', {name: 'AI 복원모델 다운받기'});
+      await downloadAI.click();
+      await frame.locator('#editor-status').filter({hasText: '다운로드에 실패했습니다'}).waitFor();
+      await downloadAI.click();
+      await frame.locator('#editor-progress[value="27"]').waitFor();
+      assert.equal(roomformStarts, 0);
+      finishRoomformDownload();
+      await ai.click();
+      await frame.locator('#editor-progress[value="1"]').waitFor();
+      roomformDone = true;
+      await editor.and(frame.locator('[data-view="roomform"]')).waitFor();
+      await frame.getByLabel('천장 표시').check();
+      await frame.getByRole('button', {name: '원본 점군'}).click();
+      await editor.and(frame.locator('[data-view="original"]')).waitFor();
+      await frame.getByRole('button', {name: 'AI 복원 결과'}).click();
+      await editor.and(frame.locator('[data-view="roomform"]')).waitFor();
+      assert.equal(roomformStarts, 1);
+      assert.equal(await ai.isVisible(), true);
       await frame.getByRole('button', {name: checkpoint.name}).click();
       await frame.locator('#editor-name').filter({hasText: checkpoint.name}).waitFor();
-      assert.match(await frame.locator('#editor-count').textContent(), /점 4개/);
+      await editor.and(frame.locator('[data-view="original"]')).waitFor();
+      await ai.waitFor();
+      assert.equal(roomformDownloads, 2);
+      assert.equal(await frame.getByRole('button', {name: 'AI 복원 결과'}).count(), 0);
       await frame.getByRole('button', {name: saved.name}).click();
       await frame.locator('#editor-name').filter({hasText: saved.name}).waitFor();
-      assert.match(await frame.locator('#editor-count').textContent(), /점 1개/);
+      assert.match(await frame.locator('#editor-unit').textContent(), /원본 점 4개/);
       await editTab.press('ArrowLeft');
       await consoleFrame.waitForFunction(() =>
         document.activeElement.id === 'restore-tab' &&
@@ -209,9 +234,9 @@ test('controller edits a saved point cloud inside the map console and retains th
       await frame.getByRole('button', {name: /이전 지도/}).click();
       await frame.locator('main[data-state="partial"]').waitFor();
       assert.equal(await frame.locator('#file-name').textContent(), saved.name);
-      await frame.getByRole('button', {name: '점군 편집'}).click();
+      await frame.getByRole('button', {name: '지도 편집에서 열기'}).click();
       await frame.getByRole('tabpanel', {name: '지도 편집'}).waitFor();
-      assert.match(await frame.locator('#editor-count').textContent(), /점 1개/);
+      assert.match(await frame.locator('#editor-unit').textContent(), /원본 점 4개/);
       await restoreTab.click();
       await frame.locator('#change').click();
       const video = {name: job.name, mimeType: 'video/mp4', buffer: Buffer.from('fixture')};
@@ -288,7 +313,7 @@ test('controller edits a saved point cloud inside the map console and retains th
       assert.match(await frame.locator('#notice').textContent(), /촬영한 영상/);
 
       const snapshot = {schema_version: 'gateway-map/0.1', kind: 'snapshot', upstream: 'ok', source_url: console,
-        source: {kind: 'live', session_id: 'live_fixture', revision: 7}, scale: {unit: 'arbitrary'},
+        source: {kind: 'live', session_id: `live_fixture_${Date.now()}`, revision: 7}, scale: {unit: 'arbitrary'},
         points: [[0, 0, 0, 255, 0, 0], [1, 1, 0, 0, 255, 0], [2, 1, 1, 0, 0, 255]], points_total: 6,
         cameras: [[0, 0, 0], [0, 1, 0]], up: [0, 1, 0]};
       await page.evaluate(() => {
@@ -301,7 +326,7 @@ test('controller edits a saved point cloud inside the map console and retains th
       await page.getByRole('link', {name: '실시간 감독', exact: true}).click();
       const demo = {...snapshot, source: {...snapshot.source, revision: 6, pose_source: 'fake'}};
       assert.equal((await page.request.post(gateway + '/api/map', {data: demo})).status(), 201);
-      await page.getByText(/버전 6 · 점/).waitFor();
+      await page.getByText(/점 3개.*전체 6개/).waitFor();
       assert.equal(await page.getByRole('link', {name: '3D 지도 편집 ↗', exact: true}).count(), 0);
       assert.equal((await page.request.post(gateway + '/api/map', {data: snapshot})).status(), 201);
       const supervisorCanvas = page.locator('.map3d-host canvas');
@@ -317,9 +342,10 @@ test('controller edits a saved point cloud inside the map console and retains th
       const after = await page.evaluate(() => window.supervisorView);
       assert.deepEqual([after.yaw, after.pitch, after.dist], [before.yaw, before.pitch, before.dist]);
       assert.equal(await supervisorCanvas.evaluate(node => node.dispatchEvent(new Event('contextmenu', {cancelable: true}))), false);
-      await page.getByText(/버전 7 · 점/).waitFor();
       assert.equal(await page.locator('a[href*="editor.html"], a[href$="/#live"]').count(), 0);
-      assert.deepEqual((await (await page.request.get(gateway + '/api/map')).json()).points, snapshot.points);
+      const latest = await (await page.request.get(gateway + '/api/map')).json();
+      assert.equal(latest.source.revision, 7);
+      assert.deepEqual(latest.points, snapshot.points);
       assert.deepEqual(errors, []);
     } finally { await browser.close(); }
   });

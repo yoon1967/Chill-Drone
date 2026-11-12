@@ -16,14 +16,24 @@ const errors = {
   model_download_failed: '다운로드에 실패했습니다. 인터넷과 저장 공간을 확인하세요.',
 };
 
-async function request(path = '', body) {
+async function request(path = '', body, signal) {
+  const timeout = AbortSignal.timeout(30000);
   const response = await fetch(endpoint + path, {
-    cache: 'no-store', signal: AbortSignal.timeout(30000),
+    cache: 'no-store', signal: signal ? AbortSignal.any([signal, timeout]) : timeout,
     ...(body && {method: 'POST', headers: {'Content-Type': 'application/json', 'X-Mapping-Client': '1'},
       body: JSON.stringify(body)}),
   });
   if (!response.ok) throw new Error('model_request_failed');
   return response.json();
+}
+
+export function requestModel(key, action, signal) {
+  return action === 'download' ? request('/download', {id: key}, signal) :
+    request('/status?id=' + encodeURIComponent(key), undefined, signal);
+}
+
+export function modelEvents(key) {
+  return new EventSource(endpoint + '/events?id=' + encodeURIComponent(key));
 }
 
 function render(row, status = {}) {
@@ -66,15 +76,14 @@ async function check(row, action = 'check') {
   const key = row.select.value;
   const version = ++row.version;
   if (!key) return render(row);
-  const query = '?id=' + encodeURIComponent(key);
   const current = () => version === row.version;
   render(row, {status: 'checking'});
   try {
-    const status = await (action === 'download' ? request('/download', {id: key}) : request('/status' + query));
+    const status = await requestModel(key, action);
     if (!current()) return;
     render(row, status);
     if (status.status !== 'downloading') return;
-    const stream = new EventSource(endpoint + '/events' + query);
+    const stream = modelEvents(key);
     row.stream = stream;
     stream.onmessage = event => {
       if (!current()) return;

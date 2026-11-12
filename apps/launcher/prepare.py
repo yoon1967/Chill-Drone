@@ -58,7 +58,7 @@ def create_project_environment():
 
 
 def ensure_python_environment(*, allow_install=False):
-    required = ['cv2', 'numpy', 'PIL', 'av', 'torch', 'transformers', 'ultralytics']
+    required = ['cv2', 'numpy', 'PIL', 'av', 'torch', 'transformers', 'ultralytics', 'scipy', 'pydantic']
     missing = [name for name in required if importlib.util.find_spec(name) is None]
     try:
         if missing:
