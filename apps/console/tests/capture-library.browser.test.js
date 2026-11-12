@@ -86,6 +86,11 @@ test('capture library selects actual video and sensor assets separately from sav
       assert.equal(bundle.files.some(file => file.path.includes('frames')), false);
       for (const file of bundle.files) assert.equal((await page.request.get(url + file.url)).status(), 200);
       assert.equal(await page.locator('#capture-warning').isVisible(), false);
+      await page.getByRole('tab', {name: '지도 편집'}).click();
+      assert.equal(await page.getByRole('button', {name: '선택 해제'}).count(), 0);
+      await page.getByRole('tab', {name: '지도 복원'}).click();
+      await page.getByRole('button', {name: '선택 해제'}).waitFor();
+      assert.equal(await page.locator('#capture-name').textContent(), bundle.session_id);
       await page.locator('#capture-files').evaluate(node => { node.parentElement.open = true; });
       assert.ok((await page.locator('#capture-files').textContent()).includes('video_sensor_sync.json'));
       assert.equal(starts, 0, 'selection must not open or start a reconstruction');

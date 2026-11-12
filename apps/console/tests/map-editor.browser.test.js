@@ -4,7 +4,7 @@ import {createRequire} from 'node:module';
 
 const gateway = process.env.MAPPING_CONTROLLER_URL;
 
-test('controller opens a dedicated video reconstruction and keeps supervisor edits independent',
+test('controller edits a saved point cloud inside the map console and retains the supervisor view',
   {skip: !gateway, timeout: 45000}, async () => {
     const {chromium} = process.env.MAPPING_PLAYWRIGHT_MODULE ?
       createRequire(import.meta.url)(process.env.MAPPING_PLAYWRIGHT_MODULE) : await import('playwright');
@@ -17,6 +17,7 @@ test('controller opens a dedicated video reconstruction and keeps supervisor edi
       page.on('pageerror', error => errors.push(error.message));
       const job = {id: 'import_1234567890123456', name: '복도.mp4', summary: {kind: 'video', duration_s: 4}, status: 'uploading'};
       const saved = {id: 'import_6543210987654321', name: '이전 지도', status: 'complete'};
+      const checkpoint = {id: 'import_4444444444444444', name: '저장 회차', status: 'ready'};
       const points = [[0, 0, 2, 255, 0, 0], [1, 0, 2, 0, 255, 0], [0, 1, 2, 0, 0, 255]];
       const acknowledgements = [];
       const pose = 'orb-slam3', depth = 'metric-video-depth-anything-small';
@@ -40,7 +41,12 @@ test('controller opens a dedicated video reconstruction and keeps supervisor edi
         return route.fulfill({contentType: 'text/event-stream', body: 'data: {"status":"ready","percent":100}\n\n'});
       });
       await page.route('**/api/import/reconstruction-library', route => route.fulfill({json: {items: [saved]}}));
-      await page.route('**/api/import/local', route => route.fulfill({json: saved}));
+      await page.route('**/api/import/editable-maps', route => route.fulfill({json: {items: [
+        {key: saved.id, name: saved.name, asset: saved.id},
+        {key: 'saved_checkpoint', name: checkpoint.name, local_id: 'saved_checkpoint'},
+      ]}}));
+      await page.route('**/api/import/local', route => route.fulfill({json:
+        route.request().postDataJSON().local_id === 'saved_checkpoint' ? checkpoint : saved}));
       await page.route('**/api/import/create', route => {
         job.status = 'uploading';
         job.progress = {};
@@ -76,7 +82,7 @@ test('controller opens a dedicated video reconstruction and keeps supervisor edi
         acknowledgements.push(route.request().url());
         return route.fulfill({json: {revision: 1}});
       });
-      await page.route('**/api/saved/run?*', route => route.fulfill({json: {
+      await page.context().route('**/api/saved/run?*', route => route.fulfill({json: {
         schema_version: 'phone-sfm-result/1.2', scale: {unit: 'arbitrary'},
         quality: {result_status: 'partial', coverage: {map_count: 2, held_pose_frames: 1}},
         points: [...points, [1, 1, 2, 255, 255, 255]].map(([x, y, z, ...rgb], index) => [index, x, -y, -z, ...rgb]),
@@ -94,6 +100,10 @@ test('controller opens a dedicated video reconstruction and keeps supervisor edi
         OrbitControls.prototype.update = function (...args) {
           const updated = update.apply(this, args);
           const camera = this.object;
+          if (this.domElement.closest('#editor-viewport')) {
+            window.editorCamera = camera;
+            return updated;
+          }
           window.mappingView = {orthographic: camera.isOrthographicCamera, up: camera.up.toArray(),
             z: camera.position.z, targetZ: this.target.z};
           return updated;
@@ -103,15 +113,106 @@ test('controller opens a dedicated video reconstruction and keeps supervisor edi
       assert.equal(await page.locator('#app .strip, #app .controls, .console-view, .console-tools').count(), 0);
       const top = await page.locator('.top').boundingBox();
       const surface = await page.locator('.console-frame').boundingBox();
-      assert.equal(surface.width, 1440);
+      assert.equal(surface.width, (await page.locator('#app').boundingBox()).width);
       assert.ok(Math.abs(surface.y - top.height) <= 1 && surface.y + surface.height >= 899);
       const url = new URL(await page.locator('.console-frame').getAttribute('src'));
       const console = url.origin;
       assert.equal(url.pathname, '/reconstruct.html');
+      for (const legacy of ['/index.html', '/editor.html?source=supervisor', '/api/editor/supervisor'])
+        assert.equal((await page.request.get(console + legacy)).status(), 404);
+      assert.doesNotMatch(await (await page.request.get(console + '/')).text(), /공간 복원실|editor\.html/);
       const consoleFrame = page.frames().find(item => item.url().startsWith(console));
+      const restoreTab = frame.getByRole('tab', {name: '지도 복원'});
+      const editTab = frame.getByRole('tab', {name: '지도 편집'});
+      const tabs = frame.getByRole('tablist');
+      await page.setViewportSize({width: 460, height: 420});
+      await page.waitForFunction(() => document.documentElement.scrollHeight > innerHeight + 80);
+      const startTabs = await tabs.boundingBox();
+      await page.mouse.move(40, startTabs.y + startTabs.height + 40);
+      await page.mouse.wheel(0, 80);
+      await page.waitForFunction(() => scrollY === 80);
+      assert.equal((await page.locator('.top').boundingBox()).y, top.y - 80);
+      assert.equal((await tabs.boundingBox()).y, startTabs.y - 80);
+      assert.equal(await consoleFrame.evaluate(() => scrollY), 0);
+      await page.evaluate(() => scrollTo(0, 0));
+      await page.setViewportSize({width: 1440, height: 900});
+      const tabPosition = await tabs.boundingBox();
+      assert.equal(await restoreTab.getAttribute('aria-selected'), 'true');
+      await editTab.click();
+      await consoleFrame.waitForFunction(() => document.getElementById('restore-panel').getBoundingClientRect().right <= 1);
+      assert.deepEqual(await tabs.boundingBox(), tabPosition);
+      assert.equal(await editTab.getAttribute('aria-selected'), 'true');
+      assert.equal(await frame.getByRole('button', {name: '영상 선택'}).count(), 0);
+      await frame.getByRole('button', {name: saved.name}).click();
+      await frame.locator('#editor-viewport canvas').waitFor();
+      assert.equal(page.context().pages().length, 1);
+      assert.equal(await frame.locator('#editor-name').textContent(), saved.name);
+      assert.equal(await frame.getByText('실시간 감독 점군', {exact: true}).count(), 0);
+      await frame.getByRole('button', {name: '사각형 선택'}).click();
+      const canvas = await frame.locator('#editor-viewport canvas').boundingBox();
+      const ndc = await consoleFrame.evaluate(async () => {
+        const {Vector3} = await import('/vendor/three.module.js');
+        return new Vector3(-.5, .5, 0).project(window.editorCamera).toArray();
+      });
+      const px = canvas.x + (ndc[0] + 1) * canvas.width / 2;
+      const py = canvas.y + (1 - ndc[1]) * canvas.height / 2;
+      await page.mouse.move(px - 8, py - 8);
+      await page.mouse.down();
+      await page.mouse.move(px + 8, py + 8, {steps: 4});
+      await frame.locator('#editor-selection-box').waitFor();
+      await page.mouse.up();
+      assert.match(await frame.locator('#editor-count').textContent(), /점 4개 · 선택 1개/);
+      await frame.locator('#editor-color').fill('#3366cc');
+      await frame.getByRole('button', {name: '선택에 적용'}).click();
+      await frame.getByRole('button', {name: '선택한 점만 남기기'}).click();
+      assert.match(await frame.locator('#editor-count').textContent(), /점 1개/);
+      await frame.getByRole('button', {name: '실행 취소'}).click();
+      assert.match(await frame.locator('#editor-count').textContent(), /점 4개/);
+      await frame.getByRole('button', {name: '다시 실행'}).click();
+      const downloadPromise = page.waitForEvent('download');
+      await frame.getByRole('button', {name: 'PLY 내보내기'}).click();
+      const chunks = [];
+      for await (const chunk of await (await downloadPromise).createReadStream()) chunks.push(chunk);
+      const ply = Buffer.concat(chunks);
+      const headerEnd = ply.indexOf('end_header\n') + 'end_header\n'.length;
+      assert.match(ply.subarray(0, headerEnd).toString(), /element vertex 1/);
+      assert.equal(ply.length - headerEnd, 27);
+      assert.deepEqual([0, 8, 16].map(offset => ply.readDoubleLE(headerEnd + offset)), [0, 0, -2]);
+      assert.deepEqual([...ply.subarray(headerEnd + 24)], [0x33, 0x66, 0xcc]);
+      await frame.getByRole('button', {name: checkpoint.name}).click();
+      await frame.locator('#editor-name').filter({hasText: checkpoint.name}).waitFor();
+      assert.match(await frame.locator('#editor-count').textContent(), /점 4개/);
+      await frame.getByRole('button', {name: saved.name}).click();
+      await frame.locator('#editor-name').filter({hasText: saved.name}).waitFor();
+      assert.match(await frame.locator('#editor-count').textContent(), /점 1개/);
+      await editTab.press('ArrowLeft');
+      await consoleFrame.waitForFunction(() =>
+        document.activeElement.id === 'restore-tab' &&
+        document.getElementById('edit-panel').getBoundingClientRect().left >= document.documentElement.clientWidth - 1);
+      assert.deepEqual(await tabs.boundingBox(), tabPosition);
+      const dragPane = async (direction, panel) => {
+        const {x, y, width} = await frame.locator('#workspace-panels').boundingBox();
+        const fromX = x + width * (direction < 0 ? .75 : .25);
+        await page.mouse.move(fromX, y + 10);
+        await page.mouse.down();
+        await page.mouse.move(fromX + direction * width / 4, y + 10, {steps: 6});
+        const offset = await frame.locator(panel).evaluate(node => node.getBoundingClientRect().x);
+        assert.ok(offset * direction > width / 5, 'the panel follows the pointer');
+        assert.deepEqual(await tabs.boundingBox(), tabPosition);
+        await page.mouse.up();
+      };
+      await dragPane(-1, '#restore-panel');
+      await frame.getByRole('tabpanel', {name: '지도 편집'}).waitFor();
+      await consoleFrame.waitForFunction(() => Math.abs(document.getElementById('edit-panel').getBoundingClientRect().left) < 1);
+      await dragPane(1, '#edit-panel');
+      await frame.getByRole('tabpanel', {name: '지도 복원'}).waitFor();
       await frame.getByRole('button', {name: /이전 지도/}).click();
       await frame.locator('main[data-state="partial"]').waitFor();
       assert.equal(await frame.locator('#file-name').textContent(), saved.name);
+      await frame.getByRole('button', {name: '점군 편집'}).click();
+      await frame.getByRole('tabpanel', {name: '지도 편집'}).waitFor();
+      assert.match(await frame.locator('#editor-count').textContent(), /점 1개/);
+      await restoreTab.click();
       await frame.locator('#change').click();
       const video = {name: job.name, mimeType: 'video/mp4', buffer: Buffer.from('fixture')};
       await frame.locator('#drop').evaluate((drop, name) => {
@@ -140,7 +241,10 @@ test('controller opens a dedicated video reconstruction and keeps supervisor edi
       assert.equal(starts, 1);
       assert.equal(await frame.getByRole('button', {name: '3D 지도 만들기'}).count(), 0);
       assert.equal(await frame.locator('#file-name').textContent(), job.name);
+      await editTab.click();
       job.stage = 'initial_pose';
+      await consoleFrame.waitForFunction(() => document.getElementById('status').textContent === '카메라의 초기 위치와 방향 찾는 중');
+      await restoreTab.click();
       await frame.getByText('카메라의 초기 위치와 방향 찾는 중', {exact: true}).waitFor();
       job.stage = 'mapping'; job.progress = {completed_timestamp_s: 1, alignment: 'pose_held'};
       await frame.getByText('마지막 위치를 기준으로 지도에 합치는 중', {exact: true}).waitFor();
@@ -200,11 +304,11 @@ test('controller opens a dedicated video reconstruction and keeps supervisor edi
       await page.getByText(/버전 6 · 점/).waitFor();
       assert.equal(await page.getByRole('link', {name: '3D 지도 편집 ↗', exact: true}).count(), 0);
       assert.equal((await page.request.post(gateway + '/api/map', {data: snapshot})).status(), 201);
-      const canvas = page.locator('.map3d-host canvas');
-      await canvas.waitFor();
+      const supervisorCanvas = page.locator('.map3d-host canvas');
+      await supervisorCanvas.waitFor();
       await page.waitForFunction(() => window.supervisorView);
       const before = await page.evaluate(() => window.supervisorView);
-      const {x, y, width, height} = await canvas.boundingBox();
+      const {x, y, width, height} = await supervisorCanvas.boundingBox();
       await page.mouse.move(x + width / 2, y + height / 2);
       await page.mouse.down({button: 'right'});
       await page.mouse.move(x + width / 2 + 40, y + height / 2 + 25, {steps: 4});
@@ -212,29 +316,9 @@ test('controller opens a dedicated video reconstruction and keeps supervisor edi
       await page.waitForFunction(({target}) => window.supervisorView.target.some((value, i) => value !== target[i]), before);
       const after = await page.evaluate(() => window.supervisorView);
       assert.deepEqual([after.yaw, after.pitch, after.dist], [before.yaw, before.pitch, before.dist]);
-      assert.equal(await canvas.evaluate(node => node.dispatchEvent(new Event('contextmenu', {cancelable: true}))), false);
+      assert.equal(await supervisorCanvas.evaluate(node => node.dispatchEvent(new Event('contextmenu', {cancelable: true}))), false);
       await page.getByText(/버전 7 · 점/).waitFor();
-      const livePopup = page.waitForEvent('popup');
-      await page.getByRole('link', {name: '3D 지도 편집 ↗', exact: true}).click();
-      const editor = await livePopup;
-      await editor.locator('#workspace').waitFor();
-      assert.match(await editor.locator('#source-info').textContent(), /실시간 감독.*버전 7.*3 \/ 6점/);
-      await editor.getByLabel('X 최대 퍼센트').fill('50');
-      assert.match(await editor.locator('#point-count').textContent(), /미리보기 2개/);
-      await editor.locator('#apply').click();
-      await editor.locator('#undo').click();
-      assert.match(await editor.locator('#point-count').textContent(), /적용된 점 3개/);
-      await editor.locator('#redo').click();
-      assert.match(await editor.locator('#point-count').textContent(), /적용된 점 2개/);
-      const downloadPromise = editor.waitForEvent('download');
-      await editor.locator('#export').click();
-      const download = await downloadPromise;
-      const chunks = [];
-      for await (const chunk of await download.createReadStream()) chunks.push(chunk);
-      const file = Buffer.concat(chunks);
-      const headerEnd = file.indexOf('end_header\n') + 'end_header\n'.length;
-      assert.match(file.subarray(0, headerEnd).toString(), /element vertex 2/);
-      assert.equal(file.length - headerEnd, 54);
+      assert.equal(await page.locator('a[href*="editor.html"], a[href$="/#live"]').count(), 0);
       assert.deepEqual((await (await page.request.get(gateway + '/api/map')).json()).points, snapshot.points);
       assert.deepEqual(errors, []);
     } finally { await browser.close(); }

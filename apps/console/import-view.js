@@ -1,5 +1,4 @@
 import {mappingOptions} from './mapping-settings.js';
-import {savedEditorUrl} from './editor-data.js';
 
 const stages = {upload: '자료 복사 중', inspect: '자료 검사 중', confirm: '입력 확인 대기', input: '프레임 준비 중',
   features: '특징점 추출·매칭 중', reconstruction: '3D 지도 복원 중', preview: '미리보기 생성 중', finalization: '결과 검증 중', finished: '복원 완료'};
@@ -74,7 +73,7 @@ export function importMessage(job) {
   return details[job.stage] ? `${stages[job.stage]} · ${details[job.stage]}` : stages[job.stage] || job.status;
 }
 
-export function openUrl(id) { return `/?asset=${encodeURIComponent(id)}#saved`; }
+export function openUrl(id) { return `/reconstruct.html?asset=${encodeURIComponent(id)}`; }
 
 export async function requestImport(action, body, query = '') {
   const response = await fetch(`/api/import/${action}${query}`, body === undefined ? {cache: 'no-store'} :
@@ -274,8 +273,6 @@ export function connectImport({profiles = null, onPhase = () => {}} = {}) {
       $(id).disabled = job.status !== 'awaiting_options';
     $('import-open').hidden = !['ready', 'complete'].includes(job.status);
     $('import-open').href = openUrl(job.id);
-    $('import-editor').hidden = $('import-open').hidden;
-    $('import-editor').href = savedEditorUrl(job.id);
     $('import-cancel').hidden = ['ready', 'complete', 'failed', 'cancelled'].includes(job.status);
     $('import-progress').hidden = !['uploading', 'inspecting', 'running', 'cancelling'].includes(job.status);
     if (job.status !== 'uploading') $('import-progress').removeAttribute('value');

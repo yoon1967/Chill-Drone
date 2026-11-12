@@ -68,8 +68,8 @@ class MapKeeperTests(unittest.TestCase):
         self.assertEqual(body, mapkeeper.START_CONFIG)
         self.assertEqual(headers, {'X-Mapping-Client': '1'})
         self.assertEqual(self.keeper.session, 'live_1')
-        started = [line for line in self.said if '지도 시작' in line]   # 실시간 지도는 콘솔 첫 화면(#live). 관제 #/map은 영상 복원
-        self.assertTrue(started and CONSOLE + '/#live' in started[0] and '#/map' not in started[0], self.said)
+        started = [line for line in self.said if '지도 시작' in line]
+        self.assertTrue(started and '실시간 감독' in started[0] and '3D 점군' in started[0], self.said)
         self.step()
         self.assertEqual(self.servers.posts[-1][:2], ('/api/live/tello/heartbeat', {'session_id': 'live_1'}))
 

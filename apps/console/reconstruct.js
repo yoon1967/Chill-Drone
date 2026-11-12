@@ -1,4 +1,4 @@
-import {requestImport} from './import-view.js';
+import {requestImport} from './import-api.js';
 import {mappingOptions} from './mapping-settings.js';
 import {editorCloud} from './editor-data.js';
 import {connectCaptureLibrary} from './capture-library.js';
@@ -6,6 +6,9 @@ import {showModelPicker, selectedModels, setModelPickerBusy, modelPickerMessage,
   closeModelPicker} from './reconstruction-models.js';
 
 const $ = id => document.getElementById(id);
+const main = document.querySelector('main');
+const workspaceTabs = [$('restore-tab'), $('edit-tab')];
+const workspace = $('workspace-panels');
 const storageKey = 'mapping-video-reconstruction';
 const activeStates = new Set(['uploading', 'inspecting', 'running', 'cancelling']);
 const messages = {
@@ -37,6 +40,10 @@ const messages = {
 
 let id = null, job = null, state = 'loading', timer, upload, map;
 let busy = false, watchVersion = 0, canRenderPreview = true;
+let libraryVersion = 0;
+let slideVersion = 0, drag;
+let editLibraryVersion = 0, editRecords = [], editLoad, pointEditor;
+let editChoice = 0;
 const captures = connectCaptureLibrary({request: requestImport,
   onSelect: bundle => { setName(bundle.name); status('capture_selected'); }, onClear: () => reset()});
 
@@ -52,7 +59,7 @@ function status(next, label = '', notice = '') {
   state = next;
   const result = next === 'complete' || next === 'partial';
   const preview = next === 'running' || (next === 'cancelling' && job?.options?.mode === 'depth_rgbd');
-  document.querySelector('main').dataset.state = next;
+  main.dataset.state = next;
   if ($('status').textContent !== label) $('status').textContent = label;
   if ($('notice').textContent !== notice) $('notice').textContent = notice;
   $('notice').hidden = !notice;
@@ -68,6 +75,7 @@ function status(next, label = '', notice = '') {
   $('cancel').disabled = next === 'cancelling' || (busy && !upload);
   $('change').disabled = busy;
   $('retry').hidden = !['result-error', 'connection-error'].includes(next);
+  $('edit-result').hidden = !result;
   $('progress').hidden = !activeStates.has(next) && next !== 'loading';
   $('progress-value').hidden = $('progress').hidden;
   $('download').hidden = !['complete', 'partial', 'result-error'].includes(next);
@@ -109,8 +117,10 @@ function updateProgress(next) {
 }
 
 async function refreshRecent() {
+  const version = ++libraryVersion;
   try {
     const {items} = await requestImport('reconstruction-library');
+    if (version !== libraryVersion) return;
     const records = items.filter(item => ['local', 'ready', 'complete'].includes(item.status) ||
       ((item.source_video || item.summary?.kind === 'drone_recording') &&
         ['inspecting', 'running', 'cancelling'].includes(item.status))).slice(0, 6);
@@ -127,7 +137,97 @@ async function refreshRecent() {
       item.append(button);
       return item;
     }));
-  } catch { $('recent-empty').textContent = '복원 기록을 열 수 없습니다.'; }
+  } catch {
+    if (version !== libraryVersion) return;
+    $('recent-empty').textContent = '복원 기록을 열 수 없습니다.';
+  }
+}
+
+function markEditedMap() {
+  for (const button of $('edit-list').querySelectorAll('button'))
+    button.setAttribute('aria-pressed', String(button.dataset.mapKey === pointEditor?.key));
+}
+
+async function refreshEditableMaps() {
+  const version = ++editLibraryVersion;
+  const label = $('edit-empty');
+  try {
+    const {items} = await requestImport('editable-maps');
+    if (version !== editLibraryVersion) return;
+    editRecords = items;
+    $('edit-list').replaceChildren(...items.map(record => {
+      const item = document.createElement('li'), button = document.createElement('button');
+      button.type = 'button';
+      button.className = 'edit-record';
+      button.dataset.mapKey = record.key;
+      const name = document.createElement('strong');
+      name.textContent = record.name;
+      button.append(name);
+      if (record.updated_at) {
+        const date = document.createElement('span');
+        date.textContent = new Date(record.updated_at * 1000).toLocaleDateString('ko-KR');
+        button.append(date);
+      }
+      button.addEventListener('click', () => openEditableMap(record));
+      item.append(button);
+      return item;
+    }));
+    markEditedMap();
+    label.hidden = items.length > 0;
+    label.textContent = '편집할 수 있는 저장 지도가 없습니다.';
+  } catch {
+    if (version !== editLibraryVersion) return;
+    label.hidden = false;
+    label.textContent = '저장된 지도 목록을 열 수 없습니다.';
+  }
+}
+
+async function resolveEditAsset(record, signal) {
+  if (!record.local_id) return record.asset;
+  let opened = await requestImport('local', {local_id: record.local_id}, '', signal);
+  const query = '?' + new URLSearchParams({id: opened.id});
+  while (opened.status === 'inspecting') {
+    await new Promise(resolve => setTimeout(resolve, 250));
+    opened = await requestImport('status', undefined, query, signal);
+  }
+  if (!['ready', 'complete'].includes(opened.status)) throw new Error('저장된 지도에서 점군을 확인할 수 없습니다.');
+  return opened.id;
+}
+
+async function openEditableMap(record) {
+  editChoice++;
+  if (editLoad?.key === record.key) return;
+  editLoad?.controller.abort();
+  const label = $('edit-load-status');
+  label.hidden = record.key === pointEditor?.key;
+  if (label.hidden) { editLoad = null; return; }
+  const controller = new AbortController();
+  editLoad = {key: record.key, controller};
+  const signal = AbortSignal.any([controller.signal, AbortSignal.timeout(60000)]);
+  label.textContent = `${record.name} 점군을 불러오는 중입니다.`;
+  try {
+    const {connectPointCloudEditor} = await import('./point-cloud-editor.js');
+    signal.throwIfAborted();
+    pointEditor ??= connectPointCloudEditor();
+    let cloud;
+    if (!pointEditor.hasDraft(record.key)) {
+      const asset = await resolveEditAsset(record, signal);
+      const query = asset ? '?' + new URLSearchParams({asset}) : '';
+      const response = await fetch('/api/saved/run' + query, {cache: 'no-store', signal});
+      if (!response.ok) throw new Error('저장된 점군을 읽을 수 없습니다.');
+      cloud = editorCloud(await response.json());
+    }
+    signal.throwIfAborted();
+    pointEditor.open(record, cloud);
+    label.hidden = true;
+  } catch (error) {
+    if (!controller.signal.aborted) label.textContent = error.name === 'TimeoutError'
+      ? '지도 불러오기 시간이 초과되었습니다. 지도를 다시 선택하세요.'
+      : `${record.name} · ${error.message || '지도를 불러오지 못했습니다.'}`;
+  } finally {
+    if (!controller.signal.aborted) markEditedMap();
+    if (editLoad?.controller === controller) editLoad = null;
+  }
 }
 
 async function refreshDroneRecordings() {
@@ -176,7 +276,7 @@ async function showResult() {
     if (!response.ok) throw new Error();
     const result = await response.json();
     const view = await openMap();
-    const cloud = editorCloud(result, 'saved');
+    const cloud = editorCloud(result);
     view.showResult({...cloud, rescue: result.rescue});
     const partial = result.quality?.result_status === 'partial';
     const counts = result.quality?.coverage;
@@ -188,6 +288,7 @@ async function showResult() {
     const missing = counts?.unavailable_recording_parts ? `${counts.unavailable_recording_parts}개 녹화 구간은 파일 또는 시각 정보가 없어 복원하지 못했습니다.` : '';
     const scale = cloud.unit === 'arbitrary' ? '실제 거리 측정에 사용할 수 없습니다.' : '거리 정확도는 검증되지 않았습니다.';
     status(partial ? 'partial' : 'complete', partial ? '부분 복원' : '복원 완료', [coverage, held, missing, scale].filter(Boolean).join(' '));
+    if (!$('edit-panel').inert) refreshEditableMaps();
   } catch {
     status('result-error', '지도를 표시할 수 없습니다.', '지도를 저장하거나 다시 시도하세요.');
   }
@@ -331,6 +432,110 @@ function reset() {
   refreshDroneRecordings();
 }
 
+function selectWorkspaceTab(tab) {
+  if (tab.getAttribute('aria-selected') === 'true') return;
+  const outgoing = workspace.querySelector('[role="tabpanel"]:not([inert])');
+  workspace.style.minHeight = `${workspace.offsetHeight}px`;
+  tab.focus({preventScroll: true});
+  for (const item of workspaceTabs) {
+    const selected = item === tab;
+    item.setAttribute('aria-selected', String(selected));
+    item.tabIndex = selected ? 0 : -1;
+    const panel = $(item.getAttribute('aria-controls'));
+    panel.inert = !selected;
+    panel.setAttribute('aria-hidden', String(!selected));
+  }
+  const version = ++slideVersion;
+  const releaseHeight = () => {
+    if (version === slideVersion) workspace.style.minHeight = '';
+  };
+  const slide = outgoing.getAnimations().find(animation => animation.transitionProperty === 'transform');
+  if (slide) slide.finished.then(releaseHeight, releaseHeight);
+  else releaseHeight();
+  if (tab.id === 'edit-tab') return refreshEditableMaps();
+}
+
+workspaceTabs.forEach((tab, index) => {
+  tab.addEventListener('click', () => selectWorkspaceTab(tab));
+  tab.addEventListener('keydown', event => {
+    const next = {
+      ArrowLeft: (index + workspaceTabs.length - 1) % workspaceTabs.length,
+      ArrowRight: (index + 1) % workspaceTabs.length,
+      Home: 0,
+      End: workspaceTabs.length - 1,
+    }[event.key];
+    if (next === undefined) return;
+    event.preventDefault();
+    selectWorkspaceTab(workspaceTabs[next]);
+  });
+});
+
+$('edit-refresh').addEventListener('click', refreshEditableMaps);
+$('edit-result').addEventListener('click', async () => {
+  const asset = id;
+  const name = job?.name || '복원 지도';
+  const choice = editChoice;
+  await selectWorkspaceTab($('edit-tab'));
+  if (!$('edit-panel').inert && choice === editChoice)
+    openEditableMap(editRecords.find(record => record.asset === asset) || {key: asset, asset, name});
+});
+
+workspace.addEventListener('pointerdown', event => {
+  if (event.pointerType !== 'mouse' || event.button !== 0 ||
+      event.target.closest('a, button, input, select, textarea, label, summary, .library-list, .media, [contenteditable]')) return;
+  drag = {id: event.pointerId, x: event.clientX, y: event.clientY, offset: 0};
+});
+
+window.addEventListener('pointermove', event => {
+  if (event.pointerId !== drag?.id) return;
+  const dx = event.clientX - drag.x, dy = event.clientY - drag.y;
+  const direction = $('restore-panel').inert ? 1 : -1;
+  if (!workspace.classList.contains('dragging')) {
+    if (Math.abs(dy) > 8 && Math.abs(dy) >= Math.abs(dx)) { drag = null; return; }
+    if (dx * direction < 8) return;
+    workspace.setPointerCapture(event.pointerId);
+    workspace.classList.add('dragging');
+    window.getSelection()?.removeAllRanges();
+  }
+  drag.offset = direction * Math.max(0, Math.min(dx * direction, workspace.clientWidth));
+  workspace.style.setProperty('--drag-offset', `${drag.offset}px`);
+  event.preventDefault();
+});
+
+function endWorkspaceDrag(event) {
+  if (event.pointerId !== drag?.id) return;
+  const offset = drag.offset;
+  drag = null;
+  if (!workspace.classList.contains('dragging')) return;
+  // Commit the pointer position before enabling the settling transition.
+  workspace.getBoundingClientRect();
+  workspace.classList.remove('dragging');
+  workspace.style.removeProperty('--drag-offset');
+  if (event.type === 'pointerup' && Math.abs(offset) >= Math.min(96, workspace.clientWidth * .2))
+    selectWorkspaceTab(workspaceTabs[offset < 0 ? 1 : 0]);
+}
+
+window.addEventListener('pointerup', endWorkspaceDrag);
+window.addEventListener('pointercancel', endWorkspaceDrag);
+workspace.addEventListener('lostpointercapture', endWorkspaceDrag);
+
+if (window.parent !== window) {
+  let parentOrigin;
+  const reportHeight = () => {
+    const height = main.offsetHeight;
+    if (parentOrigin && height) window.parent.postMessage({type: 'mapping-console-height', height}, parentOrigin);
+  };
+  new ResizeObserver(reportHeight).observe(main);
+  window.addEventListener('message', event => {
+    const {type, height} = event.data || {};
+    if (event.source !== window.parent || type !== 'mapping-console-viewport' || !Number.isSafeInteger(height) || height <= 0) return;
+    parentOrigin = event.origin;
+    document.documentElement.classList.add('embedded');
+    main.style.setProperty('--workspace-height', `${height}px`);
+    reportHeight();
+  });
+}
+
 $('start-reconstruction').addEventListener('click', async () => {
   const models = selectedModels();
   if (!models || busy || !id || state !== 'awaiting_options') return;
@@ -418,6 +623,7 @@ window.addEventListener('pageshow', event => {
 });
 document.addEventListener('visibilitychange', () => { if (!document.hidden && activeStates.has(state) && !busy) watch(); });
 
-try { id = sessionStorage.getItem(storageKey); } catch { /* Storage is optional. */ }
+id = new URLSearchParams(location.search).get('asset');
+try { id ||= sessionStorage.getItem(storageKey); } catch { /* Storage is optional. */ }
 if (id) { status('loading', '복원 상태 확인 중'); watch(); }
 else reset();

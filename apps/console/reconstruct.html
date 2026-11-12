@@ -3,123 +3,185 @@
 <head>
   <meta charset="utf-8">
   <meta name="viewport" content="width=device-width, initial-scale=1">
-  <title>영상 복원</title>
+  <title>지도 콘솔</title>
   <link rel="stylesheet" href="/reconstruct.css">
+  <link rel="stylesheet" href="/point-cloud-editor.css">
   <script type="importmap">{"imports":{"three":"/vendor/three.module.js"}}</script>
   <script type="module" src="/reconstruct.js"></script>
 </head>
 <body>
   <main>
-    <header>
-      <div class="title">
-        <h1>영상 복원</h1>
-        <p id="file-name" hidden></p>
-      </div>
-      <div class="actions">
-        <button id="change" type="button" hidden>다른 영상</button>
-        <button id="cancel" type="button" hidden>취소</button>
-        <button id="retry" type="button" hidden>다시 시도</button>
-        <a id="download" class="primary" download hidden>지도 저장</a>
-      </div>
-    </header>
-
-    <div id="drop" class="drop" hidden>
-      <button id="choose" class="primary" type="button">영상 선택</button>
-      <input id="video" type="file" accept=".mp4,.mov,.avi,.mkv" hidden>
-      <p>MP4 · MOV · AVI · MKV</p>
+    <div class="workspace-tabs" role="tablist" aria-label="지도 콘솔">
+      <button id="restore-tab" type="button" role="tab" aria-controls="restore-panel" aria-selected="true">지도 복원</button>
+      <button id="edit-tab" type="button" role="tab" aria-controls="edit-panel" aria-selected="false" tabindex="-1">지도 편집</button>
     </div>
+    <div id="workspace-panels">
+      <section id="restore-panel" role="tabpanel" aria-labelledby="restore-tab" tabindex="0">
+        <div class="restore-toolbar">
+          <p id="file-name" hidden></p>
+          <button id="change" type="button" hidden>다른 영상</button>
+          <button id="cancel" type="button" hidden>취소</button>
+          <button id="retry" type="button" hidden>다시 시도</button>
+          <button id="edit-result" type="button" hidden>점군 편집</button>
+          <a id="download" class="primary" download hidden>지도 저장</a>
+        </div>
 
-    <div id="status-line" hidden>
-      <strong id="status" role="status"></strong>
-      <span id="notice" role="status" hidden></span>
-      <span id="progress-value" hidden></span>
-    </div>
-    <progress id="progress" value="0" max="100" aria-label="영상 복원 진행" hidden></progress>
+        <div id="drop" class="drop" hidden>
+          <button id="choose" class="primary" type="button">영상 선택</button>
+          <input id="video" type="file" accept=".mp4,.mov,.avi,.mkv" hidden>
+          <p>MP4 · MOV · AVI · MKV</p>
+        </div>
 
-    <section id="model-picker" aria-labelledby="model-picker-title" hidden>
-      <h2 id="model-picker-title">복원 모델 선택</h2>
-      <p id="drone-pose-hint" hidden>녹화 시 기록된 드론 센서값으로 카메라의 위치와 방향을 계산합니다.</p>
-      <div class="model-fields">
-        <div id="pose-model-field" class="model-field">
-          <label for="pose-model">카메라 위치 모델</label>
-          <select id="pose-model" aria-describedby="pose-model-status" disabled></select>
-          <div class="model-actions">
-            <span id="pose-model-status" role="status"></span>
-            <button id="pose-model-action" type="button" hidden></button>
+        <div id="status-line" hidden>
+          <strong id="status" role="status"></strong>
+          <span id="notice" role="status" hidden></span>
+          <span id="progress-value" hidden></span>
+        </div>
+        <progress id="progress" value="0" max="100" aria-label="영상 복원 진행" hidden></progress>
+
+        <section id="model-picker" aria-labelledby="model-picker-title" hidden>
+          <h2 id="model-picker-title">복원 모델 선택</h2>
+          <p id="drone-pose-hint" hidden>녹화 시 기록된 드론 센서값으로 카메라의 위치와 방향을 계산합니다.</p>
+          <div class="model-fields">
+            <div id="pose-model-field" class="model-field">
+              <label for="pose-model">카메라 위치 모델</label>
+              <select id="pose-model" aria-describedby="pose-model-status" disabled></select>
+              <div class="model-actions">
+                <span id="pose-model-status" role="status"></span>
+                <button id="pose-model-action" type="button" hidden></button>
+              </div>
+              <progress id="pose-model-progress" max="100" aria-label="카메라 위치 모델 준비 진행" hidden></progress>
+            </div>
+            <div class="model-field">
+              <label for="depth-model">영상 깊이 모델</label>
+              <select id="depth-model" aria-describedby="depth-model-status" disabled></select>
+              <div class="model-actions">
+                <span id="depth-model-status" role="status"></span>
+                <button id="depth-model-action" type="button" hidden></button>
+              </div>
+              <progress id="depth-model-progress" max="100" aria-label="영상 깊이 모델 다운로드 진행" hidden></progress>
+            </div>
           </div>
-          <progress id="pose-model-progress" max="100" aria-label="카메라 위치 모델 준비 진행" hidden></progress>
-        </div>
-        <div class="model-field">
-          <label for="depth-model">영상 깊이 모델</label>
-          <select id="depth-model" aria-describedby="depth-model-status" disabled></select>
+          <p class="model-hint">크기는 가중치 또는 특징점 사전 파일 기준입니다. GPU 메모리는 깊이 추론 권장량입니다.</p>
           <div class="model-actions">
-            <span id="depth-model-status" role="status"></span>
-            <button id="depth-model-action" type="button" hidden></button>
+            <span id="model-picker-error" role="status"></span>
+            <button id="model-picker-retry" type="button" hidden>목록 다시 불러오기</button>
+            <button id="start-reconstruction" class="primary" type="button" disabled>영상 복원하기</button>
           </div>
-          <progress id="depth-model-progress" max="100" aria-label="영상 깊이 모델 다운로드 진행" hidden></progress>
-        </div>
-      </div>
-      <p class="model-hint">크기는 가중치 또는 특징점 사전 파일 기준입니다. GPU 메모리는 깊이 추론 권장량입니다.</p>
-      <div class="model-actions">
-        <span id="model-picker-error" role="status"></span>
-        <button id="model-picker-retry" type="button" hidden>목록 다시 불러오기</button>
-        <button id="start-reconstruction" class="primary" type="button" disabled>영상 복원하기</button>
-      </div>
-    </section>
+        </section>
 
-    <div id="input-libraries" class="input-libraries" hidden>
-      <section id="recent" class="input-library" aria-labelledby="recent-title">
-        <h2 id="recent-title">최근 복원</h2>
-        <p class="library-hint">이전에 복원한 지도와 진행 중인 작업을 엽니다.</p>
-        <p id="recent-empty" role="status"></p>
-        <ul id="recent-list" class="library-list"></ul>
-      </section>
-      <section id="captures" class="input-library" aria-labelledby="captures-title">
-        <div class="library-heading">
-          <h2 id="captures-title">실시간 감독 촬영</h2>
-          <button id="captures-refresh" type="button">새로고침</button>
+        <div id="input-libraries" class="input-libraries" hidden>
+          <section id="recent" class="input-library" aria-labelledby="recent-title">
+            <h2 id="recent-title">최근 복원</h2>
+            <p class="library-hint">이전에 복원한 지도와 진행 중인 작업을 엽니다.</p>
+            <p id="recent-empty" role="status"></p>
+            <ul id="recent-list" class="library-list"></ul>
+          </section>
+          <section id="captures" class="input-library" aria-labelledby="captures-title">
+            <div class="library-heading">
+              <h2 id="captures-title">실시간 감독 촬영</h2>
+              <button id="captures-refresh" type="button">새로고침</button>
+            </div>
+            <p class="library-hint">촬영 폴더를 선택하면 영상과 센서 자료가 함께 연결됩니다.</p>
+            <button id="captures-open-folder" class="capture-location" type="button" title="파일 탐색기에서 촬영 저장 폴더 열기">촬영 저장 위치 ↗</button>
+            <p id="captures-root" class="capture-root"></p>
+            <p id="captures-status" role="status"></p>
+            <ul id="captures-list" class="library-list"></ul>
+            <details id="drone-recordings" aria-labelledby="drone-recordings-title">
+              <summary id="drone-recordings-title">드론 측정 및 센서 활용 복원</summary>
+              <p id="drone-recordings-status" role="status"></p>
+              <ul id="drone-recordings-list" class="library-list"></ul>
+            </details>
+          </section>
         </div>
-        <p class="library-hint">촬영 폴더를 선택하면 영상과 센서 자료가 함께 연결됩니다.</p>
-        <button id="captures-open-folder" class="capture-location" type="button" title="파일 탐색기에서 촬영 저장 폴더 열기">촬영 저장 위치 ↗</button>
-        <p id="captures-root" class="capture-root"></p>
-        <p id="captures-status" role="status"></p>
-        <ul id="captures-list" class="library-list"></ul>
-        <details id="drone-recordings" aria-labelledby="drone-recordings-title">
-          <summary id="drone-recordings-title">드론 측정 및 센서 활용 복원</summary>
-          <p id="drone-recordings-status" role="status"></p>
-          <ul id="drone-recordings-list" class="library-list"></ul>
-        </details>
+
+        <section id="capture-selection" aria-labelledby="capture-selection-title" hidden>
+          <div class="library-heading">
+            <h2 id="capture-selection-title">촬영 자료 선택됨</h2>
+            <button id="capture-clear" type="button">선택 해제</button>
+          </div>
+          <strong id="capture-name"></strong>
+          <p id="capture-summary"></p>
+          <p id="capture-warning" role="status" hidden></p>
+          <details><summary>함께 연결된 파일</summary><ul id="capture-files"></ul></details>
+          <p class="library-hint">영상과 센서 자료를 함께 준비했습니다. 이 자료로 복원을 시작하는 기능은 준비 중입니다.</p>
+        </section>
+
+        <section id="visual" class="visual" aria-label="복원 지도" hidden>
+          <section id="current-frame" aria-labelledby="frame-label">
+            <h2 id="frame-label">처리 중인 장면 <span id="progressive-frame-time"></span></h2>
+            <div class="media">
+              <img id="progressive-frame" alt="지도와 같은 시점의 영상 장면" hidden>
+              <span id="progressive-video-empty">장면 대기 중</span>
+            </div>
+          </section>
+          <section aria-labelledby="map-label">
+            <h2 id="map-label">3D 지도</h2>
+            <div id="progressive-viewport" class="media">
+              <span id="progressive-map-empty">지도 생성 대기 중</span>
+            </div>
+            <p id="map-controls" hidden>드래그로 회전 · 스크롤로 확대</p>
+          </section>
+        </section>
+      </section>
+      <section id="edit-panel" role="tabpanel" aria-labelledby="edit-tab" aria-hidden="true" tabindex="0" inert>
+        <div class="edit-workbench">
+          <section class="edit-library" aria-labelledby="edit-saved-title">
+            <div class="library-heading">
+              <h2 id="edit-saved-title">저장된 지도</h2>
+              <button id="edit-refresh" type="button">새로고침</button>
+            </div>
+            <p id="edit-empty" role="status">저장된 지도를 확인하는 중입니다.</p>
+            <ul id="edit-list" class="library-list"></ul>
+          </section>
+          <section class="edit-stage" aria-label="점군 작업 영역">
+            <p id="edit-load-status" class="edit-status" role="status" hidden></p>
+            <div id="edit-placeholder">왼쪽 목록에서 편집할 지도를 선택하세요.</div>
+            <div id="point-editor" hidden>
+              <header class="editor-toolbar">
+                <div class="editor-document"><h2 id="editor-name"></h2><span id="editor-unit"></span></div>
+                <div class="editor-modes" role="group" aria-label="마우스 도구">
+                  <button id="editor-orbit" type="button" aria-pressed="true">보기</button>
+                  <button id="editor-box" type="button" aria-pressed="false">사각형 선택</button>
+                  <button id="editor-fit" type="button">전체 맞춤</button>
+                </div>
+                <button id="editor-export" class="primary" type="button">PLY 내보내기</button>
+              </header>
+              <div class="editor-body">
+                <div class="editor-view">
+                  <div id="editor-viewport" class="media" aria-label="3D 점군 뷰어">
+                    <div id="editor-selection-box" hidden></div>
+                  </div>
+                  <p id="editor-guide"></p>
+                </div>
+                <aside class="editor-inspector" aria-label="점군 편집 도구">
+                  <div class="editor-count" id="editor-count" role="status"></div>
+                  <section>
+                    <h3>선택 영역</h3>
+                    <button id="editor-select-all" type="button">전체 선택</button>
+                    <button id="editor-clear" type="button">선택 해제</button>
+                    <button id="editor-delete" type="button">선택한 점 삭제</button>
+                    <button id="editor-keep" type="button">선택한 점만 남기기</button>
+                  </section>
+                  <section>
+                    <h3>점 색상</h3>
+                    <div class="editor-paint"><label><input id="editor-color" type="color" value="#62cead" aria-label="적용할 점 색상"></label>
+                      <button id="editor-paint" type="button">선택에 적용</button></div>
+                  </section>
+                  <section>
+                    <h3>편집 이력</h3>
+                    <div class="editor-history">
+                      <button id="editor-undo" type="button">실행 취소</button>
+                      <button id="editor-redo" type="button">다시 실행</button>
+                    </div>
+                  </section>
+                </aside>
+              </div>
+            </div>
+          </section>
+        </div>
       </section>
     </div>
-
-    <section id="capture-selection" aria-labelledby="capture-selection-title" hidden>
-      <div class="library-heading">
-        <h2 id="capture-selection-title">촬영 자료 선택됨</h2>
-        <button id="capture-clear" type="button">선택 해제</button>
-      </div>
-      <strong id="capture-name"></strong>
-      <p id="capture-summary"></p>
-      <p id="capture-warning" role="status" hidden></p>
-      <details><summary>함께 연결된 파일</summary><ul id="capture-files"></ul></details>
-      <p class="library-hint">영상과 센서 자료를 함께 준비했습니다. 이 자료로 복원을 시작하는 기능은 준비 중입니다.</p>
-    </section>
-
-    <section id="visual" class="visual" aria-label="복원 지도" hidden>
-      <section id="current-frame" aria-labelledby="frame-label">
-        <h2 id="frame-label">처리 중인 장면 <span id="progressive-frame-time"></span></h2>
-        <div class="media">
-          <img id="progressive-frame" alt="지도와 같은 시점의 영상 장면" hidden>
-          <span id="progressive-video-empty">장면 대기 중</span>
-        </div>
-      </section>
-      <section aria-labelledby="map-label">
-        <h2 id="map-label">3D 지도</h2>
-        <div id="progressive-viewport" class="media">
-          <span id="progressive-map-empty">지도 생성 대기 중</span>
-        </div>
-        <p id="map-controls" hidden>드래그로 회전 · 스크롤로 확대</p>
-      </section>
-    </section>
   </main>
 </body>
 </html>

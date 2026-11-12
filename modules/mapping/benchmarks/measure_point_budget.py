@@ -103,9 +103,9 @@ def main():
                 self.send_header('Content-Length',str(len(body))); self.end_headers(); self.wfile.write(body)
                 return
             if url.path in ('/','/index.html'):
-                body = (ROOT/'apps/console/index.html').read_text(encoding='utf-8').replace(
-                    '<script type="module" src="/app.js"></script>',
-                    '<script type="module">import {connectProgressiveMap} from "/progressive-map.js"; connectProgressiveMap();</script>').encode()
+                body = (ROOT/'apps/console/reconstruct.html').read_text(encoding='utf-8').replace(
+                    '<script type="module" src="/reconstruct.js"></script>',
+                    '<script type="module">import {connectProgressiveMap} from "/progressive-map.js"; connectProgressiveMap({compact:true});</script>').encode()
                 self.send_response(200); self.send_header('Content-Type','text/html; charset=utf-8')
                 self.end_headers(); self.wfile.write(body); return
             return super().do_GET()

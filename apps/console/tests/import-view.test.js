@@ -113,12 +113,12 @@ test('opening a completed depth record navigates to its final map once without a
   get('import-library').value = record.id;
   await get('import-local').handlers.click();
   await new Promise(setImmediate);
-  assert.deepEqual(assignments, ['/?asset=import_ready#saved']);
+  assert.deepEqual(assignments, ['/reconstruct.html?asset=import_ready']);
   assert.equal(requests.filter(url => url.includes('/status')).length, 0);
 });
 
 test('open link and import status keep reconstruct and view separate', () => {
-  assert.equal(openUrl('a&b'), '/?asset=a%26b#saved');
+  assert.equal(openUrl('a&b'), '/reconstruct.html?asset=a%26b');
   assert.match(importMessage({status: 'ready'}), /지도를 열/);
   assert.match(importMessage({status: 'running', stage: 'features'}), /매칭/);
   assert.match(importMessage({status: 'failed', error: 'frame_dimensions_differ'}), /해상도/);
@@ -163,7 +163,7 @@ test('a completed map can be reopened after replaying its reconstruction repeate
     get('saved-replay').handlers.click();
     await new Promise(setImmediate);
     assert.equal(body.dataset.savedPhase, 'processing');
-    assert.equal(get('import-open').href, '/?asset=import_ready#saved');
+    assert.equal(get('import-open').href, '/reconstruct.html?asset=import_ready');
     get('import-open').handlers.click?.({button: 0, preventDefault() {}});
     await new Promise(setImmediate);
     assert.equal(body.dataset.savedPhase, 'result', 'same-page map links must leave reconstruction replay');

@@ -114,6 +114,20 @@ def capture_file(root, session_id, name):
     return inside(inside(Path(root).resolve(), session_id), name)
 
 
+def has_saved_scene(folder):
+    if any(inside(folder, name).is_file() for name in ('scene.json', 'reconstruction/scene.json')):
+        return True
+    state = inside(folder, 'state.json')
+    if state.is_file():
+        revision = read_json(state).get('revision_path')
+        if isinstance(revision, str) and inside(folder, revision + '/scene.json').is_file():
+            return True
+    revisions = inside(folder, 'revisions')
+    return revisions.is_dir() and any(
+        re.fullmatch(r'\d{6}', entry.name) and inside(folder, f'revisions/{entry.name}/scene.json').is_file()
+        for entry in revisions.iterdir())
+
+
 def reconstruction_library(imports):
     """Keep the legacy library intact; hide live-session aliases in this view only."""
     rows = []
@@ -128,15 +142,42 @@ def reconstruction_library(imports):
                         continue
             if (folder / 'session.json').is_file() and read_json(inside(folder, 'session.json')).get('input') == 'tello_camera':
                 continue
-            if row.get('status') == 'local':
-                candidates = ['scene.json', 'reconstruction/scene.json']
-                if (folder / 'state.json').is_file():
-                    revision = read_json(inside(folder, 'state.json')).get('revision_path')
-                    if isinstance(revision, str):
-                        candidates.append(revision + '/scene.json')
-                if not any(inside(folder, name).is_file() for name in candidates):
-                    continue
+            if row.get('status') == 'local' and not has_saved_scene(folder):
+                continue
             rows.append(row)
         except (OSError, ValueError, TypeError):
             continue
     return {'items': rows}
+
+
+def editable_maps(imports, active_path=None):
+    """List saved scenes, including completed capture checkpoints and older local maps."""
+    items, seen = [], set()
+    for row in imports.library(limit=None):
+        status = row.get('status')
+        if status not in {'local', 'ready', 'complete'} or (row.get('summary') or {}).get('points') == 0:
+            continue
+        key = row.get('local_id') or row.get('id')
+        try:
+            folder = inside(imports.root, key)
+            if status != 'local' and (folder / 'import.json').is_file():
+                info = read_json(inside(folder, 'import.json'))
+                if info.get('map_root'):
+                    folder = Path(info['map_root']).resolve()
+                    if not folder.is_relative_to(imports.root) and not row.get('id'):
+                        continue
+            if folder == active_path or folder in seen:
+                continue
+            if status == 'local':
+                if not has_saved_scene(folder):
+                    continue
+                if (folder / 'checkpoint.json').is_file() and read_json(inside(folder, 'checkpoint.json')).get('status') != 'complete':
+                    continue
+            seen.add(folder)
+            identity = folder.name if folder.parent == imports.root else key
+            item = {'key': identity, 'name': row.get('name') or identity, 'updated_at': row.get('updated_at')}
+            item['local_id' if status == 'local' else 'asset'] = key
+            items.append(item)
+        except (OSError, ValueError, KeyError, TypeError):
+            continue
+    return items
