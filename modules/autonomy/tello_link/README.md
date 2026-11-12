@@ -232,6 +232,7 @@ python modules/autonomy/tello_link/gateway_server.py             # 실제 Tello 
 | `POST /api/detections` | 사람 탐지 이벤트 `person-detection-event/1.0` 1개. 201 저장, 200 중복(`event_id`), 400 검증 실패, 403 다른 PC, 500 저장 실패 |
 | `GET /api/detections` | 발견 목록(최신순)과 탐지 상태 |
 | `GET`·`PUT /api/detections/<event_id>.jpg` | 발견 사진. PUT은 게이트웨이 프레임이 아닌 이벤트의 사진 올리기(JPEG) |
+| `POST /api/detections/<finding_id>/review` | 확인·오탐 `{"review": "confirmed" \| "false_positive" \| "unreviewed"}`. 200 저장(같은 값이면 `changed: false`), 400 모르는 값, 404 모르는 발견, 413 너무 큼, 500 저장 실패(되돌림), 기록 재생은 409 |
 | `WS /ws/autonomy` | 자율 비행 하나(`AUTONOMY_BRIDGE_V0_1`). 게이트웨이 → `hello`·`tello_state`(원문 약 10Hz)·`flight_status`(바뀔 때 + 1Hz)·`control`, 자율 → `hello`·`cmd_vel`·`mission_state`·`ack`·`request`·`pose`·`path`·`people`. 기본은 같은 PC만, 두 번째 연결은 `busy` |
 | `GET /api/autonomy` | 자율 위치·계획 경로·찾은 사람 전체. 상태(`drone_state.autonomy`)에는 버전만 싣는다 |
 
@@ -245,6 +246,9 @@ python modules/autonomy/tello_link/gateway_server.py             # 실제 Tello 
     사람이 있으면 화면에 `detection` 메시지를 보낸다. `drone_state.detection`에 동작 여부·초당 처리 수·발견 수가 있다.
   - 발견: 사람이 3초 넘게 안 보이다 다시 보이면 새 발견(사람 구분은 하지 않음). 대표 사진은 신뢰도가 가장 높은 장면, 사진은 발견마다 초당 1장까지.
   - 기본은 같은 PC에서 온 결과만 받는다(인증이 없음). 다른 PC에서 탐지를 돌리면 `--allow-remote-detections`(같은 망 시험에서만).
+  - 확인·오탐: 화면이 발견마다 고른 판단을 게이트웨이가 저장한다(발견의 `review`·`review_at`, 처음은 `unreviewed`).
+    바뀌면 `detections.jsonl`에 `type: review` 줄을 남기고 모든 화면에 `detection_review`(발견 번호·값·이전 값)를 보낸다.
+    조종 화면처럼 어느 화면이든 보낼 수 있다(인증 없음). 기록에 못 남기면 되돌리고 500을 돌려준다.
   - 드론을 자동으로 멈추지 않는다. 시험·시연용 가짜 탐지: `python modules/autonomy/tello_link/fake_detector.py`(영상을 켠 뒤)
 - 프레임 번호: `/snapshot.jpg`로 내준 프레임은 최근 64장(최대 10초)을 보관한다(`frame_store.py`). 탐지처럼 프레임을 가져가 처리하는 쪽은
   결과에 `input_id`·`frame_id`만 담으면 게이트웨이가 같은 사진과 시각을 다시 찾는다. 영상을 켜기 전에 남아 있던 프레임은 내주지 않는다.
@@ -270,7 +274,7 @@ python modules/autonomy/tello_link/gateway_server.py --replay <회차> --replay-
 
 - 화면은 실시간과 똑같이 붙는다(위쪽 표시 "기록 재생"). 명령은 모두 `replay_source`로 거절하고, 자율 연결도 받지 않는다. 원래 회차 폴더에는 쓰지 않는다.
 - 다시 내보내는 것: 드론 상태(`sensor.jsonl`), 모드 변화·영상 켜고 끔(`events.jsonl`), 영상(`video/`, 받은 시각대로 같은 디코더에),
-  사람 탐지·발견·사진(`detections.jsonl`·`detections/`, 발견은 기록된 `finding_id`로 묶음), 3D 지도(`map/snapshots/`, 없으면 `map/latest.json`),
+  사람 탐지·발견·사진(`detections.jsonl`·`detections/`, 발견은 기록된 `finding_id`로 묶음), 확인·오탐(그 시각에 `detection_review`, 재생 중에는 못 바꿈), 3D 지도(`map/snapshots/`, 없으면 `map/latest.json`),
   자율 위치·경로·찾은 사람·임무 상태(`autonomy/`). 시각은 원래 회차의 UTC 그대로. `drone_state.replay`에 재생 위치·길이·속도.
 - 영상 원본을 남기기 전(11/05 이전) 회차는 영상 없이 재생된다. `/snapshot.jpg`도 재생 영상으로 내주므로 탐지 연결기를 다시 돌려 볼 수 있다(결과 수신은 아직 거절).
 - 재생 시험: `python -B -m unittest discover -s modules/autonomy/tello_link/tests -p "test_replay.py"`

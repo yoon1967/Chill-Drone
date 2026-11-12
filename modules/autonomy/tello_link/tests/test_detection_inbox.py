@@ -9,6 +9,7 @@ import sys
 import tempfile
 import unittest
 import uuid
+from unittest import mock
 
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
@@ -135,6 +136,42 @@ class DetectionInboxTest(unittest.TestCase):
         f = self.frame()
         self.frames.new_session()   # 영상을 다시 켬
         self.assertEqual(self.inbox.receive(self.event(f, [PERSON]))[1]["frame"], "unknown")
+
+    def test_review_saved_shared_and_logged(self):
+        fid = self.inbox.receive(self.event(self.frame(), [PERSON]))[1]["finding_id"]
+        self.assertEqual(self.inbox.snapshot()["findings"][0]["review"], "unreviewed")   # 새 발견은 미확인
+        self.sent.clear()
+        status, out = self.inbox.set_review(fid, "confirmed")
+        self.assertEqual((status, out["review"], out["changed"]), (200, "confirmed", True))
+        found = self.inbox.snapshot()["findings"][0]
+        self.assertEqual((found["review"], found["review_at"]), ("confirmed", out["review_at"]))
+        msg = self.sent[-1]   # 모든 화면에 알린다
+        self.assertEqual((msg["type"], msg["finding_id"], msg["review"], msg["previous"]),
+                         ("detection_review", fid, "confirmed", "unreviewed"))
+        line = self.lines()[-1]   # 회차 기록(기록 재생이 다시 보낸다)
+        self.assertEqual((line["type"], line["finding_id"], line["review"], line["previous"], line["at"]),
+                         ("review", fid, "confirmed", "unreviewed", out["review_at"]))
+        lines, sent = len(self.lines()), len(self.sent)
+        self.assertFalse(self.inbox.set_review(fid, "confirmed")[1]["changed"])   # 같은 값: 기록·알림 없음
+        self.assertEqual((len(self.lines()), len(self.sent)), (lines, sent))
+        self.assertEqual(self.inbox.set_review(fid, "unreviewed")[1]["review"], "unreviewed")   # 되돌리기
+        self.assertEqual((self.sent[-1]["previous"], self.inbox.snapshot()["findings"][0]["review"]), ("confirmed", "unreviewed"))
+
+    def test_review_rejects_unknown_values_and_findings(self):
+        fid = self.inbox.receive(self.event(self.frame(), [PERSON]))[1]["finding_id"]
+        self.assertEqual(self.inbox.set_review(fid, "maybe")[1]["reason"], "invalid_review")
+        self.assertEqual(self.inbox.set_review(fid, None)[0], 400)
+        self.assertEqual(self.inbox.set_review("finding-9999", "confirmed")[1]["reason"], "unknown_finding")
+        self.assertEqual(self.inbox.snapshot()["findings"][0]["review"], "unreviewed")
+
+    def test_review_reverted_when_not_saved(self):
+        fid = self.inbox.receive(self.event(self.frame(), [PERSON]))[1]["finding_id"]
+        self.sent.clear()
+        with mock.patch.object(self.inbox, "_append", side_effect=OSError("disk full")):
+            status, out = self.inbox.set_review(fid, "false_positive")
+        self.assertEqual((status, out["reason"]), (500, "store_failed"))
+        self.assertEqual(self.inbox.snapshot()["findings"][0]["review"], "unreviewed")   # 화면과 기록이 어긋나지 않게 되돌림
+        self.assertEqual(self.sent, [])
 
 
 if __name__ == "__main__":

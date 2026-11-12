@@ -82,7 +82,9 @@ def make_run(root, video=True):
                                                 "image": {"width_px": 320, "height_px": 240}, "model": {"name": "m"},
                                                 "detections": [{**person, "confidence": conf}]}}
     write_jsonl(os.path.join(run, "detections.jsonl"), [det(4.0, eid, 0.8, f"detections/{eid}.jpg"),
-                                                         det(4.5, str(uuid.uuid4()), 0.6, None)])
+                                                         det(4.5, str(uuid.uuid4()), 0.6, None),
+                                                         {"type": "review", "at": now_iso(T0 + 5.0), "finding_id": "finding-0001",
+                                                          "review": "confirmed", "previous": "unreviewed"}])
     os.makedirs(os.path.join(run, "detections"))
     with open(os.path.join(run, "detections", f"{eid}.jpg"), "wb") as f:
         f.write(b"\xff\xd8jpg")
@@ -145,16 +147,19 @@ class ReplayStateTest(unittest.TestCase):
         self.assertIsNone(self.gw.handle_message({"type": "rc", "axes": [0, 1, 0, 0]}))
         self.assertFalse(self.gw.autonomy_open("au-1", print))
         self.assertEqual(self.gw.detections.receive({})[0], 409)
+        self.assertEqual(self.gw.detections.set_review("finding-0001", "false_positive")[0], 409)   # 기록된 확인·오탐만 보인다
 
     def test_detections_map_autonomy_up_to_now(self):
         self.gw.clock.seek(4.2)
         snap = self.gw.detections.snapshot()
         self.assertEqual((len(snap["findings"]), snap["findings"][0]["events"]), (1, 1))
+        self.assertEqual((snap["findings"][0]["review"], snap["findings"][0]["review_at"]), ("unreviewed", None))   # 확인은 5초에
         self.assertTrue(snap["findings"][0]["best"]["photo_url"].endswith(".jpg"))
         self.assertIsNone(self.gw.map.latest())                     # 지도는 5초에 처음 온다
         pose = self.gw.autonomy.pose_state()
         self.assertEqual((round(pose["x_m"], 1), pose["valid"]), (1.2, True))
         self.gw.clock.seek(5.5)
+        self.assertEqual(self.gw.detections.snapshot()["findings"][0]["review"], "confirmed")
         self.assertEqual(self.gw.map.latest()["source"]["revision"], 7)
         self.assertEqual(self.gw.drone_state()["autonomy"]["people"], {"confirmed": 1, "gone": 0, "unconfirmed": 0})
         self.assertEqual(self.gw.drone_state()["mission"]["state"], "FOLLOW")
@@ -166,7 +171,10 @@ class ReplayStateTest(unittest.TestCase):
         self.gw.clock.seek(6.0)
         self.gw.tick()
         kinds = [m.get("kind") or m["type"] for m in self.sent]
-        self.assertEqual(kinds, ["mode_changed", "autonomy_connected", "mode_changed", "video_changed", "detection", "detection", "map"])
+        self.assertEqual(kinds, ["mode_changed", "autonomy_connected", "mode_changed", "video_changed", "detection", "detection",
+                                 "detection_review", "map"])
+        review = next(m for m in self.sent if m["type"] == "detection_review")
+        self.assertEqual((review["finding_id"], review["review"], review["previous"]), ("finding-0001", "confirmed", "unreviewed"))
         self.sent.clear()
         self.gw.clock.seek(1.0)                                     # 되감으면 처음부터 다시 센다
         self.gw.tick()
@@ -185,6 +193,48 @@ class ReplayStateTest(unittest.TestCase):
         args = argparse.Namespace(replay=self.run, replay_speed=1.0, replay_loop=False, replay_start=0.0, no_video=False, fake=False)
         gw, fake = gateway_server.build_gateway(args)
         self.assertEqual((type(gw).__name__, fake), ("ReplayGateway", None))
+
+
+class ReviewHttpTest(unittest.TestCase):
+    """확인·오탐 HTTP 길(POST /api/detections/<finding_id>/review). 기록 재생은 409, 실시간 받기는 저장."""
+
+    def setUp(self):
+        try:
+            from fastapi.testclient import TestClient
+        except (ImportError, RuntimeError) as e:   # httpx가 없는 환경
+            self.skipTest(f"TestClient 없음: {e}")
+        import gateway_server
+        self.tmp = tempfile.mkdtemp()
+        args = argparse.Namespace(replay=make_run(self.tmp, video=False), replay_speed=1.0, replay_loop=False, replay_start=0.0,
+                                  no_video=False, fake=False)
+        app = gateway_server.build_app(args)
+        self.gw = app.state.gateway
+        self.client = TestClient(app)   # with 없이 쓴다: 재생 스레드(lifespan)를 켜지 않는다
+
+    def tearDown(self):
+        shutil.rmtree(self.tmp, ignore_errors=True)
+
+    def post(self, body, fid="finding-0001"):
+        return self.client.post(f"/api/detections/{fid}/review", content=body, headers={"Content-Type": "application/json"})
+
+    def test_replay_keeps_recorded_reviews(self):
+        r = self.post(json.dumps({"review": "false_positive"}))
+        self.assertEqual((r.status_code, r.json()["reason"]), (409, "replay_source"))
+
+    def test_live_inbox_route(self):
+        from detection_inbox import DetectionInbox
+        from frame_store import FrameStore
+        sent = []
+        self.gw.detections = DetectionInbox(FrameStore("run1"), emit=sent.append)   # 실시간 받기로 바꿔 길만 본다
+        self.gw.detections.findings.append({"finding_id": "finding-0001", "review": "unreviewed", "review_at": None})
+        r = self.post(json.dumps({"review": "confirmed"}))
+        self.assertEqual((r.status_code, r.json()["review"], r.json()["changed"]), (200, "confirmed", True))
+        self.assertEqual((sent[-1]["type"], sent[-1]["review"]), ("detection_review", "confirmed"))
+        self.assertEqual(self.post(json.dumps({"review": "maybe"})).json()["reason"], "invalid_review")
+        self.assertEqual(self.post("not json").status_code, 400)
+        self.assertEqual(self.post("[1, 2]").status_code, 400)
+        self.assertEqual(self.post(json.dumps({"review": "confirmed"}), "finding-0099").status_code, 404)
+        self.assertEqual(self.post(json.dumps({"review": "confirmed", "note": "x" * 2000})).status_code, 413)
 
 
 class ReplayVideoTest(unittest.TestCase):
