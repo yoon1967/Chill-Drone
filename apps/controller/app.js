@@ -1112,6 +1112,7 @@ function render() {
     if (el && document.activeElement !== el) el.focus({ preventScroll: true });
   };
   if (ui.view !== v || ui.cache.__keys !== keys) {
+    if (ui.view && ui.view !== v) window.scrollTo(0, 0);   // 다른 화면으로 가면 맨 위에서 시작한다(같은 화면을 다시 그릴 때·처음 열 때는 스크롤을 그대로 둔다)
     ui.view = v;
     document.body.dataset.view = v;
     document.querySelectorAll(".views a").forEach((a) => a.setAttribute("aria-current", a.dataset.view === v ? "page" : "false"));
