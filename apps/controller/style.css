@@ -196,6 +196,8 @@ body[data-view=control] main{padding-bottom:24px}body[data-view=review] main{pad
 .editbar button{padding:4px 10px;font-size:12px}.editbar input{font:inherit;padding:4px 8px;border:1px solid var(--line);border-radius:6px;width:180px}
 .edit-panels{display:flex;gap:4px;flex-wrap:wrap}.edit-panels button[aria-pressed=false]{border-style:dashed;color:var(--muted)}
 .board.editing>.cell{position:relative}
+/* 편집 중에는 칸 머리줄(제목·칩·버튼) 자리에 덮개의 이름표·단추가 온다. 겹쳐 보이지 않게 머리줄은 감추고, 자리는 남겨 칸 내용이 움직이지 않게 한다 */
+.board.editing>.cell>.panel>header{visibility:hidden}
 .cell-edit{position:absolute;inset:0;z-index:3;display:flex;flex-direction:column;justify-content:space-between;padding:8px;border:2px dashed var(--accent);border-radius:12px;background:var(--accent-tint);cursor:move;touch-action:none;user-select:none}
 .cell-head{display:flex;justify-content:space-between;align-items:flex-start;gap:6px;flex-wrap:wrap}
 .cell-name{background:var(--panel);border-radius:7px;padding:3px 10px;font-size:13px;box-shadow:var(--shadow)}.cell-name b{color:var(--accent)}
