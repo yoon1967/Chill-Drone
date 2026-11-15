@@ -61,6 +61,12 @@ class MapInboxTest(unittest.TestCase):
         self.assertEqual((self.inbox.updates, len(self.sent)), (1, 1))
         self.assertEqual(self.inbox.receive(snapshot(session="s2"))[0], 201)   # 세션이 바뀌면 같은 버전 번호라도 새 지도
 
+    def test_status_reply_says_whether_a_map_is_held(self):   # 연결기가 다시 켠 게이트웨이(빈 지도)를 알아채게
+        status = {"schema_version": SCHEMA, "kind": "status", "upstream": "ok", "source_url": "x"}
+        self.assertEqual(self.inbox.receive(status), (200, {"ok": True, "has_map": False}))
+        self.inbox.receive(snapshot())
+        self.assertEqual(self.inbox.receive(status), (200, {"ok": True, "has_map": True}))
+
     def test_status_keeps_latest_and_alive(self):
         self.inbox.receive(snapshot())
         self.clock.t += 4

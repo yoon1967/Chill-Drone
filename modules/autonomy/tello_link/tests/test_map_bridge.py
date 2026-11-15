@@ -34,9 +34,12 @@ class MapBridgeTest(unittest.TestCase):
         self.url = f"http://127.0.0.1:{self.server.server_port}"
         self.inbox = MapInbox(clock=self.clock)
         self.sent = []
+        self.gateway_up = True
 
         def deliver(msg):
             self.sent.append(msg["kind"])
+            if not self.gateway_up:   # 꺼진 게이트웨이: 따로 실행의 deliver처럼 연결 실패는 상태 0
+                return 0, None
             return self.inbox.receive(msg)
         self.bridge = MapBridge(self.url, deliver, log=lambda text: None, clock=self.clock)
 
@@ -105,6 +108,47 @@ class MapBridgeTest(unittest.TestCase):
         self.clock.t += 2
         self.bridge.poll_once()
         self.assertEqual(self.inbox.status()["input_state"], "receiving")
+
+    def settle(self, sid):
+        """가짜 카메라가 복도 끝까지 가서 지도 버전이 더 안 바뀌게 한다. 세션은 살려 둔다(깊이 지도는 복원 중 그대로)."""
+        while self.fake.revision() < len(self.fake.path):
+            self.clock.t += 10
+            self.fake.heartbeat(sid)
+
+    def test_restarted_gateway_gets_the_map_again(self):
+        # 게이트웨이만 다시 켜면 받은 지도가 없다. 지도 버전이 더 안 바뀌어도(복원 끝·저장 지도) 지금 지도를 다시 보낸다.
+        self.settle(self.fake.start()["session_id"])
+        self.bridge.poll_once()
+        first = self.inbox.latest()
+        self.inbox = MapInbox(clock=self.clock)   # 두 번 읽는 사이에 다시 켬: 보내기 실패가 한 번도 없었다
+        self.clock.t += 2                         # 상태를 알릴 때 → 새 게이트웨이가 받은 지도가 없다고 답한다
+        self.bridge.poll_once()
+        self.assertIsNone(self.inbox.latest())
+        self.bridge.poll_once()                   # 다음 차례에 지금 지도를 처음처럼 다시 보낸다
+        again = self.inbox.latest()
+        self.assertIsNotNone(again)
+        self.assertEqual((again["source"]["revision"], len(again["points"])),
+                         (first["source"]["revision"], len(first["points"])))
+        self.clock.t += 2
+        self.bridge.poll_once()                   # 받은 게이트웨이에는 다시 보내지 않는다
+        self.assertEqual(self.sent.count("snapshot"), 2)
+
+    def test_map_waits_while_gateway_is_down_then_is_sent_again(self):
+        self.settle(self.fake.start()["session_id"])
+        self.bridge.poll_once()
+        first = self.inbox.latest()
+        self.gateway_up = False                   # 게이트웨이가 5초 꺼짐
+        for _ in range(10):
+            self.clock.t += 0.5
+            self.bridge.poll_once()
+        self.assertGreater(self.sent.count("status"), 0)
+        self.assertEqual(self.sent.count("snapshot"), 1)   # 꺼진 동안은 지도를 다시 읽어 보내려 하지 않는다(상태만 2초마다)
+        self.inbox, self.gateway_up = MapInbox(clock=self.clock), True
+        for _ in range(6):                        # 다시 켠 뒤 첫 상태 응답(지도 없음) → 다음 차례에 한 번 보낸다
+            self.clock.t += 0.5
+            self.bridge.poll_once()
+        self.assertEqual(self.sent.count("snapshot"), 2)
+        self.assertEqual(self.inbox.latest()["source"]["revision"], first["source"]["revision"])
 
 
 class DepthMapBridgeTest(MapBridgeTest):
