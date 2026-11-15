@@ -65,6 +65,20 @@ class GatewayCase(unittest.TestCase):
     def rc(self, axes, client="monitor"):
         self.gw.handle_message({"type": "rc", "axes": axes, "client": client}, "t")
 
+    def hold_rc(self, axes, until, timeout=4.0, client="monitor"):
+        """관제 화면처럼 rc를 0.05초마다 다시 보내며 until()이 참이 되길 기다린다(app.js는 누르는 동안 50 ms마다 보낸다).
+
+        rc를 한 번만 보내면 가감속(0 → 30, 약 0.2초)이 사람 입력 데드맨(0.3초) 안에 끝나고 비행 제어 루프가 그 틈에 30을
+        보내야 했다. Windows에서 20Hz 루프가 62.5 ms로 돌아 30이 남는 틈이 한두 번(62~125 ms)뿐이라, 루프가 그만큼만
+        밀려도 30이 나가지 않고 실패했다(11/13 측정)."""
+        deadline = time.monotonic() + timeout
+        while time.monotonic() < deadline:
+            self.rc(axes, client)
+            if until():
+                return True
+            time.sleep(0.05)
+        return False
+
     def rc_sent(self):
         return [c for c in self.fake.received if c.startswith("rc ")]
 
@@ -112,11 +126,8 @@ class GatewayTest(GatewayCase):
 
     def test_manual_flight_rc_and_land(self):
         self.take_off()
-        self.rc([0, 1, 0, 0])
-        self.assertTrue(wait_until(lambda: any(c.startswith("rc 0 ") and c != "rc 0 0 0 0" for c in self.rc_sent())))
-        self.assertTrue(wait_until(lambda: "rc 0 30 0 0" in self.rc_sent()), self.rc_sent()[-5:])  # 가감속 후 30
-        time.sleep(0.5)  # 입력이 끊기면(데드맨) 제자리
-        self.assertEqual(self.rc_sent()[-1], "rc 0 0 0 0")
+        self.assertTrue(self.hold_rc([0, 1, 0, 0], lambda: "rc 0 30 0 0" in self.rc_sent()), self.rc_sent()[-5:])  # 가감속 후 30
+        self.assertTrue(wait_until(lambda: self.rc_sent()[-1] == "rc 0 0 0 0"), self.rc_sent()[-5:])  # 입력이 끊기면(데드맨) 제자리
         self.assertTrue(self.cmd("land")["ok"])
         self.assertTrue(wait_until(lambda: self.gw.arbiter.mode == "grounded"), self.gw.arbiter.mode)
         self.assertIn("land", self.fake.received)
@@ -125,7 +136,9 @@ class GatewayTest(GatewayCase):
         self.take_off()
         self.assertTrue(self.cmd("emergency", client="control")["ok"])
         self.assertTrue(wait_until(lambda: "emergency" in self.fake.received), self.fake.received)  # 응답 없이 보내므로 도착을 기다린다
-        self.assertEqual(self.gw.arbiter.mode, "emergency")
+        # 비상 정지 모드를 거쳤는지는 화면 알림으로 본다. 가짜 기체는 곧바로 땅에 있다고 알려 와 게이트웨이가 한 번 돌면(62 ms)
+        # grounded로 넘어가므로, 바로 지금 모드를 보면 시험 스레드가 조금만 늦게 깨도 이미 grounded였다(11/13 측정).
+        self.assertIn("emergency", [m["detail"]["to"] for m in list(self.sent) if m.get("kind") == "mode_changed"])
         self.assertTrue(wait_until(lambda: self.gw.arbiter.mode == "grounded", timeout=5), self.gw.arbiter.mode)
 
     def test_screen_disconnect_zeroes_rc(self):
