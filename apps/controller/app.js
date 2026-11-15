@@ -224,6 +224,8 @@ function personAlert(events, st) {
 }
 
 function alertBox(sc, events, st) {
+  // 알림 띠의 버튼은 게이트웨이가 지금 받는 명령일 때만 보인다. 눌러도 거절 알림만 뜨는 버튼을 두지 않는다(사람 발견의 멈추기는 personAlert).
+  const act = (name, label) => (st.allowed.includes(name) ? `<button data-cmd="${name}">${label}</button>` : "");
   let body = "";
   if (sc.alert === "connecting") {
     body = `<div class="alert warning slim" role="status"><b>게이트웨이 연결 중</b><span>연결되면 버튼이 열립니다.</span></div>`;
@@ -236,15 +238,15 @@ function alertBox(sc, events, st) {
       <button data-cmd="return_home">출발점으로 복귀</button></div>`;
   } else if (sc.alert === "autonomy_lost") {
     body = `<div class="alert danger" role="alert"><b>자율 연결 끊김</b><span>자율 비행 연결이 끊겨 제자리에서 멈췄습니다. 착륙하거나 넘겨받아 조종하세요.</span>
-      <button data-cmd="takeover">넘겨받기</button></div>`;
+      ${act("takeover", "넘겨받기")}</div>`;
   } else if (sc.alert === "autonomy_timeout") {
     body = `<div class="alert warning" role="alert"><b>자율 명령 끊김</b><span>2초 넘게 이동 명령이 없어 일시정지했습니다. 자율 상태를 확인하고 다시 시작하거나 넘겨받으세요.</span>
-      <button data-cmd="takeover">넘겨받기</button></div>`;
+      ${act("takeover", "넘겨받기")}</div>`;
   } else if (sc.alert === "mission_done") {
     const failed = ui.state?.mission?.phase === "failed";
     const why = failed ? esc(ui.state.mission.reason || "자율이 임무를 끝내지 못했습니다") : "자율 탐색을 마쳤습니다";
     body = `<div class="alert ${failed ? "danger" : "warning"} slim" role="status"><b>${failed ? "임무 실패" : "임무 끝"}</b><span>${why}. 제자리에서 기다립니다. 착륙하거나 넘겨받으세요.</span>
-      <button data-cmd="land">착륙</button></div>`;
+      ${act("land", "착륙")}</div>`;
   } else if (sc.alert === "stale") {
     body = `<div class="alert warning" role="alert"><b>자율 응답 지연</b><span>0.5초 넘게 명령이 없어 제자리에서 기다립니다. 2초가 지나면 일시정지합니다.</span></div>`;
   }
