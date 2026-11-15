@@ -2,6 +2,7 @@
 
 - POST /api/live/tello/start · /api/live/tello/heartbeat · /api/live/stop (X-Mapping-Client: 1, Host 127.0.0.1만)
 - GET  /api/live/state · /api/live/run (ONLINE_SPATIAL_V1 모양, 점 행 [id,x,y,z,r,g,b,error_px,track_length])
+- GET  화면 주소(`/`, `*.html`): 콘솔 화면 대신 안내. 관제 화면 "지도 콘솔" 탭은 진짜 콘솔의 영상 복원 화면(`/reconstruct.html`)을 연다
 세션이 켜져 있는 동안 1초마다 버전이 오르고, 가상 카메라가 복도를 따라가며 3 m 안의 벽 점이 드러난다.
 heartbeat가 15초 없으면 진짜처럼 세션을 끝낸다. 영상·SLAM·Docker는 없다.
 --depth: 지금 지도 서버(-365 깊이 지도)처럼 세션이 끝나야 `map_available`이 켜지고, 그 전에는 상태의 `depth_job_id`와
@@ -162,6 +163,7 @@ PAGE = """<!doctype html><html lang="ko"><head><meta charset="utf-8"><title>가�
 b{font-size:16px}code{background:#fff8;padding:1px 5px;border-radius:4px}</style></head><body>
 <b>가짜 지도 서버 (시험용)</b>
 <p>진짜 지도 콘솔(<code>apps/console</code>) 대신 켜진 시험용 서버입니다. 콘솔 화면은 없고, 지도 연결기가 읽는 상태와 점군만 흉내 냅니다.</p>
+<p>관제 화면의 "지도 콘솔" 탭은 진짜 콘솔의 영상 복원 화면을 엽니다. 그 화면을 보려면 실행기로 진짜 콘솔을 켜세요(체험 8796, 실기체 8790).</p>
 <p id="s">상태 읽는 중…</p>
 <script>
 async function tick(){try{const s=await (await fetch('/api/live/state',{cache:'no-store'})).json();
@@ -184,7 +186,10 @@ def make_handler(fake: FakeMap):
             self.wfile.write(body)
 
         def do_GET(self):
-            if self.path in ("/", "/index.html"):
+            # 화면 주소(`/`, `*.html`)는 모두 안내로 답한다. 관제 화면 "지도 콘솔" 탭이 진짜 콘솔의 화면(/reconstruct.html)을
+            # 열 때 not_found 대신 이 서버가 무엇인지 보이게. 나머지(API·파일) 모르는 주소는 그대로 404다.
+            path = urllib.parse.urlsplit(self.path).path
+            if path == "/" or path.endswith(".html"):
                 body = PAGE.encode()
                 self.send_response(200)
                 self.send_header("Content-Type", "text/html; charset=utf-8")

@@ -49,9 +49,14 @@ class MapBridgeTest(unittest.TestCase):
             self.server.server_close()
 
     def test_root_page_explains_fake_server(self):   # 관제 화면 "지도 콘솔" 보기가 이 주소를 열면 빈 오류 대신 안내
-        with urllib.request.urlopen(self.url + "/", timeout=5) as r:
-            self.assertTrue(r.headers["Content-Type"].startswith("text/html"))
-            self.assertIn("가짜 지도 서버", r.read().decode("utf-8"))
+        # 지도 콘솔 탭은 진짜 콘솔의 영상 복원 화면(/reconstruct.html)을 연다(-415). 화면 주소는 모두 안내로 답한다
+        for page in ("/", "/reconstruct.html", "/reconstruct.html?from=controller"):
+            with urllib.request.urlopen(self.url + page, timeout=5) as r:
+                self.assertTrue(r.headers["Content-Type"].startswith("text/html"), page)
+                self.assertIn("가짜 지도 서버", r.read().decode("utf-8"))
+        with self.assertRaises(urllib.error.HTTPError) as e:   # 모르는 API 주소는 그대로 404
+            urllib.request.urlopen(self.url + "/api/nope", timeout=5)
+        self.assertEqual(e.exception.code, 404)
 
     def test_no_map_until_session_then_new_revisions_only(self):
         self.bridge.poll_once()
