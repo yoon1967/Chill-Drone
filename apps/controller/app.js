@@ -49,6 +49,7 @@ const REASON = {
   drone_io_error: "기체와 통신할 수 없습니다",
   client_not_allowed: "자율 시작은 PC 감독 화면에서만 할 수 있습니다", autonomy_not_connected: "자율 비행이 연결되지 않았습니다",
   autonomy_joined_in_air: "이륙 뒤에 연결된 자율이라 시작할 수 없습니다", replay_source: "기록 재생 중에는 명령을 보내지 않습니다",
+  ros_view_read_only: "자율 비행 보기에서는 명령을 보내지 않습니다(조종은 자율 비행 화면에서)",
   autonomy_rejected: "자율이 시작을 거절했습니다",
   busy: "앞 요청을 처리하는 중입니다", unknown_message: "알 수 없는 요청입니다",
   video_disabled: "게이트웨이가 영상 수신 없이(--no-video) 실행됐습니다", video_receiver_failed: "영상 수신을 시작하지 못했습니다",
@@ -262,7 +263,7 @@ function videoControl(st) {
       st.warnings.includes("video_on_ground") ? "warning" : "neutral"]
     : ["영상 켜짐", "success"];
   const name = on ? "video_off" : "video_on";
-  const off = lost || v.enabled === false || (on && st.mapping_console_url &&
+  const off = lost || v.enabled === false || st.source === "ros" || (on && st.mapping_console_url &&   // 자율 비행 보기: 영상은 자율 드라이버가 정한다
     (st.flight_busy === "takeoff" || ["manual", "auto", "paused", "landing"].includes(st.mode)));
   // 칩(초 단위로 바뀜)과 버튼을 다른 칸으로 둔다. 버튼이 매초 바뀌면 누르는 중에 사라져 클릭이 빠진다.
   return `<span class="video-ctl"><span data-part="videostate">${chip(text, tone)}</span>
@@ -840,6 +841,13 @@ function takeoffPanel(st, inline = false) {
   </section>`);
 }
 
+// 비상 정지(0.6초 길게). 자율 비행 보기에서는 이 화면이 명령을 보내지 않으므로 잠근 버튼으로 그린다(누르면 까닭을 알림).
+function estopButton(st, wide = false) {
+  const cls = `estop${wide ? " wide" : ""}`;
+  if (st.source === "ros") return `<button class="${cls} off" data-cmd="emergency" aria-disabled="true">비상 정지 <small>자율 비행 화면에서</small></button>`;
+  return `<button class="${cls}" data-hold="emergency" aria-label="비상 정지, 길게 누르기"><span class="fill"></span>비상 정지 <small>${wide ? "0.6초 길게" : "길게"}</small></button>`;
+}
+
 function controlBar(st) {
   const can = (n) => st.allowed.includes(n);
   const btn = (n, extra = "", attrs = "") => `<button data-cmd="${n}" class="${can(n) ? "" : "off"} ${extra}" ${can(n) ? "" : 'aria-disabled="true"'} ${attrs}>${CMD_LABEL[n]}</button>`;
@@ -857,9 +865,10 @@ function controlBar(st) {
     ${btn("return_home", "soon")}
     <span class="spacer"></span>
     ${ui.live && st.mapping_console_url ? `<button data-keyboard-focus aria-pressed="${keyboardEnabled}">${keyboardEnabled ? "키보드 조종 활성" : "키보드 조종 활성화"}</button>` : ""}
-    ${ui.live ? '<span class="muted keys-hint">키보드: WASD 이동 · ↑↓ 높이 · ←→ 회전 · T 이륙 · L 착륙 · Esc 비상 정지</span>' : ""}
+    ${!ui.live ? "" : st.source === "ros" ? '<span class="muted keys-hint">자율 비행 보기: 조종·비상 정지는 자율 비행 화면에서</span>'
+      : '<span class="muted keys-hint">키보드: WASD 이동 · ↑↓ 높이 · ←→ 회전 · T 이륙 · L 착륙 · Esc 비상 정지</span>'}
     <span class="safety">${grounded ? btn("takeoff", "", `aria-haspopup="dialog" aria-expanded="${ui.takeoff.open}"`) : btn("land")}
-      <button class="estop" data-hold="emergency" aria-label="비상 정지, 길게 누르기"><span class="fill"></span>비상 정지 <small>길게</small></button></span>
+      ${estopButton(st)}</span>
   </section>`;
 }
 
@@ -1049,7 +1058,7 @@ function renderControl() {
       <div class="stick" data-axes="lr,fb"><span class="knob"></span><small>좌우 · 앞뒤</small></div>
     </div>
     <p class="muted center" id="axes">입력 없음 · 자율 중에 움직이면 넘겨받기</p>
-    <button class="estop wide" data-hold="emergency" aria-label="비상 정지, 길게 누르기"><span class="fill"></span>비상 정지 <small>0.6초 길게</small></button>
+    ${estopButton(st, true)}
   </div>`;
 }
 
@@ -1059,8 +1068,8 @@ function view() {
   return ["live", "map", "review", "control"].includes(v) ? v : "live";
 }
 
-// 머리줄 연결 표시: 어디에 붙었는지(실기체·가짜 Tello·기록 재생)와 게이트웨이 연결(연결됨·연결 중·끊김).
-const SOURCE_NAME = { tello: "실기체", fake: "가짜 Tello", replay: "기록 재생" };
+// 머리줄 연결 표시: 어디에 붙었는지(실기체·가짜 Tello·기록 재생·자율 비행 보기)와 게이트웨이 연결(연결됨·연결 중·끊김).
+const SOURCE_NAME = { tello: "실기체", fake: "가짜 Tello", replay: "기록 재생", ros: "자율 비행 보기" };
 function syncHeader() {
   const badge = $("#conn");
   if (!ui.live || !badge) return;
@@ -1399,6 +1408,7 @@ document.addEventListener("click", (ev) => {
   if (name === "return_home") return toast("복귀는 자율 비행 쪽과 맞춘 뒤 연결합니다 (화면 자리만)");
   if (b.classList.contains("off")) {
     const why = ui.live && !ui.wsOpen ? "게이트웨이에 연결되지 않았습니다"
+      : ui.state?.source === "ros" ? REASON.ros_view_read_only
       : name === "auto_start" && ui.live ? "자율 비행이 연결되지 않았습니다"
       : name.startsWith("video_") ? REASON.video_disabled : "지금 상태에서는 할 수 없습니다";
     return toast(`${CMD_LABEL[name]}: ${why}`);
@@ -1797,6 +1807,7 @@ document.addEventListener("click", (ev) => {
     $("#scenario-wrap").hidden = true;
     badge.classList.replace("sample", ui.state.source === "fake" || ui.state.source === "replay" ? "live" : "real");
     badge.title = ui.state.source === "replay" ? "지난 회차 기록을 재생하는 화면입니다. 명령은 보내지 않습니다."
+      : ui.state.source === "ros" ? "자율 비행 프로그램이 드론에 붙어 날고, 이 화면은 보기만 합니다. 조종은 자율 비행 화면에서 합니다."
       : "게이트웨이에 연결된 화면입니다. 버튼이 실제로 명령을 보냅니다.";
     connect();
   } else {

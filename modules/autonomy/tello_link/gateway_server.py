@@ -20,6 +20,8 @@
                           자율 → hello·cmd_vel·mission_state·ack·request·pose·path·people. 기본은 같은 PC만, 두 번째는 busy
 - GET  /api/autonomy      자율 위치·경로·찾은 사람 전체 (시험용 가짜 자율: fake_autonomy.py)
 --replay <회차 폴더>: 기체 대신 회차 기록(상태·모드·영상·탐지·지도·자율)을 시간에 맞춰 내보낸다(replay.py). 화면은 그대로, 명령은 거절.
+--ros-view <주소>: 자율 비행 보기. 자율 비행 프로그램(ROS 2, WSL)이 드론에 붙어 날고, 게이트웨이는 보기 노드(ros_view_node.py)에서
+  상태·영상을 받아 화면에 보인다(ros_view.py). 드론에는 붙지 않고 명령은 거절(1단계).
 이륙·rc가 허용된 상태로 뜨므로, 실제 기체에서는 주변을 비우고 실행한다. 이륙은 화면에서 주변 확인 뒤에만 된다.
 check_server.py(연결 점검·첫 조작 화면)와 같은 포트를 쓰므로 동시에 켜지 않는다. Tello는 처음 command를 보낸 쪽에만 답한다.
 """
@@ -110,6 +112,9 @@ class ControllerFiles(StaticFiles):
 
 def build_gateway(args):
     fake = None
+    if getattr(args, "ros_view", None):   # 자율 비행 보기: 드론에는 자율 비행 프로그램이 붙고, 게이트웨이는 보기 노드에서 받는다
+        from ros_view import RosViewGateway
+        return RosViewGateway(args.ros_view, log_root=args.log_root), None
     if getattr(args, "replay", None):   # 기록 재생: 기체 없이 회차 폴더를 시간에 맞춰 내보낸다(명령은 모두 거절)
         from replay import ReplayGateway
         return ReplayGateway(args.replay, speed=args.replay_speed, loop=args.replay_loop, start_s=args.replay_start,
@@ -404,6 +409,9 @@ def main():
     ap.add_argument("--replay-speed", type=float, default=1.0, help="재생 속도 배율(기본 1)")
     ap.add_argument("--replay-loop", action="store_true", help="끝나면 처음부터 다시")
     ap.add_argument("--replay-start", type=float, default=0.0, help="재생 시작 위치(초)")
+    ap.add_argument("--ros-view", metavar="주소",
+                    help="자율 비행 보기: 드론 대신 보기 노드(ros_view_node.py, 보통 http://127.0.0.1:8094)에서 상태·영상을 받는다. "
+                         "자율 비행 프로그램이 드론에 붙어 있을 때")
     ap.add_argument("--no-video", action="store_true", help="영상 수신 끄기")
     ap.add_argument("--no-record-video", action="store_true",
                     help="영상 원본을 회차 폴더(video/)에 남기지 않는다. 기본은 영상을 켤 때마다 남긴다(분당 약 10 MB)")
@@ -416,14 +424,18 @@ def main():
     ap.add_argument("--allow-remote-detections", action="store_true",
                     help="다른 PC의 탐지 결과·3D 지도도 받기 (인증이 없으므로 같은 망 시험에서만)")
     args = ap.parse_args()
+    if args.ros_view and (args.fake or args.replay):
+        ap.error("--ros-view는 --fake·--replay와 같이 쓸 수 없습니다")
 
     app = build_app(args)
-    mode = "기록 재생" if args.replay else "가짜" if args.fake else "실제"
+    mode = "자율 비행 보기" if args.ros_view else "기록 재생" if args.replay else "가짜" if args.fake else "실제"
     print(f"드론 게이트웨이: http://{args.host}:{args.port}  (모드: {mode})")
     if args.replay:
         rec = app.state.gateway.rec
         print(f"재생: {rec.dir} · {rec.t1 - rec.t0:.0f}초 · 영상 조각 {len(rec.parts)}개 · 탐지 {len(rec.dets)}개 (원래 폴더에는 쓰지 않음)")
     else:
+        if args.ros_view:
+            print(f"보기 노드: {args.ros_view} (드론에는 자율 비행 프로그램이 붙어 있다. 명령은 보내지 않는다)")
         print(f"회차 로그: {app.state.gateway.link.log.dir}")
     server = make_server(app, args.host, args.port)
     try:

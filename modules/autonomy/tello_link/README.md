@@ -279,6 +279,45 @@ python modules/autonomy/tello_link/gateway_server.py --replay <회차> --replay-
 - 영상 원본을 남기기 전(11/05 이전) 회차는 영상 없이 재생된다. `/snapshot.jpg`도 재생 영상으로 내주므로 탐지 연결기를 다시 돌려 볼 수 있다(결과 수신은 아직 거절).
 - 재생 시험: `python -B -m unittest discover -s modules/autonomy/tello_link/tests -p "test_replay.py"`
 
+## 자율 비행 보기 (`--ros-view`)
+
+자율 비행 프로그램(ROS 2, WSL)이 드론에 붙어 나는 동안, 게이트웨이가 그 비행을 관제 화면에 보인다. 자율 비행 쪽 코드·launch·안전 장치는 그대로 둔다.
+WSL에서 보기 노드(`ros_view_node.py`)가 자율 드라이버 토픽을 구독하고, Windows 게이트웨이가 그 노드에서 가져간다(`ros_view.py`).
+
+```powershell
+# WSL (자율 비행 launch와 따로)
+source /opt/ros/jazzy/setup.bash
+python3 modules/autonomy/tello_link/ros_view_node.py                  # 127.0.0.1:8094
+# Windows
+python modules/autonomy/tello_link/gateway_server.py --ros-view http://127.0.0.1:8094
+# ROS 없이 시험: 가짜 보기 노드
+python modules/autonomy/tello_link/fake_ros_view.py
+```
+
+- 보기 노드는 WSL 안에서 127.0.0.1에만 연다. Windows 게이트웨이는 127.0.0.1로 붙는다(WSL 기본 localhost 넘겨주기).
+  - WSL 주소·드론 Wi-Fi로는 보이지 않고, Windows 방화벽 규칙이 필요 없다(11/13 확인).
+- 보기 노드가 구독하는 토픽: `/tt/state`(Tello 상태 원문), `/tt/flight_status`(자율 드라이버 상태), `/tt/tof_front`, `/tt/camera/image_raw`.
+  - 1단계는 구독만 하고 아무것도 내지 않는다.
+  - 내주는 것: `GET /api/state`(ros-view/0.1), `/frame.jpg`, `/video.mjpg`. 시계가 달라 절대 시각 대신 받은 지 몇 초(`age_s`)를 준다.
+- 게이트웨이는 드론에 붙지 않는다(TelloLink·FlightController·모드 판정 없음).
+  - 상태는 Tello 원문을 `parse_state`로 푼다. 모드는 자율 드라이버 상태로 나눈다.
+
+    | 자율 드라이버 상태 | 모드 |
+    | --- | --- |
+    | 보기 노드·드론 끊김 | `disconnected`(`drone_state.ros_view.reason`에 까닭) |
+    | 안 떠 있음 | `grounded` |
+    | 착륙 중 | `landing` |
+    | 떠 있음 | `auto`(자율이 조종) |
+
+  - 이륙 전 점검은 자율 드라이버 것(그 기준)을 그대로 싣는다.
+- 영상은 보기 노드 MJPEG를 프레임 저장소에 넣는다(`/snapshot.jpg`·`/video.mjpg`).
+  - 자율 launch 기본은 480×360·15장/초다. 사람 탐지 연결기가 지금처럼 가져간다.
+  - 영상 켜고 끄기는 자율 드라이버가 정한다(화면 버튼 잠금).
+- 명령은 받지 않는다(`ros_view_read_only`, 1단계). 조종·비상 정지는 자율 비행 화면에서 한다. 자율 연결(`/ws/autonomy`)도 받지 않는다.
+- 회차 폴더(`ros_…`, manifest `source: "ros"`)에 상태·모드 바뀜·보기 노드 연결·탐지·지도를 남긴다.
+  - 게이트웨이 회차와 같은 모양이라 `--replay`로 다시 볼 수 있다. 영상 원본은 자율 드라이버가 자기 폴더에 남긴다.
+- 시험: `python -B -m unittest discover -s modules/autonomy/tello_link/tests -p "test_ros_view.py"`. ROS 노드는 ROS가 있는 PC에서 확인한다.
+
 ## 회차 로그
 
 `log_root/<run_id>/`에 남는다. 기본 위치 `data/outputs/tello/`는 Git에서 제외된다.
