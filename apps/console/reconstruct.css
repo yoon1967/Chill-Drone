@@ -18,7 +18,7 @@ main {
   --workspace-height: 100dvh;
   display: flex; flex-direction: column; min-height: var(--workspace-height);
 }
-h2, p { margin: 0; }
+h2, h3, p { margin: 0; }
 h2 { font-size: 14px; margin-bottom: 6px; }
 #file-name { min-width: 0; margin-right: auto; color: var(--muted); overflow-wrap: anywhere; }
 button, a.primary {
@@ -83,7 +83,7 @@ button:disabled { opacity: .55; cursor: default; }
 .restore-toolbar:not(:has(> :not([hidden]))) { display: none; }
 .drop {
   display: grid; justify-items: center; align-content: center; gap: 8px;
-  min-height: clamp(190px, calc(var(--workspace-height) * .4), 360px); padding: 24px;
+  min-height: 120px; padding: 16px; margin-top: 18px; text-align: center;
   border: 1px dashed #839a90; border-radius: 12px; background: #fff;
 }
 .drop.dragging { background: #e2efe9; border-color: var(--accent); }
@@ -93,24 +93,28 @@ button:disabled { opacity: .55; cursor: default; }
 #progress-value { margin-left: auto; color: var(--muted); font-variant-numeric: tabular-nums; }
 main[data-state="failed"] #status, main[data-state="partial"] #status { color: #873c22; }
 progress { display: block; width: 100%; height: 8px; margin-bottom: 14px; accent-color: var(--accent); }
-.input-libraries { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 24px; margin-top: clamp(20px, 4vw, 40px); }
-.input-library { min-width: 0; }
-.input-library h2, #capture-selection h2 { font-size: 17px; margin-bottom: 0; }
+.input-libraries { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 20px; }
+.input-library { min-width: 0; padding: clamp(14px, 2.3vw, 26px); border: 1px solid var(--border); border-radius: 12px; background: #fff; }
+.input-library h2, #capture-selection h2 { font-size: 18px; margin-bottom: 0; }
+.input-library h3 { font-size: 14px; }
 .library-heading { display: flex; align-items: center; justify-content: space-between; gap: 12px; flex-wrap: wrap; }
-.library-heading button { min-height: 32px; padding: 3px 9px; font-size: 13px; }
-.library-hint, #recent-empty, #captures-status, .capture-location { color: var(--muted); font-size: 13px; }
-.library-hint { margin: 8px 0 12px; }
-.capture-location { min-height: 32px; padding: 3px 9px; }
-.capture-root { color: var(--muted); font-size: 12px; margin: 5px 0 12px; overflow-wrap: anywhere; }
+.library-heading button, .folder-actions button { min-height: 36px; padding: 4px 10px; font-size: 13px; }
+.library-hint, .library-status, .folder-path { color: var(--muted); font-size: 13px; }
+.library-hint { margin: 6px 0 12px; }
+.library-status:not(:empty) { margin-top: 6px; }
+.source-folder { margin-bottom: 14px; padding: 12px; background: var(--background); border-radius: 8px; }
+.folder-actions { display: flex; flex-wrap: wrap; gap: 8px; }
+.folder-path { margin-top: 6px; overflow-wrap: anywhere; }
+.folder-form { display: grid; gap: 6px; margin-top: 12px; font-size: 13px; }
+.folder-form input { width: 100%; min-width: 0; min-height: 36px; padding: 5px 8px; font: inherit; color: inherit; border: 1px solid var(--border); border-radius: 6px; }
 summary { cursor: pointer; }
 .library-list { list-style: none; padding: 0; margin: 8px 0 0; display: grid; gap: 8px; max-height: 380px; overflow: auto; }
-#drone-recordings { margin-top: 14px; padding-top: 12px; border-top: 1px solid var(--border); }
-#drone-recordings-title { font-size: 14px; font-weight: 650; }
-#drone-recordings-status { color: var(--muted); font-size: 13px; margin-top: 8px; }
-#drone-recordings-list .recent-record { flex-wrap: wrap; }
-.recent-record { width: 100%; justify-content: space-between; text-align: left; gap: 12px; padding: 12px; }
-.recent-record strong { min-width: 0; overflow-wrap: anywhere; }
-.recent-record span { color: var(--muted); white-space: nowrap; font-size: 13px; }
+.library-list:empty { margin: 0; }
+.capture-library { margin-top: 14px; padding-top: 12px; border-top: 1px solid var(--border); }
+.capture-library summary { font-size: 14px; font-weight: 650; }
+.source-record { width: 100%; justify-content: space-between; flex-wrap: wrap; text-align: left; gap: 4px 12px; padding: 10px; }
+.source-record strong { min-width: 0; overflow-wrap: anywhere; }
+.source-record span { color: var(--muted); font-size: 13px; }
 .capture-record { display: grid; justify-items: start; gap: 4px; }
 .capture-record span { white-space: normal; }
 .capture-record[aria-pressed="true"] { background: #e2efe9; border-color: var(--accent); }

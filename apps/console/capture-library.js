@@ -15,13 +15,14 @@ export function connectCaptureLibrary({request, onSelect, onClear}) {
     if (hadSelection) document.dispatchEvent(new CustomEvent('mapping-capture-selected', {detail: null}));
   }
 
-  async function select(record) {
+  async function select(record, folder) {
     if (loading || !enabled || !record.selectable) return;
     const current = version;
     loading = true;
     $('captures-status').textContent = '촬영 자료 확인 중';
     try {
-      const bundle = await request('capture-bundle', undefined, '?session_id=' + encodeURIComponent(record.session_id));
+      const query = '?' + new URLSearchParams({session_id: record.session_id, folder});
+      const bundle = await request('capture-bundle', undefined, query);
       if (!enabled || current !== version) return;
       selection = bundle;
       $('capture-name').textContent = bundle.name;
@@ -55,14 +56,13 @@ export function connectCaptureLibrary({request, onSelect, onClear}) {
     try {
       const value = await request('capture-library');
       if (!enabled || current !== version) return;
-      $('captures-root').textContent = value.root_path;
-      const signature = JSON.stringify(value.items);
+      const signature = JSON.stringify([value.root_path, value.items]);
       if (signature !== rendered) {
         rendered = signature;
         $('captures-status').textContent = value.items.length ? '' : '아직 저장된 실시간 감독 촬영이 없습니다.';
         $('captures-list').replaceChildren(...value.items.map(record => {
           const item = document.createElement('li'), button = document.createElement('button');
-          button.type = 'button'; button.className = 'recent-record capture-record';
+          button.type = 'button'; button.className = 'source-record capture-record';
           button.dataset.sessionId = record.session_id;
           button.setAttribute('aria-pressed', String(selection?.session_id === record.session_id));
           button.disabled = !record.selectable;
@@ -77,7 +77,7 @@ export function connectCaptureLibrary({request, onSelect, onClear}) {
           else label.textContent = '센서 포함 · 시각 대응 연결';
           if (!record.selectable || record.sync_status !== 'complete') label.className = 'capture-issue';
           button.append(title, detail, label);
-          button.addEventListener('click', () => select(record));
+          button.addEventListener('click', () => select(record, value.root_path));
           item.append(button);
           return item;
         }));
@@ -90,20 +90,16 @@ export function connectCaptureLibrary({request, onSelect, onClear}) {
     } finally { if (enabled && current === version) timer = setTimeout(refresh, 5000); }
   }
 
-  $('captures-refresh').addEventListener('click', refresh);
-  $('captures-open-folder').addEventListener('click', async () => {
-    const button = $('captures-open-folder');
-    button.disabled = true;
-    try {
-      await request('capture-folder', {});
-      $('captures-status').textContent = '파일 탐색기에서 촬영 저장 폴더를 열었습니다.';
-    } catch { $('captures-status').textContent = '촬영 저장 폴더를 열 수 없습니다. 표시된 경로를 확인하세요.'; }
-    finally { button.disabled = false; }
-  });
   $('capture-clear').addEventListener('click', () => { clear(); onClear(); });
   document.addEventListener('visibilitychange', () => { if (!document.hidden && enabled) refresh(); });
   return {
     clear,
+    reload() {
+      version++;
+      $('captures-list').replaceChildren();
+      rendered = '';
+      refresh();
+    },
     setEnabled(value) {
       if (enabled === value) return;
       enabled = value; version++;

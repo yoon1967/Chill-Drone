@@ -2,6 +2,7 @@ import {requestImport} from './import-api.js';
 import {mappingOptions} from './mapping-settings.js';
 import {editorCloud} from './editor-data.js';
 import {connectCaptureLibrary} from './capture-library.js';
+import {connectInputFolder} from './video-folder.js';
 import {showModelPicker, selectedModels, setModelPickerBusy, modelPickerMessage, refreshModelChecks,
   closeModelPicker} from './reconstruction-models.js';
 
@@ -36,11 +37,12 @@ const messages = {
   drone_recording_missing_logs: '녹화에 대응하는 프레임 또는 센서 기록이 없습니다.',
   drone_recording_invalid_timing: '영상 프레임을 녹화 기록의 시각과 맞출 수 없습니다.',
   drone_recording_no_sensor_pose: '녹화 영상과 같은 시각의 드론 자세를 찾을 수 없습니다.',
+  input_folder_changed: '폴더 위치가 바뀌었습니다. 목록을 새로고침한 뒤 다시 선택하세요.',
+  video_file_unavailable: '폴더에서 영상 파일을 찾을 수 없습니다.',
 };
 
 let id = null, job = null, state = 'loading', timer, upload, map;
 let busy = false, watchVersion = 0, canRenderPreview = true;
-let libraryVersion = 0;
 let slideVersion = 0, drag;
 let editLibraryVersion = 0, editRecords = [], editLoad, pointEditor;
 let editChoice = 0;
@@ -64,8 +66,6 @@ function status(next, label = '', notice = '') {
   if ($('notice').textContent !== notice) $('notice').textContent = notice;
   $('notice').hidden = !notice;
   $('status-line').hidden = !label;
-  $('drop').hidden = next !== 'input';
-  $('drone-recordings').hidden = !['input', 'capture_selected'].includes(next);
   $('model-picker').hidden = next !== 'awaiting_options';
   $('input-libraries').hidden = !['input', 'capture_selected'].includes(next);
   captures.setEnabled(['input', 'capture_selected'].includes(next));
@@ -114,33 +114,6 @@ function updateProgress(next) {
   const meter = $('progress');
   meter.value = Math.max(meter.value, Math.floor(value));
   $('progress-value').textContent = `${meter.value}%`;
-}
-
-async function refreshRecent() {
-  const version = ++libraryVersion;
-  try {
-    const {items} = await requestImport('reconstruction-library');
-    if (version !== libraryVersion) return;
-    const records = items.filter(item => ['local', 'ready', 'complete'].includes(item.status) ||
-      ((item.source_video || item.summary?.kind === 'drone_recording') &&
-        ['inspecting', 'running', 'cancelling'].includes(item.status))).slice(0, 6);
-    $('recent-empty').textContent = records.length ? '' : '복원 기록이 없습니다.';
-    $('recent-list').replaceChildren(...records.map(record => {
-      const item = document.createElement('li'), button = document.createElement('button');
-      button.type = 'button'; button.className = 'recent-record';
-      const title = document.createElement('strong'), detail = document.createElement('span');
-      title.textContent = record.name || record.summary?.name;
-      detail.textContent = activeStates.has(record.status) ? '복원 중' : record.updated_at ?
-        new Date(record.updated_at * 1000).toLocaleDateString('ko-KR') : '지도 열기';
-      button.append(title, detail);
-      button.addEventListener('click', () => openRecord(record.local_id || record.id));
-      item.append(button);
-      return item;
-    }));
-  } catch {
-    if (version !== libraryVersion) return;
-    $('recent-empty').textContent = '복원 기록을 열 수 없습니다.';
-  }
 }
 
 function markEditedMap() {
@@ -243,39 +216,72 @@ async function openEditableMap(record) {
   }
 }
 
-async function refreshDroneRecordings() {
-  const label = $('drone-recordings-status');
-  const list = $('drone-recordings-list');
-  label.textContent = '드론 녹화 목록 확인 중';
-  list.replaceChildren();
-  try {
-    const {items} = await requestImport('drone-recordings');
-    label.textContent = items.length ? '' : '영상과 센서값이 함께 저장된 드론 녹화가 없습니다.';
-    list.replaceChildren(...items.map(record => {
-      const item = document.createElement('li'), button = document.createElement('button');
-      button.type = 'button'; button.className = 'recent-record';
-      const title = document.createElement('strong'), detail = document.createElement('span');
-      title.textContent = record.name;
-      detail.textContent = record.started_at ? new Date(record.started_at).toLocaleString('ko-KR') : '센서 기반 복원';
-      button.append(title, detail);
-      button.addEventListener('click', () => openRecord(record.name, true));
-      item.append(button);
-      return item;
-    }));
-  } catch { label.textContent = '드론 녹화 목록을 열 수 없습니다.'; }
+function connectSourceList(kind, selectSource, emptyMessage, onRefresh = () => {}) {
+  const label = $(`${kind}-status`), list = $(`${kind}-list`);
+  let version = 0;
+  async function refresh() {
+    const current = ++version;
+    label.textContent = '목록 확인 중';
+    list.replaceChildren();
+    try {
+      const {folder, configured, items, additional_folders = []} = await requestImport(kind);
+      if (current !== version) return;
+      onRefresh(additional_folders);
+      label.textContent = items.length ? '' : emptyMessage;
+      list.replaceChildren(...items.map(record => {
+        const name = record.name || record;
+        const item = document.createElement('li'), button = document.createElement('button');
+        button.type = 'button'; button.className = 'source-record';
+        const title = document.createElement('strong');
+        title.textContent = name;
+        button.append(title);
+        if (record.started_at) {
+          const detail = document.createElement('span');
+          detail.textContent = new Date(record.started_at).toLocaleString('ko-KR');
+          button.append(detail);
+        }
+        button.addEventListener('click', () => selectSource({folder, configured}, name));
+        item.append(button);
+        return item;
+      }));
+    } catch {
+      if (current !== version) return;
+      onRefresh([]);
+      label.textContent = '목록을 불러올 수 없습니다. 폴더 위치를 확인하세요.';
+    }
+  }
+  $(`${kind}-refresh`).addEventListener('click', refresh);
+  return refresh;
 }
 
-async function openRecord(key, drone = false) {
+const refreshDroneRecordings = connectSourceList('drone-recordings', (preference, name) =>
+  openSource('drone-recording', {...preference, session_id: name}, '드론 녹화'),
+  '영상과 센서 기록이 함께 저장된 드론 녹화가 없습니다.', folders => {
+    const note = $('drone-recordings-additional');
+    note.hidden = !folders.length;
+    note.textContent = folders.length ? `기본 추가 검색 위치 · ${folders.join(', ')}` : '';
+  });
+const refreshVideos = connectSourceList('video-files', ({folder}, name) =>
+  openSource('video-file', {folder, name}, '영상'), '이 폴더에 지원하는 영상이 없습니다.');
+
+connectInputFolder('drone', () => {
+  if (state === 'capture_selected') reset();
+  else refreshDroneRecordings();
+  captures.reload();
+});
+connectInputFolder('video', refreshVideos);
+
+async function openSource(action, body, label) {
   if (busy || !['input', 'capture_selected'].includes(state)) return;
   captures.clear();
+  setName('');
   busy = true;
-  status('loading', drone ? '드론 녹화 확인 중' : '복원 기록 확인 중');
+  status('loading', `${label} 확인 중`);
   try {
-    const record = drone ? await requestImport('drone-recording', {session_id: key}) :
-      await requestImport('local', {local_id: key});
+    const record = await requestImport(action, body);
     remember(record.id);
   } catch (error) {
-    status('input', drone ? '드론 녹화를 열 수 없습니다.' : '복원 기록을 열 수 없습니다.', messages[error.cause] || '');
+    status('input', `${label} 파일을 열 수 없습니다.`, messages[error.cause] || '');
   } finally { busy = false; }
   if (id) await watch();
 }
@@ -393,11 +399,12 @@ async function watch() {
 }
 
 async function select(file) {
-  if (busy || state !== 'input' || !file) return;
+  if (busy || !['input', 'capture_selected'].includes(state) || !file) return;
   if (!/\.(mp4|mov|avi|mkv)$/i.test(file.name)) {
-    status('input', '지원하는 영상 형식을 선택하세요.');
+    status(state, '지원하는 영상 형식을 선택하세요.');
     return;
   }
+  captures.clear();
   busy = true;
   upload = new AbortController();
   setName(file.name);
@@ -441,8 +448,8 @@ function reset() {
   $('progress-value').textContent = '0%';
   setName('');
   status('input');
-  refreshRecent();
   refreshDroneRecordings();
+  refreshVideos();
 }
 
 function selectWorkspaceTab(tab) {
@@ -591,7 +598,7 @@ $('drop').addEventListener('drop', event => {
   $('drop').classList.remove('dragging');
   const files = event.dataTransfer.files;
   if (files.length === 1) select(files[0]);
-  else status('input', '영상 한 개를 선택하세요.');
+  else status(state, '영상 한 개를 선택하세요.');
 });
 $('cancel').addEventListener('click', async () => {
   if (upload) {

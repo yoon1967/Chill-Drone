@@ -566,21 +566,21 @@ class ImportManager:
         self.inspect(info['id'], source)
         return info['id']
 
-    def drone_recordings(self):
+    def drone_recordings(self, roots=None):
         from modules.mapping.data.drone_recording import DroneRecording
         recordings = {}
-        for root in self.drone_recording_roots:
+        for root in self.drone_recording_roots if roots is None else roots:
             for path in root.glob('live_*'):
                 if path.name in recordings:
                     continue
                 try:
                     recordings[path.name] = DroneRecording(inside(root, path.name))
-                except (OSError, ValueError, KeyError, TypeError):
+                except (OSError, ValueError, KeyError, TypeError, AttributeError):
                     continue
         return recordings
 
-    def open_drone_recording(self, session_id):
-        recording = self.drone_recordings().get(session_id)
+    def open_drone_recording(self, session_id, roots=None):
+        recording = self.drone_recordings(roots).get(session_id)
         if recording is None:
             raise ValueError('drone_recording_unavailable')
         with self.lock:

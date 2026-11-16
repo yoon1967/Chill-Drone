@@ -15,7 +15,7 @@ import threading
 import time
 import zipfile
 from types import SimpleNamespace
-from urllib.parse import parse_qs, quote, unquote, urlsplit
+from urllib.parse import parse_qs, quote, unquote, urlencode, urlsplit
 from urllib.request import ProxyHandler, build_opener
 
 APP = Path(__file__).resolve().parent
@@ -28,7 +28,7 @@ from modules.mapping.data.capture_library import capture_library, capture_file, 
 from modules.mapping.data.camera_profiles import CameraProfiles
 from modules.mapping.data.calibration_tutorial import CalibrationTutorial, board_svg
 from modules.mapping.data.calibration_report import calibration_report_pdf
-from apps.console.video_folder import video_folder
+from apps.console.video_folder import folder_video, folder_videos, input_folder
 from apps.console.roomform_jobs import RoomformJobs
 from modules.mapping.data.roomform_errors import RoomformError
 
@@ -868,6 +868,12 @@ class ViewerHandler(BaseHTTPRequestHandler):
         except (OSError, ValueError, TypeError, KeyError):
             self.json_response({'error': 'roomform_source_unavailable'}, 404)
 
+    def drone_input_roots(self, preference):
+        folder = Path(preference['folder'])
+        if preference['configured']:
+            return (folder,)
+        return tuple(root for root in self.imports.drone_recording_roots if root == folder or root.is_dir())
+
     def import_request(self):
         if not self.imports:
             self.json_response({'error': 'imports_not_enabled'}, 404)
@@ -878,6 +884,10 @@ class ViewerHandler(BaseHTTPRequestHandler):
         key = query.get('id', [''])[0]
         try:
             if self.command == 'GET':
+                if action in {'capture-library', 'capture-bundle', 'capture-file'}:
+                    capture_root = input_folder(self.imports.root, 'drone')['folder']
+                    if query.get('folder', [capture_root])[0] != capture_root:
+                        raise ValueError('input_folder_changed')
                 if action == 'library':
                     self.json_response({'items': self.imports.library(), 'initial': getattr(self.imports, 'initial', None)})
                 elif action == 'reconstruction-library':
@@ -897,11 +907,14 @@ class ViewerHandler(BaseHTTPRequestHandler):
                         items.insert(0, item)
                     self.json_response({'items': items})
                 elif action == 'capture-library':
-                    self.json_response(capture_library(self.imports.root))
+                    self.json_response(capture_library(capture_root))
                 elif action == 'capture-bundle':
-                    self.json_response(select_capture(self.imports.root, query.get('session_id', [''])[0]))
+                    bundle = select_capture(capture_root, query.get('session_id', [''])[0])
+                    for file in bundle['files']:
+                        file['url'] += '&' + urlencode({'folder': capture_root})
+                    self.json_response(bundle)
                 elif action == 'capture-file':
-                    file = capture_file(self.imports.root, query.get('session_id', [''])[0], query.get('path', [''])[0])
+                    file = capture_file(capture_root, query.get('session_id', [''])[0], query.get('path', [''])[0])
                     if file.suffix.lower() in {'.mkv', '.mp4'}:
                         self.demo = file
                         self.source_video()
@@ -919,11 +932,18 @@ class ViewerHandler(BaseHTTPRequestHandler):
                                 except (BrokenPipeError, ConnectionResetError, ConnectionAbortedError):
                                     break
                 elif action == 'drone-recordings':
-                    recordings = sorted(self.imports.drone_recordings().values(),
+                    preference = input_folder(self.imports.root, 'drone')
+                    roots = self.drone_input_roots(preference)
+                    recordings = sorted(self.imports.drone_recordings(roots).values(),
                                         key=lambda recording: recording.started_at or '', reverse=True)
-                    self.json_response({'items': [recording.summary() for recording in recordings]})
-                elif action == 'video-folder':
-                    self.json_response(video_folder(self.imports.root))
+                    self.json_response({'folder': preference['folder'], 'configured': preference['configured'],
+                                        'additional_folders': [str(root) for root in roots if str(root) != preference['folder']],
+                                        'items': [recording.summary() for recording in recordings]})
+                elif action in {'video-folder', 'drone-folder'}:
+                    self.json_response(input_folder(self.imports.root, action.removesuffix('-folder')))
+                elif action == 'video-files':
+                    folder = input_folder(self.imports.root, 'video')['folder']
+                    self.json_response({'folder': folder, 'items': folder_videos(Path(folder))})
                 elif action == 'status':
                     self.json_response(self.imports.status(key))
                 elif action == 'preview':
@@ -994,12 +1014,20 @@ class ViewerHandler(BaseHTTPRequestHandler):
             if not 0 <= length <= 65536:
                 raise ValueError('invalid_request_size')
             body = json.loads(self.rfile.read(length) or b'{}')
+            if not isinstance(body, dict):
+                raise ValueError('invalid_request_body')
             if action == 'create':
                 value = self.imports.create(body.get('name', '불러온 자료'))
             elif action == 'capture-folder':
-                value = open_capture_folder(self.imports.root)
-            elif action == 'video-folder':
-                value = video_folder(self.imports.root, body)
+                value = open_capture_folder(input_folder(self.imports.root, 'drone')['folder'])
+            elif action in {'video-folder', 'drone-folder'}:
+                value = input_folder(self.imports.root, action.removesuffix('-folder'), body)
+            elif action == 'video-file':
+                folder = input_folder(self.imports.root, 'video')['folder']
+                if body.get('folder') != folder:
+                    raise ValueError('input_folder_changed')
+                source = folder_video(Path(folder), body.get('name'))
+                value = self.imports.public(self.imports.add_local(source))
             elif action == 'inspect':
                 options = body.get('auto_reconstruct')
                 if options is None:
@@ -1014,7 +1042,10 @@ class ViewerHandler(BaseHTTPRequestHandler):
             elif action == 'local':
                 value = self.imports.open_local(body.get('local_id', ''))
             elif action == 'drone-recording':
-                value = self.imports.open_drone_recording(body.get('session_id', ''))
+                preference = input_folder(self.imports.root, 'drone')
+                if any(field in body and body[field] != preference[field] for field in ('folder', 'configured')):
+                    raise ValueError('input_folder_changed')
+                value = self.imports.open_drone_recording(body.get('session_id', ''), self.drone_input_roots(preference))
             elif action == 'delete':
                 protected = [self.current.path] if self.current and self.current.stats().get('session_status') not in {'complete', 'failed', 'stopped_or_disconnected'} else []
                 value = self.imports.delete_local(body.get('local_id', ''), protected_paths=protected)
