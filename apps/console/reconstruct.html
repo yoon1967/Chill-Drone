@@ -17,6 +17,11 @@
     </div>
     <div id="workspace-panels">
       <section id="restore-panel" role="tabpanel" aria-labelledby="restore-tab" tabindex="0">
+        <div id="drop" class="drop" hidden>
+          <button id="choose" class="primary" type="button">파일 선택</button>
+          <input id="video" type="file" accept=".zip,.mp4,.mov,.avi,.mkv" hidden>
+          <p>드론 녹화 ZIP 또는 일반 영상(MP4, MOV, AVI, MKV)을 여기에 놓으세요.</p>
+        </div>
         <div class="restore-toolbar">
           <p id="file-name" hidden></p>
           <button id="change" type="button" hidden>다른 자료</button>
@@ -71,17 +76,10 @@
             <div class="source-folder">
               <div class="folder-actions">
                 <button id="drone-folder-open" type="button" aria-describedby="drone-folder-path" disabled>폴더 열기</button>
-                <button id="drone-folder-change" type="button" aria-expanded="false" aria-controls="drone-folder-form">폴더 위치 설정</button>
+                <button id="drone-folder-change" type="button" disabled>폴더 위치 설정</button>
+                <button id="drone-folder-reset" type="button" hidden>기본 위치 사용</button>
               </div>
               <p id="drone-folder-path" class="folder-path">드론 데이터 폴더 확인 중</p>
-              <form id="drone-folder-form" class="folder-form" hidden>
-                <label for="drone-folder-input">드론 데이터 폴더 전체 경로</label>
-                <input id="drone-folder-input" type="text" required>
-                <div class="folder-actions">
-                  <button class="primary" type="submit">저장</button>
-                  <button id="drone-folder-reset" type="button">기본 위치 사용</button>
-                </div>
-              </form>
               <p id="drone-folder-status" class="library-status" role="status"></p>
             </div>
             <section aria-labelledby="drone-recordings-title">
@@ -105,17 +103,10 @@
             <div class="source-folder">
               <div class="folder-actions">
                 <button id="video-folder-open" type="button" aria-describedby="video-folder-path" disabled>폴더 열기</button>
-                <button id="video-folder-change" type="button" aria-expanded="false" aria-controls="video-folder-form">폴더 위치 설정</button>
+                <button id="video-folder-change" type="button" disabled>폴더 위치 설정</button>
+                <button id="video-folder-reset" type="button" hidden>기본 위치 사용</button>
               </div>
               <p id="video-folder-path" class="folder-path">영상 데이터 폴더 확인 중</p>
-              <form id="video-folder-form" class="folder-form" hidden>
-                <label for="video-folder-input">영상 데이터 폴더 전체 경로</label>
-                <input id="video-folder-input" type="text" required>
-                <div class="folder-actions">
-                  <button class="primary" type="submit">저장</button>
-                  <button id="video-folder-reset" type="button">기본 위치 사용</button>
-                </div>
-              </form>
               <p id="video-folder-status" class="library-status" role="status"></p>
             </div>
             <section aria-labelledby="video-files-title">
@@ -126,11 +117,6 @@
               <p id="video-files-status" class="library-status" role="status"></p>
               <ul id="video-files-list" class="library-list"></ul>
             </section>
-            <div id="drop" class="drop">
-              <button id="choose" class="primary" type="button">영상 선택</button>
-              <input id="video" type="file" accept=".mp4,.mov,.avi,.mkv" hidden>
-              <p>여기에 영상 놓기 · MP4, MOV, AVI, MKV</p>
-            </div>
           </section>
         </div>
 

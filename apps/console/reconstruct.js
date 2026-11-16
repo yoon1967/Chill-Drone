@@ -39,6 +39,11 @@ const messages = {
   drone_recording_no_sensor_pose: '녹화 영상과 같은 시각의 드론 자세를 찾을 수 없습니다.',
   input_folder_changed: '폴더 위치가 바뀌었습니다. 목록을 새로고침한 뒤 다시 선택하세요.',
   video_file_unavailable: '폴더에서 영상 파일을 찾을 수 없습니다.',
+  invalid_drone_archive: '영상·센서 기록이 모두 들어 있는 드론 녹화 ZIP을 선택하세요.',
+  multiple_drone_recordings: '드론 녹화 세션이 하나씩 들어 있는 ZIP을 선택하세요.',
+  drone_recording_exists: '같은 이름의 드론 녹화가 이미 등록되어 있습니다.',
+  invalid_upload_size: 'ZIP이 비어 있거나 지원하는 크기를 초과했습니다.',
+  archive_too_large: '압축을 푼 드론 녹화의 크기 또는 파일 수가 제한을 초과했습니다.',
 };
 
 let id = null, job = null, state = 'loading', timer, upload, map;
@@ -67,8 +72,9 @@ function status(next, label = '', notice = '') {
   $('notice').hidden = !notice;
   $('status-line').hidden = !label;
   $('model-picker').hidden = next !== 'awaiting_options';
-  $('input-libraries').hidden = !['input', 'capture_selected'].includes(next);
-  captures.setEnabled(['input', 'capture_selected'].includes(next));
+  const showInputs = ['input', 'capture_selected'].includes(next);
+  $('drop').hidden = $('input-libraries').hidden = !showInputs;
+  captures.setEnabled(showInputs);
   if (next !== 'capture_selected') $('capture-selection').hidden = true;
   $('change').hidden = !['capture_selected', 'awaiting_options', 'complete', 'partial', 'failed', 'cancelled', 'result-error'].includes(next);
   $('cancel').hidden = !activeStates.has(next);
@@ -398,10 +404,37 @@ async function watch() {
   }
 }
 
+async function registerDroneArchive(file) {
+  busy = true;
+  $('choose').disabled = true;
+  status('input', '드론 녹화 ZIP 등록 중', file.name);
+  captures.setEnabled(false);
+  try {
+    const response = await fetch('/api/import/drone-archive?' + new URLSearchParams({name: file.name}), {
+      method: 'POST', headers: {'X-Mapping-Client': '1'}, body: file,
+    });
+    const value = await response.json();
+    if (!response.ok) throw new Error(value.error, {cause: value.error});
+    status('input', '복원 가능한 드론 녹화에 등록했습니다.', value.name);
+    await refreshDroneRecordings();
+    captures.reload();
+  } catch (error) {
+    status('input', '드론 녹화 ZIP을 등록하지 못했습니다.', messages[error.cause] || '폴더 위치를 확인한 뒤 다시 시도하세요.');
+  } finally {
+    $('choose').disabled = false;
+    busy = false;
+  }
+}
+
 async function select(file) {
   if (busy || !['input', 'capture_selected'].includes(state) || !file) return;
+  if (/\.zip$/i.test(file.name)) {
+    captures.clear();
+    setName('');
+    return registerDroneArchive(file);
+  }
   if (!/\.(mp4|mov|avi|mkv)$/i.test(file.name)) {
-    status(state, '지원하는 영상 형식을 선택하세요.');
+    status(state, '드론 녹화 ZIP 또는 지원하는 영상 파일을 선택하세요.');
     return;
   }
   captures.clear();
@@ -502,7 +535,7 @@ $('edit-result').addEventListener('click', async () => {
 
 workspace.addEventListener('pointerdown', event => {
   if (event.pointerType !== 'mouse' || event.button !== 0 ||
-      event.target.closest('a, button, input, select, textarea, label, summary, .library-list, .media, [contenteditable]')) return;
+      event.target.closest('a, button, input, select, textarea, label, summary, .drop, .library-list, .media, [contenteditable]')) return;
   drag = {id: event.pointerId, x: event.clientX, y: event.clientY, offset: 0};
 });
 
@@ -598,7 +631,7 @@ $('drop').addEventListener('drop', event => {
   $('drop').classList.remove('dragging');
   const files = event.dataTransfer.files;
   if (files.length === 1) select(files[0]);
-  else status(state, '영상 한 개를 선택하세요.');
+  else if (!busy) status(state, '파일 한 개를 선택하세요.');
 });
 $('cancel').addEventListener('click', async () => {
   if (upload) {

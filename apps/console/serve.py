@@ -1010,6 +1010,15 @@ class ViewerHandler(BaseHTTPRequestHandler):
                 self.imports.upload(key, query.get('path', [''])[0], self.rfile, int(self.headers.get('Content-Length', '-1')))
                 self.json_response({'status': 'uploaded'})
                 return
+            if action == 'drone-archive':
+                def current_drone_folder():
+                    return input_folder(self.imports.root, 'drone')['folder']
+
+                value = self.imports.register_drone_archive(Path(current_drone_folder()),
+                    query.get('name', [''])[0], self.rfile, int(self.headers.get('Content-Length', '-1')),
+                    current_drone_folder)
+                self.json_response(value, 201)
+                return
             length = int(self.headers.get('Content-Length', '0'))
             if not 0 <= length <= 65536:
                 raise ValueError('invalid_request_size')

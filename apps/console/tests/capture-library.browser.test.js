@@ -60,7 +60,10 @@ test('capture library selects actual video and sensor assets separately from sav
       const dronePanel = page.getByRole('region', {name: '드론데이터 기반 복원'});
       const videoPanel = page.getByRole('region', {name: '영상데이터 기반 복원'});
       const left = await dronePanel.boundingBox(), right = await videoPanel.boundingBox();
+      const drop = await page.locator('#drop').boundingBox();
       assert.ok(Math.abs(left.width - right.width) < 1 && right.x > left.x + left.width);
+      assert.ok(drop.y + drop.height <= Math.min(left.y, right.y));
+      assert.ok(Math.abs(drop.width - (right.x + right.width - left.x)) < 1);
       assert.equal(await page.getByRole('heading', {name: '최근 복원'}).count(), 0);
       await page.getByText('실시간 감독 촬영 자료', {exact: true}).click();
       await page.locator('#captures-list button').first().waitFor();
@@ -102,15 +105,27 @@ test('capture library selects actual video and sensor assets separately from sav
       const name = '복도 영상.mp4';
       await writeFile(join(videoFolder, name), 'fixture');
       for (const [kind, panel, path] of [['drone', dronePanel, droneFolder], ['video', videoPanel, videoFolder]]) {
-        await panel.getByRole('button', {name: '폴더 위치 설정'}).click();
-        await panel.getByRole('textbox').fill(path);
-        await panel.getByRole('button', {name: '저장', exact: true}).click();
-        await panel.getByText(path, {exact: true}).waitFor();
+        let firstPick = true;
         await page.route(`**/api/import/${kind}-folder`, async route => {
           if (route.request().method() !== 'POST') return route.continue();
+          if (route.request().postDataJSON().action === 'pick') {
+            if (firstPick) {
+              firstPick = false;
+              return route.fulfill({status: 400, json: {error: 'video_folder_pick_failed'}});
+            }
+            const response = await route.fetch({postData: {action: 'set', folder: path}});
+            assert.equal(response.status(), 202);
+            return route.fulfill({response, json: {...await response.json(), can_open: true, can_pick: true}});
+          }
           assert.deepEqual(route.request().postDataJSON(), {action: 'open', folder: path});
-          return route.fulfill({json: {folder: path, can_open: true}});
+          return route.fulfill({json: {folder: path, can_open: true, can_pick: true, configured: true}});
         });
+        const pick = panel.getByRole('button', {name: '폴더 위치 설정'});
+        await pick.click();
+        await panel.getByText('Windows 폴더 선택 창을 열지 못했습니다. 다시 시도해 주세요.').waitFor();
+        assert.equal(await panel.getByRole('textbox').count(), 0);
+        await pick.click();
+        await panel.getByText(path, {exact: true}).waitFor();
         await panel.getByRole('button', {name: '폴더 열기', exact: true}).click();
         await panel.getByText('파일 탐색기에서 폴더를 열었습니다.').waitFor();
         await page.unroute(`**/api/import/${kind}-folder`);
@@ -121,6 +136,23 @@ test('capture library selects actual video and sensor assets separately from sav
       await page.reload();
       await videoPanel.getByText(videoFolder, {exact: true}).waitFor();
       await dronePanel.getByText(droneFolder, {exact: true}).waitFor();
+      let registered = false;
+      await page.route('**/api/import/drone-archive?*', route => {
+        assert.equal(new URL(route.request().url()).searchParams.get('name'), 'flight.zip');
+        assert.equal(route.request().headers()['x-mapping-client'], '1');
+        registered = true;
+        return route.fulfill({status: 201, json: {name: 'live_uploaded'}});
+      });
+      await page.route('**/api/import/drone-recordings', route => registered
+        ? route.fulfill({json: {folder: droneFolder, configured: true, items: [{name: 'live_uploaded'}]}})
+        : route.continue());
+      await page.locator('#drop').evaluate(node => {
+        const dataTransfer = new DataTransfer();
+        dataTransfer.items.add(new File(['archive fixture'], 'flight.zip', {type: 'application/zip'}));
+        node.dispatchEvent(new DragEvent('drop', {bubbles: true, cancelable: true, dataTransfer}));
+      });
+      await dronePanel.getByRole('button', {name: 'live_uploaded'}).waitFor();
+      assert.equal(await videoPanel.getByRole('button', {name: 'live_uploaded'}).count(), 0);
       await page.setViewportSize({width: 390, height: 844});
       const mobileLeft = await dronePanel.boundingBox(), mobileRight = await videoPanel.boundingBox();
       assert.ok(mobileRight.y >= mobileLeft.y + mobileLeft.height);

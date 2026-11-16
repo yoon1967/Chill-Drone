@@ -2,12 +2,14 @@
 from contextlib import closing
 from functools import partial
 from http.client import HTTPConnection
+from io import BytesIO
 import json
 from pathlib import Path
 import tempfile
 import threading
 import unittest
 from unittest.mock import patch
+from zipfile import ZipFile
 
 from apps.console.serve import ObservationCache, Timeline, ViewerHandler, ViewerServer
 from modules.mapping.data.capture_library import capture_library, select_capture, capture_file, reconstruction_library, open_capture_folder
@@ -86,12 +88,21 @@ class CaptureLibraryTests(unittest.TestCase):
             self.assertEqual(request('drone-folder', {'action': 'set', 'folder': str(drone)}, 202)['folder'], str(drone))
             self.assertEqual(request('video-folder')['folder'], str(self.root))
             self.assertEqual(request('video-folder', {'action': 'set', 'folder': str(video)}, 202)['folder'], str(video))
-            with patch('apps.console.video_folder.os.startfile', create=True) as startfile:
+            with patch('apps.console.video_folder.open_folder') as open_folder:
                 for source, folder in (('drone', drone), ('video', video)):
-                    request(source + '-folder', {'action': 'open', 'folder': str(folder)}, 202)
-                    startfile.assert_called_with(str(folder))
+                    self.assertEqual(request(source + '-folder', {'action': 'open', 'folder': str(folder)}, 202)['folder'],
+                                     str(folder))
+                    open_folder.assert_called_with(folder)
                 request('video-folder', {'action': 'open', 'folder': str(drone)}, 400)
-                self.assertEqual(startfile.call_count, 2)
+                self.assertEqual(open_folder.call_count, 2)
+            with patch('apps.console.video_folder.pick_folder', side_effect=[OSError(), None, str(drone)]) as pick_folder:
+                self.assertEqual(request('drone-folder', {'action': 'pick'}, 400)['error'], 'video_folder_pick_failed')
+                self.assertTrue(request('drone-folder', {'action': 'pick'}, 202)['cancelled'])
+                self.assertEqual(request('drone-folder')['folder'], str(drone))
+                self.assertFalse(request('video-folder', {'action': 'pick'}, 202)['cancelled'])
+                pick_folder.assert_called_with(str(video))
+                self.assertEqual(request('video-folder')['folder'], str(drone))
+            request('video-folder', {'action': 'set', 'folder': str(video)}, 202)
             self.assertEqual([item['name'] for item in request('drone-recordings')['items']], ['live_custom'])
             self.assertEqual(request('video-files')['items'], [movie.name])
             for name, folder in ((movie.name, self.root), ('../video/' + movie.name, video), ('note.txt', video)):
@@ -105,6 +116,50 @@ class CaptureLibraryTests(unittest.TestCase):
             request('drone-folder', {'action': 'reset'}, 202)
             self.assertEqual([item['name'] for item in request('drone-recordings')['items']], ['live_default'])
             self.assertEqual(request('video-folder')['folder'], str(video))
+        finally:
+            server.shutdown(); server.server_close(); thread.join(2)
+
+    def test_drone_zip_is_registered_in_configured_folder_and_can_be_selected(self):
+        drone, source = self.root / '드론 폴더', self.root / 'source'
+        drone.mkdir()
+        recording(source)
+        manager = ImportManager(self.root / 'imports')
+        self.addCleanup(manager.shutdown)
+        server = ViewerServer(('127.0.0.1', 0), partial(ViewerHandler, imports=manager,
+            timeline=Timeline(), observations=ObservationCache()))
+        thread = threading.Thread(target=server.serve_forever, daemon=True)
+        thread.start()
+
+        def request(action, body=None, expected=200):
+            with closing(HTTPConnection('127.0.0.1', server.server_port, timeout=10)) as connection:
+                connection.request('GET' if body is None else 'POST', '/api/import/' + action,
+                    body=json.dumps(body) if isinstance(body, dict) else body, headers={'X-Mapping-Client': '1'})
+                response = connection.getresponse()
+                value = json.loads(response.read())
+                self.assertEqual(response.status, expected, value)
+                return value
+
+        archive = BytesIO()
+        with ZipFile(archive, 'w') as zipped:
+            for entry in source.rglob('*'):
+                if entry.is_file():
+                    zipped.write(entry, 'wrapper/recording/' + entry.relative_to(source).as_posix())
+        try:
+            request('drone-folder', {'action': 'set', 'folder': str(drone)}, 202)
+            self.assertEqual(request('drone-archive?name=bad.zip', b'broken', 400)['error'], 'invalid_drone_archive')
+            unsafe = BytesIO()
+            with ZipFile(unsafe, 'w') as zipped:
+                zipped.writestr('../outside.mp4', 'unsafe')
+            request('drone-archive?name=unsafe.zip', unsafe.getvalue(), 400)
+            self.assertEqual(list(drone.iterdir()), [])
+            item = request('drone-archive?name=flight.ZIP', archive.getvalue(), 201)
+            self.assertEqual(request('drone-recordings')['items'], [item])
+            self.assertEqual(request('drone-archive?name=flight.ZIP', archive.getvalue(), 400)['error'],
+                             'drone_recording_exists')
+            self.assertEqual(list(drone.iterdir()), [drone / item['name']])
+            opened = request('drone-recording', {'session_id': item['name'], 'folder': str(drone)}, 202)
+            self.assertEqual(opened['status'], 'awaiting_options')
+            self.assertEqual(opened['summary']['kind'], 'drone_recording')
         finally:
             server.shutdown(); server.server_close(); thread.join(2)
 
