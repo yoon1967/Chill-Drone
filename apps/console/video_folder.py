@@ -7,6 +7,7 @@ from tempfile import NamedTemporaryFile
 import time
 
 from modules.mapping.data.session_import import VIDEO, inside
+from apps.console.windows_folder import open_folder, pick_folder
 
 
 def local_directory(value):
@@ -33,39 +34,55 @@ def input_folder(root, kind, body=None):
     configured = saved.get('folder') if isinstance(saved, dict) else None
     if not isinstance(configured, str):
         configured = None
+    result = {}
     if body is not None:
         action = body['action']
         if action == 'open':
             folder = configured or str(root)
             if body.get('folder', folder) != folder:
                 raise ValueError('input_folder_changed')
-            if not hasattr(os, 'startfile'):
-                raise ValueError('video_folder_open_unavailable')
             path = local_directory(folder)
             try:
-                os.startfile(str(path))
+                open_folder(path)
+            except NotImplementedError as error:
+                raise ValueError('video_folder_open_unavailable') from error
             except OSError as error:
                 raise ValueError('video_folder_open_failed') from error
-        elif action in {'set', 'reset'}:
-            configured = str(local_directory(body['folder'])) if action == 'set' else None
-            with NamedTemporaryFile(dir=root, prefix=f'.{kind}-folder-', delete=False) as file:
-                temporary = Path(file.name)
-            try:
-                temporary.write_text(json.dumps({'folder': configured}, ensure_ascii=False), encoding='utf-8')
-                # Windows can briefly hold the destination open while another console reads it.
-                for attempt in range(40):
-                    try:
-                        temporary.replace(settings)
-                        break
-                    except PermissionError:
-                        if attempt == 39:
-                            raise
-                        time.sleep(.005)
-            finally:
-                temporary.unlink(missing_ok=True)
+        elif action in {'set', 'reset', 'pick'}:
+            selected = body.get('folder')
+            if action == 'pick':
+                try:
+                    selected = pick_folder(configured or str(root))
+                except NotImplementedError as error:
+                    raise ValueError('video_folder_pick_unavailable') from error
+                except OSError as error:
+                    raise ValueError('video_folder_pick_failed') from error
+                result['cancelled'] = selected is None
+            if not result.get('cancelled'):
+                configured = None if action == 'reset' else str(local_directory(selected))
+                save_folder(root, kind, settings, configured)
         else:
             raise ValueError('invalid_video_folder_action')
-    return {'folder': configured or str(root), 'configured': bool(configured), 'can_open': hasattr(os, 'startfile')}
+    return {'folder': configured or str(root), 'configured': bool(configured),
+            'can_open': os.name == 'nt', 'can_pick': os.name == 'nt', **result}
+
+
+def save_folder(root, kind, settings, configured):
+    with NamedTemporaryFile(dir=root, prefix=f'.{kind}-folder-', delete=False) as file:
+        temporary = Path(file.name)
+    try:
+        temporary.write_text(json.dumps({'folder': configured}, ensure_ascii=False), encoding='utf-8')
+        # Windows can briefly hold the destination open while another console reads it.
+        for attempt in range(40):
+            try:
+                temporary.replace(settings)
+                break
+            except PermissionError:
+                if attempt == 39:
+                    raise
+                time.sleep(.005)
+    finally:
+        temporary.unlink(missing_ok=True)
 
 
 def folder_video(folder, name):

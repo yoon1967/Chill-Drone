@@ -16,6 +16,7 @@ import signal
 import sqlite3
 import subprocess
 import sys
+from tempfile import TemporaryDirectory
 import threading
 import time
 import uuid
@@ -137,6 +138,18 @@ def extract_zip(source, destination, cancelled=lambda: False):
                     if cancelled():
                         raise InterruptedError('cancelled')
                     dst.write(block)
+
+
+def write_upload(stream, length, target, cancelled=lambda: False):
+    with target.open('xb') as output:
+        while length:
+            if cancelled():
+                raise InterruptedError('cancelled')
+            block = stream.read(min(1024 * 1024, length))
+            if not block:
+                raise ValueError('incomplete_upload')
+            output.write(block)
+            length -= len(block)
 
 
 def scene_at(path):
@@ -474,16 +487,7 @@ class ImportManager:
             job['files'].add(name.casefold())
             job['bytes'] += length
         target.parent.mkdir(parents=True, exist_ok=True)
-        with target.open('xb') as output:
-            remaining = length
-            while remaining:
-                if job['cancel'].is_set():
-                    raise InterruptedError('cancelled')
-                block = stream.read(min(1024 * 1024, remaining))
-                if not block:
-                    raise ValueError('incomplete_upload')
-                output.write(block)
-                remaining -= len(block)
+        write_upload(stream, length, target, job['cancel'].is_set)
 
     def inspect(self, key, source=None, *, start_video=None):
         job = self.job(key)
@@ -578,6 +582,52 @@ class ImportManager:
                 except (OSError, ValueError, KeyError, TypeError, AttributeError):
                     continue
         return recordings
+
+    def register_drone_archive(self, folder, name, stream, length, current_folder):
+        from modules.mapping.data.drone_recording import DroneRecording
+
+        if not name.lower().endswith('.zip'):
+            raise ValueError('invalid_drone_archive')
+        if not 0 < length <= MAX_BYTES:
+            raise ValueError('invalid_upload_size')
+        if length > shutil.disk_usage(folder).free:
+            raise ValueError('insufficient_disk_space')
+        with TemporaryDirectory(dir=folder, prefix='.drone-upload-') as staging:
+            source, bundle = Path(staging) / 'recording.zip', Path(staging) / 'bundle'
+            write_upload(stream, length, source)
+            try:
+                extract_zip(source, bundle)
+            except (zipfile.BadZipFile, NotImplementedError, RuntimeError) as error:
+                raise ValueError('invalid_drone_archive') from error
+            selected = None
+            for manifest in bundle.rglob('session.json'):
+                try:
+                    recording = DroneRecording(manifest.parent)
+                    session_id = read_json(manifest).get('session_id') or manifest.parent.name
+                    summary = recording.summary()
+                    if summary['started_at'] is not None and not isinstance(summary['started_at'], str):
+                        continue
+                    if not math.isfinite(summary['duration_s']):
+                        continue
+                except (OSError, ValueError, KeyError, TypeError, AttributeError):
+                    continue
+                if selected is not None:
+                    raise ValueError('multiple_drone_recordings')
+                selected = (recording.root, session_id, summary)
+            if selected is None:
+                raise ValueError('invalid_drone_archive')
+            recording_root, session_id, summary = selected
+            if not isinstance(session_id, str) or not re.fullmatch(r'live_[A-Za-z0-9_-]{1,91}', session_id):
+                label = re.sub(r'[^A-Za-z0-9_-]+', '-', name[:-4]).strip('-_')
+                session_id = 'live_' + (label[:91] or uuid.uuid4().hex[:16])
+            target = folder / session_id
+            with self.lock:
+                if current_folder() != str(folder):
+                    raise ValueError('input_folder_changed')
+                if target.exists() or target.is_symlink():
+                    raise ValueError('drone_recording_exists')
+                recording_root.rename(target)
+            return {**summary, 'name': session_id}
 
     def open_drone_recording(self, session_id, roots=None):
         recording = self.drone_recordings(roots).get(session_id)
