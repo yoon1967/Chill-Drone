@@ -13,8 +13,8 @@ test('capture library selects actual video and sensor assets separately from sav
     const {chromium} = createRequire(import.meta.url)(process.env.MAPPING_PLAYWRIGHT_MODULE);
     const root = await mkdtemp(join(tmpdir(), 'mapping-capture-test-'));
     const write = (path, data) => writeFile(path, JSON.stringify(data));
-    async function capture(name, {sync = 'complete', active = false, missing = false} = {}) {
-      const folder = join(root, name);
+    async function capture(name, {sync = 'complete', active = false, missing = false, parent = root} = {}) {
+      const folder = join(parent, name);
       await mkdir(join(folder, 'recordings'), {recursive: true});
       await mkdir(join(folder, 'frames'));
       await write(join(folder, 'session.json'), {schema_version: 'mapping-session/1.0', input: 'tello_camera',
@@ -57,21 +57,14 @@ test('capture library selects actual video and sensor assets separately from sav
       let starts = 0;
       page.on('request', request => { if (/\/api\/import\/(start|create|local|inspect|drone-recording)(\?|$)/.test(request.url())) starts++; });
       await page.goto(url + '/reconstruct.html');
-      await page.locator('#captures-list button').first().waitFor();
-      assert.equal(await page.locator('#recent-list button').count(), 0);
-      assert.equal(await page.locator('#recent-empty').textContent(), '복원 기록이 없습니다.');
-      assert.equal(await page.locator('#captures-list button').count(), 4);
-      let folderOpened = 0;
-      await page.route('**/api/import/capture-folder', route => {
-        folderOpened++;
-        assert.deepEqual(route.request().postDataJSON(), {});
-        return route.fulfill({json: {folder: root, opened: true}});
-      });
-      await page.getByRole('button', {name: '촬영 저장 위치 ↗'}).click();
-      assert.equal(folderOpened, 1);
-      assert.equal(await page.locator('#captures-root').textContent(), root);
-      const left = await page.locator('#recent').boundingBox(), right = await page.locator('#captures').boundingBox();
+      const dronePanel = page.getByRole('region', {name: '드론데이터 기반 복원'});
+      const videoPanel = page.getByRole('region', {name: '영상데이터 기반 복원'});
+      const left = await dronePanel.boundingBox(), right = await videoPanel.boundingBox();
       assert.ok(Math.abs(left.width - right.width) < 1 && right.x > left.x + left.width);
+      assert.equal(await page.getByRole('heading', {name: '최근 복원'}).count(), 0);
+      await page.getByText('실시간 감독 촬영 자료', {exact: true}).click();
+      await page.locator('#captures-list button').first().waitFor();
+      assert.equal(await page.locator('#captures-list button').count(), 4);
       assert.equal(await page.getByRole('button', {name: /^live_active/}).isDisabled(), true);
       assert.equal(await page.getByRole('button', {name: /^live_missing/}).isDisabled(), true);
       await page.evaluate(() => {
@@ -102,18 +95,44 @@ test('capture library selects actual video and sensor assets separately from sav
       assert.equal(await page.evaluate(() => window.captureSelection), null);
       await capture('live_automatic');
       await page.getByRole('button', {name: /^live_automatic/}).waitFor({timeout: 8000});
+
+      const droneFolder = join(root, 'drone-input'), videoFolder = join(root, 'video-input');
+      await capture('live_custom', {parent: droneFolder});
+      await mkdir(videoFolder);
+      const name = '복도 영상.mp4';
+      await writeFile(join(videoFolder, name), 'fixture');
+      for (const [kind, panel, path] of [['drone', dronePanel, droneFolder], ['video', videoPanel, videoFolder]]) {
+        await panel.getByRole('button', {name: '폴더 위치 설정'}).click();
+        await panel.getByRole('textbox').fill(path);
+        await panel.getByRole('button', {name: '저장', exact: true}).click();
+        await panel.getByText(path, {exact: true}).waitFor();
+        await page.route(`**/api/import/${kind}-folder`, async route => {
+          if (route.request().method() !== 'POST') return route.continue();
+          assert.deepEqual(route.request().postDataJSON(), {action: 'open', folder: path});
+          return route.fulfill({json: {folder: path, can_open: true}});
+        });
+        await panel.getByRole('button', {name: '폴더 열기', exact: true}).click();
+        await panel.getByText('파일 탐색기에서 폴더를 열었습니다.').waitFor();
+        await page.unroute(`**/api/import/${kind}-folder`);
+      }
+      await dronePanel.getByRole('button', {name: /^live_custom/}).waitFor();
+      assert.equal(await dronePanel.getByRole('button', {name: /^live_automatic/}).count(), 0);
+      assert.equal(await page.locator('#drone-folder-path').textContent(), droneFolder);
+      await page.reload();
+      await videoPanel.getByText(videoFolder, {exact: true}).waitFor();
+      await dronePanel.getByText(droneFolder, {exact: true}).waitFor();
       await page.setViewportSize({width: 390, height: 844});
-      const mobileLeft = await page.locator('#recent').boundingBox(), mobileRight = await page.locator('#captures').boundingBox();
+      const mobileLeft = await dronePanel.boundingBox(), mobileRight = await videoPanel.boundingBox();
       assert.ok(mobileRight.y >= mobileLeft.y + mobileLeft.height);
       assert.equal(await page.evaluate(() => document.documentElement.scrollWidth > innerWidth), false);
-      // The ordinary single-video path must still reach its existing model picker.
-      const job = {id: 'import_1234567890123456', name: 'ordinary.mp4', status: 'awaiting_options', summary: {kind: 'video'}};
-      await page.route('**/api/import/create', route => route.fulfill({json: job}));
-      await page.route('**/api/import/upload?*', route => route.fulfill({json: {status: 'uploaded'}}));
-      await page.route('**/api/import/inspect?*', route => route.fulfill({json: job}));
+      const job = {id: 'import_1234567890123456', name, status: 'awaiting_options', summary: {kind: 'video'}};
+      await page.route('**/api/import/video-file', route => {
+        assert.deepEqual(route.request().postDataJSON(), {folder: videoFolder, name});
+        return route.fulfill({json: job});
+      });
       await page.route('**/api/import/status?*', route => route.fulfill({json: job}));
       await page.route('**/api/import/cancel?*', route => route.fulfill({json: {status: 'cancelled'}}));
-      await page.locator('#video').setInputFiles({name: job.name, mimeType: 'video/mp4', buffer: Buffer.from('fixture')});
+      await videoPanel.getByRole('button', {name, exact: true}).click();
       await page.locator('main[data-state="awaiting_options"]').waitFor();
       assert.equal(await page.locator('#model-picker').isVisible(), true);
       assert.equal(await page.locator('#capture-selection').isVisible(), false);

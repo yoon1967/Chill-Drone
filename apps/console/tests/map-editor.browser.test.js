@@ -55,7 +55,6 @@ test('controller restores a saved point cloud with Roomform inside the map conso
         installed = true;
         return route.fulfill({contentType: 'text/event-stream', body: 'data: {"status":"ready","percent":100}\n\n'});
       });
-      await page.route('**/api/import/reconstruction-library', route => route.fulfill({json: {items: [saved]}}));
       await page.route('**/api/import/editable-maps', route => route.fulfill({json: {items: [
         {key: saved.id, name: saved.name, asset: saved.id},
         {key: 'saved_checkpoint', name: checkpoint.name, local_id: 'saved_checkpoint'},

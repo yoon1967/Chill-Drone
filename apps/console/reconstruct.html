@@ -19,17 +19,11 @@
       <section id="restore-panel" role="tabpanel" aria-labelledby="restore-tab" tabindex="0">
         <div class="restore-toolbar">
           <p id="file-name" hidden></p>
-          <button id="change" type="button" hidden>다른 영상</button>
+          <button id="change" type="button" hidden>다른 자료</button>
           <button id="cancel" type="button" hidden>취소</button>
           <button id="retry" type="button" hidden>다시 시도</button>
           <button id="edit-result" type="button" hidden>지도 편집에서 열기</button>
           <a id="download" class="primary" download hidden>지도 저장</a>
-        </div>
-
-        <div id="drop" class="drop" hidden>
-          <button id="choose" class="primary" type="button">영상 선택</button>
-          <input id="video" type="file" accept=".mp4,.mov,.avi,.mkv" hidden>
-          <p>MP4 · MOV · AVI · MKV</p>
         </div>
 
         <div id="status-line" hidden>
@@ -71,27 +65,72 @@
         </section>
 
         <div id="input-libraries" class="input-libraries" hidden>
-          <section id="recent" class="input-library" aria-labelledby="recent-title">
-            <h2 id="recent-title">최근 복원</h2>
-            <p class="library-hint">이전에 복원한 지도와 진행 중인 작업을 엽니다.</p>
-            <p id="recent-empty" role="status"></p>
-            <ul id="recent-list" class="library-list"></ul>
-          </section>
-          <section id="captures" class="input-library" aria-labelledby="captures-title">
-            <div class="library-heading">
-              <h2 id="captures-title">실시간 감독 촬영</h2>
-              <button id="captures-refresh" type="button">새로고침</button>
+          <section id="drone-input" class="input-library" aria-labelledby="drone-input-title">
+            <h2 id="drone-input-title">드론데이터 기반 복원</h2>
+            <p class="library-hint">드론 녹화 영상과 센서 기록으로 복원합니다.</p>
+            <div class="source-folder">
+              <div class="folder-actions">
+                <button id="drone-folder-open" type="button" aria-describedby="drone-folder-path" disabled>폴더 열기</button>
+                <button id="drone-folder-change" type="button" aria-expanded="false" aria-controls="drone-folder-form">폴더 위치 설정</button>
+              </div>
+              <p id="drone-folder-path" class="folder-path">드론 데이터 폴더 확인 중</p>
+              <form id="drone-folder-form" class="folder-form" hidden>
+                <label for="drone-folder-input">드론 데이터 폴더 전체 경로</label>
+                <input id="drone-folder-input" type="text" required>
+                <div class="folder-actions">
+                  <button class="primary" type="submit">저장</button>
+                  <button id="drone-folder-reset" type="button">기본 위치 사용</button>
+                </div>
+              </form>
+              <p id="drone-folder-status" class="library-status" role="status"></p>
             </div>
-            <p class="library-hint">촬영 폴더를 선택하면 영상과 센서 자료가 함께 연결됩니다.</p>
-            <button id="captures-open-folder" class="capture-location" type="button" title="파일 탐색기에서 촬영 저장 폴더 열기">촬영 저장 위치 ↗</button>
-            <p id="captures-root" class="capture-root"></p>
-            <p id="captures-status" role="status"></p>
-            <ul id="captures-list" class="library-list"></ul>
-            <details id="drone-recordings" aria-labelledby="drone-recordings-title">
-              <summary id="drone-recordings-title">드론 측정 및 센서 활용 복원</summary>
-              <p id="drone-recordings-status" role="status"></p>
+            <section aria-labelledby="drone-recordings-title">
+              <div class="library-heading">
+                <h3 id="drone-recordings-title">복원 가능한 드론 녹화</h3>
+                <button id="drone-recordings-refresh" type="button">새로고침</button>
+              </div>
+              <p id="drone-recordings-additional" class="folder-path" hidden></p>
+              <p id="drone-recordings-status" class="library-status" role="status"></p>
               <ul id="drone-recordings-list" class="library-list"></ul>
+            </section>
+            <details id="captures" class="capture-library" aria-labelledby="captures-title">
+              <summary id="captures-title">실시간 감독 촬영 자료</summary>
+              <p id="captures-status" class="library-status" role="status"></p>
+              <ul id="captures-list" class="library-list"></ul>
             </details>
+          </section>
+          <section id="video-input" class="input-library" aria-labelledby="video-input-title">
+            <h2 id="video-input-title">영상데이터 기반 복원</h2>
+            <p class="library-hint">촬영 영상으로 카메라 위치와 장면의 깊이를 추정합니다.</p>
+            <div class="source-folder">
+              <div class="folder-actions">
+                <button id="video-folder-open" type="button" aria-describedby="video-folder-path" disabled>폴더 열기</button>
+                <button id="video-folder-change" type="button" aria-expanded="false" aria-controls="video-folder-form">폴더 위치 설정</button>
+              </div>
+              <p id="video-folder-path" class="folder-path">영상 데이터 폴더 확인 중</p>
+              <form id="video-folder-form" class="folder-form" hidden>
+                <label for="video-folder-input">영상 데이터 폴더 전체 경로</label>
+                <input id="video-folder-input" type="text" required>
+                <div class="folder-actions">
+                  <button class="primary" type="submit">저장</button>
+                  <button id="video-folder-reset" type="button">기본 위치 사용</button>
+                </div>
+              </form>
+              <p id="video-folder-status" class="library-status" role="status"></p>
+            </div>
+            <section aria-labelledby="video-files-title">
+              <div class="library-heading">
+                <h3 id="video-files-title">폴더 안 영상</h3>
+                <button id="video-files-refresh" type="button">새로고침</button>
+              </div>
+              <p id="video-files-status" class="library-status" role="status"></p>
+              <ul id="video-files-list" class="library-list"></ul>
+            </section>
+            <div id="drop" class="drop">
+              <button id="choose" class="primary" type="button">영상 선택</button>
+              <input id="video" type="file" accept=".mp4,.mov,.avi,.mkv" hidden>
+              <p>여기에 영상 놓기 · MP4, MOV, AVI, MKV</p>
+            </div>
           </section>
         </div>
 

@@ -1,4 +1,5 @@
-"""Capture selection uses actual allowlisted assets and never starts a worker."""
+"""Exercise source folders, capture selection and their console API routes."""
+from contextlib import closing
 from functools import partial
 from http.client import HTTPConnection
 import json
@@ -11,6 +12,7 @@ from unittest.mock import patch
 from apps.console.serve import ObservationCache, Timeline, ViewerHandler, ViewerServer
 from modules.mapping.data.capture_library import capture_library, select_capture, capture_file, reconstruction_library, open_capture_folder
 from modules.mapping.data.session_import import ImportManager
+from modules.mapping.data.tests.test_drone_recording import recording
 
 
 def write(path, value):
@@ -53,6 +55,58 @@ class CaptureLibraryTests(unittest.TestCase):
             result = open_capture_folder(self.root)
             startfile.assert_called_once_with(str(self.root.resolve()))
             self.assertEqual(result, {'folder': str(self.root.resolve()), 'opened': True})
+
+    def test_restore_input_folders_independently_select_and_open_local_sources(self):
+        drone, video, legacy = (self.root / name for name in ('drone', 'video', 'legacy'))
+        for folder in (drone, video, legacy):
+            folder.mkdir()
+        recording(drone / 'live_custom')
+        recording(legacy / 'live_default')
+        movie = video / '복도 영상.mkv'
+        movie.write_bytes((drone / 'live_custom/recordings/part_0000.mkv').read_bytes())
+        (video / 'note.txt').write_text('unrelated', encoding='utf-8')
+        manager = ImportManager(self.root, legacy)
+        self.addCleanup(manager.shutdown)
+        server = ViewerServer(('127.0.0.1', 0), partial(ViewerHandler, imports=manager,
+            timeline=Timeline(), observations=ObservationCache()))
+        thread = threading.Thread(target=server.serve_forever, daemon=True)
+        thread.start()
+
+        def request(action, body=None, expected=200):
+            with closing(HTTPConnection('127.0.0.1', server.server_port)) as connection:
+                connection.request('GET' if body is None else 'POST', '/api/import/' + action,
+                    body=None if body is None else json.dumps(body), headers={'X-Mapping-Client': '1'})
+                response = connection.getresponse()
+                value = json.loads(response.read())
+                self.assertEqual(response.status, expected, value)
+                return value
+
+        try:
+            self.assertEqual([item['name'] for item in request('drone-recordings')['items']], ['live_default'])
+            self.assertEqual(request('drone-folder', {'action': 'set', 'folder': str(drone)}, 202)['folder'], str(drone))
+            self.assertEqual(request('video-folder')['folder'], str(self.root))
+            self.assertEqual(request('video-folder', {'action': 'set', 'folder': str(video)}, 202)['folder'], str(video))
+            with patch('apps.console.video_folder.os.startfile', create=True) as startfile:
+                for source, folder in (('drone', drone), ('video', video)):
+                    request(source + '-folder', {'action': 'open', 'folder': str(folder)}, 202)
+                    startfile.assert_called_with(str(folder))
+                request('video-folder', {'action': 'open', 'folder': str(drone)}, 400)
+                self.assertEqual(startfile.call_count, 2)
+            self.assertEqual([item['name'] for item in request('drone-recordings')['items']], ['live_custom'])
+            self.assertEqual(request('video-files')['items'], [movie.name])
+            for name, folder in ((movie.name, self.root), ('../video/' + movie.name, video), ('note.txt', video)):
+                request('video-file', {'name': name, 'folder': str(folder)}, 400)
+            drone_job = request('drone-recording', {'folder': str(drone), 'session_id': 'live_custom'}, 202)
+            self.assertEqual(drone_job['summary']['kind'], 'drone_recording')
+            job = request('video-file', {'name': movie.name, 'folder': str(video)}, 202)
+            manager.job(job['id'])['thread'].join(5)
+            self.assertEqual(request('status?id=' + job['id'])['status'], 'awaiting_options')
+            self.assertEqual(manager.source_video(job['id']), movie)
+            request('drone-folder', {'action': 'reset'}, 202)
+            self.assertEqual([item['name'] for item in request('drone-recordings')['items']], ['live_default'])
+            self.assertEqual(request('video-folder')['folder'], str(video))
+        finally:
+            server.shutdown(); server.server_close(); thread.join(2)
 
     def test_checkpoint_captures_sort_by_save_time_but_keep_original_start_time(self):
         folder = make_capture(self.root, 'saved_snapshot', day=9)
