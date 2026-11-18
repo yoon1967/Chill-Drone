@@ -1,22 +1,12 @@
-# 제출물 (exec)
+# 포팅 매뉴얼과 시연 시나리오
 
-실내 탐색 드론(자율 비행·사람 탐지·3D 지도·관제)을 다른 PC에서 켜고 시연하기 위한 문서다.
-기준은 통합 브랜치 `feat/final-integration`(2026-11-17)이다.
+Chill-Drone을 새 PC에서 설치·실행하고 발표 화면을 재현하기 위한 제출 문서입니다.
 
-| 문서 | 내용 |
-| --- | --- |
-| [포팅 매뉴얼](PORTING_MANUAL.md) | 구성, 필요한 것과 버전, 처음 한 번 준비(Windows·WSL·모델), 실행 명령, 포트, 방화벽, 끄기, 기록, 문제 해결, 라이선스 |
-| [시연 시나리오](DEMO_SCENARIO.md) | 실기체 시연(교실 밖 출발 → 정찰 → 교실 → 출발점 착륙)의 무대·역할·순서·말할 거리·안 될 때, 실기체 없이 하는 시연 |
-| [루트 README "통합 실행(최종)"](../README.md#통합-실행최종) | `scripts\start.cmd` 네 모드 한눈에 |
+| 제출 항목 | 문서 | 내용 |
+| --- | --- | --- |
+| 1. 빌드·배포 | [포팅 매뉴얼](BUILD_AND_DEPLOY.md) | 런타임, 환경 변수, 설치·실행, Windows·WSL·EC2 구성 |
+| 2. 외부 서비스 | [외부 서비스와 모델 준비](EXTERNAL_SERVICES.md) | 서비스 접근, 비행·영상 복원 모델 준비 |
+| 3. DB 덤프 | [데이터와 기록 복원](DATABASE.md) | 운영 DB 덤프 대상 확인, 회차 재생, 오프라인 COLMAP SQLite 인계 |
+| 4. 시연 시나리오 | [발표용 시연 시나리오](PRESENTATION_DEMO.md) | 자율 탐색 → 요구조자 탐지 → 실시간 3D 지도 |
 
-파트별 자세한 문서:
-
-| 파트 | 문서 |
-| --- | --- |
-| 실행기 | [apps/launcher/README.md](../apps/launcher/README.md) |
-| 관제 게이트웨이 | [modules/autonomy/tello_link/README.md](../modules/autonomy/tello_link/README.md) |
-| 관제 화면 | [apps/controller/README.md](../apps/controller/README.md), [apps/controller/DESIGN.md](../apps/controller/DESIGN.md) |
-| 자율 비행 | [modules/autonomy/tello_driver/README.md](../modules/autonomy/tello_driver/README.md), [simulation/tt-sim/README.md](../simulation/tt-sim/README.md) |
-| 지도 콘솔 | [apps/console/README.md](../apps/console/README.md) |
-
-아직 없는 것: 코드 정적 분석 보고서.
+[루트 README](../README.md)에서 처음 시작하는 방법을, [실행 가이드](../docs/RUN_GUIDE.md)에서 모드별 준비와 실행을 확인할 수 있습니다. 실기체 운용에 필요한 리허설 동선과 역할은 [시연 운용 참고](DEMO_SCENARIO.md), 세부 포트와 문제 진단은 [Windows 통합 실행 참고](PORTING_MANUAL.md)에 기록돼 있습니다.
