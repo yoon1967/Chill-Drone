@@ -69,7 +69,7 @@ class MapKeeper:
             return
         live = winproc.get_json(self.console + '/api/live/state?session=' + self.session, timeout=5) or {}
         status = live.get('session_status') or live.get('status')
-        if status not in ENDED:
+        if status not in ENDED or self._stop.is_set():   # 끄는 중이면 실행기가 스스로 끝낸 세션이다(사람이 콘솔에서 마무리한 게 아님)
             return
         ended, self.session = self.session, None
         error = live.get('last_error')

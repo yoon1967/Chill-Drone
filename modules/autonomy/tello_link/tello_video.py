@@ -1,7 +1,12 @@
 """Tello 영상(UDP 11111, H.264) 수신. 최신 프레임 1장만 유지한다.
 
-PyAV(av)로 원시 UDP 바이트를 직접 파싱·디코딩한다. JPEG 변환에는 OpenCV를 쓴다.
+PyAV(av)로 원시 UDP 바이트를 직접 파싱·디코딩한다. JPEG 변환에는 OpenCV를 쓴다(없으면 Pillow).
 `streamon` 명령은 TelloLink로 따로 보낸다. 이 클래스는 받기만 한다.
+
+record_dir를 주면 받은 H.264 바이트를 그대로 video.h264에, 풀린 프레임마다 받은 시각을 video_frames.csv에 남긴다.
+다시 인코딩하지 않아 CPU를 거의 쓰지 않는다. video.h264는 VLC로 바로 볼 수 있고, 프레임 시각으로 비행 기록과 맞춘다
+(simulation/tt-sim/tools/flight_viewer.py가 mp4로 옮긴다).
+packet_sink를 주면(콘솔 앱) 받은 바이트를 그 함수에도 넘긴다. 막히면 안 되므로 큐에 넣기만 해야 한다.
 """
 
 from __future__ import annotations
@@ -11,6 +16,7 @@ import socket
 import threading
 import time
 from collections import deque
+from pathlib import Path
 
 
 def mjpeg_part(jpeg, pose=None, metadata=None):
@@ -23,9 +29,12 @@ def mjpeg_part(jpeg, pose=None, metadata=None):
 
 
 class TelloVideo:
-    def __init__(self, port: int = 11111, bind_ip: str = "0.0.0.0"):
+    def __init__(self, port: int = 11111, bind_ip: str = "0.0.0.0", record_dir: str | Path | None = None):
         self.port = port
         self.bind_ip = bind_ip
+        self.record_dir = Path(record_dir) if record_dir else None
+        self._raw = None       # video.h264 (받은 바이트 그대로)
+        self._times = None     # video_frames.csv (프레임 번호, 받은 시각)
         self._sock: socket.socket | None = None
         self._thread: threading.Thread | None = None
         self._stop = threading.Event()
@@ -65,6 +74,11 @@ class TelloVideo:
         self._sock.setsockopt(socket.SOL_SOCKET, socket.SO_RCVBUF, 1 << 20)
         self._sock.bind((self.bind_ip, self.port))
         self._sock.settimeout(0.5)
+        if self.record_dir:
+            self.record_dir.mkdir(parents=True, exist_ok=True)
+            self._raw = (self.record_dir / "video.h264").open("ab")
+            self._times = (self.record_dir / "video_frames.csv").open("a", encoding="utf-8", buffering=1)
+            self._times.write("frame,wall_time,mono_time,bytes_so_far\n")
         self._stop.clear()
         self.started_mono = time.monotonic()
         self._thread = threading.Thread(target=self._loop, name="tello-video", daemon=True)
@@ -76,6 +90,10 @@ class TelloVideo:
             self._thread.join(timeout=2)
         if self._sock:
             self._sock.close()
+        for f in (self._raw, self._times):
+            if f:
+                f.close()
+        self._raw = self._times = None
         self._thread = None
         self._sock = None
 
@@ -90,6 +108,8 @@ class TelloVideo:
             self.packets += 1
             self.bytes += len(data)
             self.last_packet_mono = time.monotonic()
+            if self._raw:
+                self._raw.write(data)
             if self.packet_sink is not None:
                 try:
                     self.packet_sink(data, self.last_packet_mono)
@@ -99,13 +119,16 @@ class TelloVideo:
                 for packet in self._codec.parse(data):
                     for frame in self._codec.decode(packet):
                         now = time.monotonic()
+                        wall = time.time()
                         with self._lock:
                             self._frame = frame
                             self._frame_mono = now
-                            self._frame_wall = time.time()
+                            self._frame_wall = wall
                             self._frame_times.append(now)
                             self.frames += 1
                             self.size = (frame.width, frame.height)
+                        if self._times:
+                            self._times.write(f"{self.frames},{wall:.4f},{now:.4f},{self.bytes}\n")
             except Exception:  # 스트림 시작 직후 키프레임 전 패킷 등은 디코딩 실패가 정상이다
                 self.decode_errors += 1
 
@@ -125,15 +148,27 @@ class TelloVideo:
                 return None
             if cache and cache[:2] == (stamp, quality):
                 return cache[2], stamp, wall
-            import cv2
-            ok, encoded = cv2.imencode('.jpg', frame.to_ndarray(format='bgr24'),
-                                       [cv2.IMWRITE_JPEG_QUALITY, quality])
-            if not ok:
+            data = _encode_jpeg(frame, quality)
+            if data is None:
                 return None
-            data = encoded.tobytes()
             with self._lock:
                 self._jpeg_cache = (stamp, quality, data)
             return data, stamp, wall
+
+    def rgb(self, width: int = 0):
+        """최신 프레임을 (H×W×3 uint8 RGB 배열, 받은 monotonic 시각)으로. 없으면 None. ROS 드라이버가 쓴다.
+
+        width > 0이면 가로세로 비율을 지켜 그 폭으로 줄인다. jpeg()와 같은 잠금 아래에서 변환한다(PyAV 동시 변환 문제).
+        """
+        with self._jpeg_lock:
+            with self._lock:
+                frame, stamp = self._frame, self._frame_mono
+            if frame is None:
+                return None
+            if width and width < frame.width:
+                height = int(round(frame.height * width / frame.width / 2)) * 2
+                return frame.to_ndarray(format="rgb24", width=width, height=height), stamp
+            return frame.to_ndarray(format="rgb24"), stamp
 
     def stats(self) -> dict:
         now = time.monotonic()
@@ -161,3 +196,17 @@ class TelloVideo:
             "height": self.size[1] if self.size else None,
             "time_source": "server_receive",
         }
+
+
+def _encode_jpeg(frame, quality: int) -> bytes | None:
+    """PyAV 프레임 → JPEG. OpenCV가 빠르고(develop 콘솔), 없으면 Pillow."""
+    try:
+        import cv2
+    except ImportError:
+        import io
+
+        buf = io.BytesIO()
+        frame.to_image().save(buf, format="JPEG", quality=quality)
+        return buf.getvalue()
+    ok, encoded = cv2.imencode(".jpg", frame.to_ndarray(format="bgr24"), [cv2.IMWRITE_JPEG_QUALITY, quality])
+    return encoded.tobytes() if ok else None

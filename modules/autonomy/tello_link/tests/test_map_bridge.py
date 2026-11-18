@@ -13,8 +13,8 @@ from http.server import ThreadingHTTPServer
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
 from fake_map_server import BOXES, FakeMap, make_handler  # noqa: E402
-from gateway_map_bridge import MapBridge, compact_preview  # noqa: E402
-from map_inbox import MapInbox  # noqa: E402
+from gateway_map_bridge import DEFAULT_MAX_POINTS, MapBridge, compact_preview, compact_scene  # noqa: E402
+from map_inbox import MAX_POINTS, MapInbox  # noqa: E402
 
 
 class Clock:
@@ -212,8 +212,52 @@ class DepthMapBridgeTest(MapBridgeTest):
         bridge = MapBridge(self.url, self.inbox.receive, max_points=50, log=lambda text: None, clock=self.clock)
         bridge.poll_once()
         snap = self.inbox.latest()
-        self.assertLessEqual(len(snap["points"]), 50)
+        self.assertEqual(len(snap["points"]), 50)   # 전에는 간격으로 솎아 50보다 적게 갔다
         self.assertGreater(snap["points_total"], 50)
+
+
+class PickSpreadTest(unittest.TestCase):
+    """점이 많을 때 고르기(11/17): 앞에서부터 자르지 않고 지도 전체에서 고르게 고른다."""
+
+    @staticmethod
+    def depth_scene(n):
+        # 실시간 깊이 지도 저장 결과처럼: 오차는 모두 0, 관측 수는 모두 1, 점은 x 차례로 놓임
+        return {"schema_version": "phone-sfm-result/1.2", "segment_id": 0, "revision": 9,
+                "scale": {"status": "tello_metric_estimate", "unit": "m"},
+                "points": [[i, i * 0.01, 0.0, 1.0, 100, 100, 100, 0.0, 1] for i in range(n)], "cameras": []}
+
+    def test_equal_errors_are_spread_over_the_whole_map(self):
+        msg = compact_scene(self.depth_scene(1000), {"session_id": "s"}, "http://m", "live", max_points=100)
+        xs = [p[0] for p in msg["points"]]
+        self.assertEqual((len(xs), msg["points_total"]), (100, 1000))
+        self.assertLess(min(xs), 0.5)          # 전에는 앞의 100개(x 0~0.99)만 갔다
+        self.assertGreater(max(xs), 9.4)
+        self.assertEqual(xs, sorted(xs))       # 고른 점은 원래 차례대로
+        self.assertLess(max(b - a for a, b in zip(xs, xs[1:])), 0.3)   # 크게 빈 곳이 없다(고른 간격이면 0.1)
+        self.assertEqual(MapInbox().receive(msg)[0], 201)
+
+    def test_low_error_points_still_come_first(self):
+        run = self.depth_scene(1000)
+        for p in run["points"]:
+            p[7] = 1.0
+        for i in (990, 995, 999):              # 끝쪽 세 점만 오차가 작다
+            run["points"][i][7] = 0.2
+        xs = [p[0] for p in compact_scene(run, {}, "http://m", "live", max_points=10)["points"]]
+        for i in (990, 995, 999):
+            self.assertIn(round(i * 0.01, 4), xs)
+        self.assertLess(min(xs), 5.0)          # 나머지는 앞쪽에서도 고른다
+
+    def test_preview_sends_exactly_the_limit(self):
+        preview = {"map_id": 0, "map_unit": "m", "points": [[i * 0.01, 0, 1, 10, 20, 30] for i in range(1000)]}
+        xs = [p[0] for p in compact_preview(preview, {}, "http://m", 300)["points"]]
+        self.assertEqual(len(xs), 300)         # 전에는 간격 4로 솎아 250개
+        self.assertGreater(max(xs) - min(xs), 9.4)
+
+    def test_default_sends_the_whole_live_map_within_the_gateway_limit(self):
+        self.assertGreaterEqual(DEFAULT_MAX_POINTS, 34_000)   # 지도 쪽 실시간 최대(정적 3만 2천 + 사람 2천)를 다 보낸다
+        self.assertLessEqual(DEFAULT_MAX_POINTS, MAX_POINTS)  # 게이트웨이가 받는 최대 안
+        self.assertEqual(MapBridge("http://m", lambda msg: (200, {})).max_points, DEFAULT_MAX_POINTS)
+
 
 if __name__ == "__main__":
     unittest.main()

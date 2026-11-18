@@ -1,0 +1,7 @@
+worlds/
+__pycache__/
+*.pyc
+weights/
+.pytest_cache/
+record/
+*.npz

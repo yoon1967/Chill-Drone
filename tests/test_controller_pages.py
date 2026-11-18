@@ -18,6 +18,17 @@ class PageChangeTest(unittest.TestCase):
         self.assertRegex(function_body('render'),
                          r'if \(ui\.view && ui\.view !== v\) window\.scrollTo\(0, 0\);.*\n\s*ui\.view = v;')
 
+    def test_preset_in_the_address_picks_its_map_view(self):
+        # 실행기는 ?preset=autonomy로 연다. 프리셋 고르기처럼 그 프리셋이 정한 지도 보기(자율 탐색은 2D)로 시작해야 한다
+        # (전에는 이 브라우저에 기억한 보기, 처음엔 3D 점군으로 열렸다).
+        presets = (Path(__file__).resolve().parents[1] / 'apps' / 'controller' / 'presets.js').read_text(encoding='utf-8')
+        autonomy = presets[presets.index('id: "autonomy"'):]
+        self.assertIn('{ id: "map", x: 0, y: 0, w: 7, h: 4, mode: "2d" }', autonomy[:autonomy.index('\n  },')])
+        start = APP[APP.index('// ---------- 시작 ----------'):]
+        self.assertRegex(start, r'if \(new URLSearchParams\(location\.search\)\.get\("preset"\)\) \{\s*'
+                                r'const mode = livePreset\(\)\.panels\.find\(\(c\) => c\.id === "map"\)\?\.mode;\s*'
+                                r'if \(MAP_MODES\[mode\]\) ui\.map3d\.mode = mode;')
+
 
 if __name__ == '__main__':
     unittest.main()

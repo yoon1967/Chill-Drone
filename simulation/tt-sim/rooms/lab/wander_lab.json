@@ -1,0 +1,61 @@
+{
+ "format": "tt-sim/known-map@2",
+ "stage": 3,
+ "description": "실기체 시험 공간 7.4×8.8 m (make_room_map.py, 탐색)",
+ "frame": "world: 출발점 쪽 모서리가 원점, x·y는 잰 방향, z 위, 단위 m. 상자는 중심(x, y, z)과 크기(sx, sy, sz)",
+ "bounds": {
+  "xmin": -0.1,
+  "ymin": -0.1,
+  "xmax": 7.5,
+  "ymax": 8.9,
+  "zmax": 2.5
+ },
+ "flight_height": 1.0,
+ "spawn": {
+  "x": 5.5,
+  "y": 4.45,
+  "z": 0.0,
+  "yaw": 3.1416
+ },
+ "goal": null,
+ "walls": [
+  {
+   "name": "wall_south",
+   "x": 3.7,
+   "y": -0.05,
+   "z": 1.25,
+   "sx": 7.6000000000000005,
+   "sy": 0.1,
+   "sz": 2.5
+  },
+  {
+   "name": "wall_north",
+   "x": 3.7,
+   "y": 8.850000000000001,
+   "z": 1.25,
+   "sx": 7.6000000000000005,
+   "sy": 0.1,
+   "sz": 2.5
+  },
+  {
+   "name": "wall_west",
+   "x": -0.05,
+   "y": 4.4,
+   "z": 1.25,
+   "sx": 0.1,
+   "sy": 8.8,
+   "sz": 2.5
+  },
+  {
+   "name": "wall_east",
+   "x": 7.45,
+   "y": 4.4,
+   "z": 1.25,
+   "sx": 0.1,
+   "sy": 8.8,
+   "sz": 2.5
+  }
+ ],
+ "lintels": [],
+ "obstacles": []
+}

@@ -12,6 +12,7 @@ from __future__ import annotations
 import json
 import math
 import os
+import re
 import socket
 import threading
 import time
@@ -38,6 +39,7 @@ QUERY_COMMANDS = {
 EXT_QUERY_COMMANDS = {"ext tof?", "ext version?"}
 # SDK 3.0 문서는 범위 밖을 8192라고 적었지만, 실기체(esp32v1.0.0.12)는 8190·8191을 보냈다(2026-10-27 실측).
 EXT_TOF_OUT_OF_RANGE_MM = 8190
+EXT_TOF_MIN_MM = 20        # 이보다 작은 값(0 등)은 센서 오류로 본다 (2026-10-30 실기체: 떠 있는데 `tof 0`이 4번)
 SESSION_COMMANDS = {"command", "streamon", "streamoff"}
 STOP_COMMANDS = {"land", "emergency", "stop"}
 # 기체에 남는 설정. 잘못 보내면 전원 버튼 5초 초기화가 필요할 수 있다.
@@ -97,7 +99,17 @@ def parse_ext_tof(response: str | None) -> dict:
         return {"front_tof_m": None, "valid": False, "reason": "bad_format", "raw": response}
     if mm >= EXT_TOF_OUT_OF_RANGE_MM:
         return {"front_tof_m": None, "valid": False, "reason": "out_of_range", "raw": response}
+    if mm < EXT_TOF_MIN_MM:   # 0 mm를 '바로 앞 장애물'로 믿으면 없는 것에 비상 정지한다
+        return {"front_tof_m": None, "valid": False, "reason": "below_min", "raw": response}
     return {"front_tof_m": mm / 1000.0, "valid": True, "reason": None, "raw": response}
+
+
+TOF_REPLY = re.compile(r"tof\s+-?\d+", re.IGNORECASE)
+
+
+def stray_tof_reply(cmd: str, response: str) -> bool:
+    """`EXT tof?`가 아닌 명령에 온 `tof N`: 앞서 물은 ToF가 제 시간을 넘겨 늦게 답한 것(그 명령의 답이 아니다)."""
+    return " ".join(cmd.strip().lower().split()) != "ext tof?" and TOF_REPLY.fullmatch(response.strip()) is not None
 
 
 @dataclass
@@ -264,7 +276,8 @@ class TelloLink:
 
         self._cmd_sock: socket.socket | None = None
         self._state_sock: socket.socket | None = None
-        self._cmd_lock = threading.Lock()
+        self._cmd_lock = threading.Lock()     # 응답을 기다리는 명령끼리만 (rc·emergency는 안 잡는다)
+        self._count_lock = threading.Lock()
         self._dispatch_lock = threading.Lock()
         self._state_lock = threading.Lock()
         self._stop = threading.Event()
@@ -386,6 +399,15 @@ class TelloLink:
                     return result
                 self._cmd_sock.sendto(cmd.encode("utf-8"), (self.host, self.cmd_port))
             response, reason = self._recv_response(timeout)
+            # 앞서 물은 EXT tof?가 제 시간을 넘겨 늦게 답하면 그 `tof N`이 이 명령(이륙·착륙 등)의 답 자리에 온다.
+            # 그대로 읽으면 이륙이 "안 뜸"으로 보여 떠 있는데 지상으로 나온다(11/16 점검 A4). 버리고 남은 시간만큼 더 기다린다
+            while response is not None and stray_tof_reply(cmd, response):
+                self.event("stale_response_dropped", {"data": response, "while": cmd})
+                left = timeout - (time.perf_counter() - t0)
+                if left <= 0:
+                    response, reason = None, "timeout"
+                    break
+                response, reason = self._recv_response(left)
             rtt = (time.perf_counter() - t0) * 1000.0
 
         if response is None:
@@ -404,7 +426,12 @@ class TelloLink:
         return result
 
     def rc(self, lr: int, fb: int, ud: int, yaw: int, source: str | None = None) -> CommandResult:
-        """rc 명령은 응답이 없으므로 보내기만 한다. allow_flight=True일 때만 동작한다."""
+        """rc 명령은 응답이 없으므로 보내기만 한다. allow_flight=True일 때만 동작한다.
+
+        명령 잠금(_cmd_lock)을 기다리지 않는다: 그 잠금은 응답을 짝지어 읽으려는 것인데 rc는 응답이 없다. 전에는 전방 ToF
+        조회(`EXT tof?`, 0.1초마다, 응답을 최대 0.5초 기다림)가 잠금을 잡고 있는 동안 rc(멈춤 포함)가 함께 기다려 최대 약 0.5초
+        늦었다(11/04 외부 리뷰: 실비행 5개에서 명령 공백 최대 523–571 ms가 ToF 응답 대기와 겹침). UDP 보내기는 한 데이터그램씩이라
+        다른 스레드가 응답을 기다리는 중에 보내도 섞이지 않는다."""
         vals = [max(-100, min(100, int(v))) for v in (lr, fb, ud, yaw)]
         cmd = "rc " + " ".join(str(v) for v in vals)
         if not self.allow_flight:
@@ -412,9 +439,8 @@ class TelloLink:
                                    blocked=True, source=source)
             self._record(result)
             return result
-        with self._cmd_lock:
-            sent = time.time()
-            self._cmd_sock.sendto(cmd.encode("utf-8"), (self.host, self.cmd_port))
+        sent = time.time()
+        self._cmd_sock.sendto(cmd.encode("utf-8"), (self.host, self.cmd_port))
         result = CommandResult(cmd, "flight", now_iso(sent), None, True, True, "no_response_expected", None,
                                source=source)
         self._record(result)
@@ -468,11 +494,12 @@ class TelloLink:
         d = result.to_dict()
         d["recorded_at"] = now_iso()
         self.history.append(d)
-        self._counts["blocked" if result.blocked else "sent"] += 1
-        if result.reason == "timeout":
-            self._counts["timeout"] += 1
-        if result.rtt_ms is not None:
-            self._rtts.append(result.rtt_ms)
+        with self._count_lock:   # rc는 명령 잠금 없이 다른 스레드에서도 들어온다
+            self._counts["blocked" if result.blocked else "sent"] += 1
+            if result.reason == "timeout":
+                self._counts["timeout"] += 1
+            if result.rtt_ms is not None:
+                self._rtts.append(result.rtt_ms)
         if self.log:
             self.log.append("commands", d)
 

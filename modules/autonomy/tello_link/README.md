@@ -107,7 +107,9 @@ Tello는 팬이 없어 지상에서 켜 둔 채로 두면 과열로 꺼지고, �
 | rc 상한 | ±30 (±100 중) |
 | 높이 상한 | 하방 tof 1.5m 이상이면 상승 입력을 0으로 바꾼다. 하방 tof가 무효면 높이를 모르는 것으로 보고 상승을 막는다. `h`가 1.5m 이상이어도 막는다. 하강은 허용 |
 | 손 떼면 정지(데드맨) | 입력이 0.3초 없거나, 창을 벗어나거나, 연결이 끊기면 `rc 0 0 0 0`(제자리) |
-| 자동 착륙 | 비행 중 상태 1초 끊김, 배터리 15% 미만. 고온 자동 착륙은 끔(기체 자체 보호에 맡김) |
+| 자동 착륙 | 비행 중 상태 1초 끊김, 배터리 15% 이하. 고온 자동 착륙은 끔(기체 자체 보호에 맡김) |
+| 자율비행 드라이버의 기준 | 위 배터리·온도 기준은 `FlightController`를 만들 때 넘기지 않았을 때의 기본값이다. 자율비행 드라이버([tello_driver](../tello_driver/README.md))는 자기 값을 넘긴다: 배터리 이륙 기준 없음·10% 이하 착륙(2026-11-02), 온도 이륙 80°C 미만·85°C 이상 착륙 |
+| 착륙 전 스틱 0 | `land` 앞에 `rc 0 0 0 0`을 세 번(0.02초 간격) 보낸다. Tello는 마지막에 받은 rc를 내려오는 동안에도 따른다(2026-11-12 13:58 자율비행: `rc 0 -36 0 0` 바로 뒤의 `land`로 3.5초에 0.83 m 뒤로 감). 자동 착륙·종료 착륙도 같다 |
 | 기준을 완화한 이유(10/28) | Tello 앱은 온도로 이륙을 막지 않고, 위험 온도에서는 기체가 스스로 꺼진다. 지상에서 뜨거워진 기체는 띄워야 식는데, 80°C 이륙 차단이 오히려 이륙을 어렵게 했다. 배터리는 기체가 약 10%에서 스스로 착륙한다(사용자 보고) |
 | 직접 입력 칸 | `takeoff`, `forward 50` 같은 비행 명령은 403으로 막는다 |
 
@@ -169,8 +171,10 @@ link.close()                      # metrics.json 기록
   - ToF가 10cm 이하이거나 6553이면 `tof_m=None`, `tof_valid=false`, `tof_reason`으로 표시하고 0으로 바꾸지 않는다. 기준값은 실측으로 확인해야 한다.
   - `vgx/vgy/vgz`, `agx/agy/agz`, `baro`는 문서마다 단위가 달라 실측 전까지 SI로 바꾸지 않는다(`si.unverified_unit_fields`).
 - **시각:** 카메라·상태 패킷에 드론 시각이 없으므로 PC 수신 시각을 쓰고 `time_source="server_receive"`로 표시한다.
-- **rc 타임아웃 정지:** 수동 조작은 `FlightController`(데드맨 0.3초)가 맡는다. -207 드라이버 노드는 `FlightController.set_input()`을 그대로 쓰거나, 같은 규칙(입력이 끊기면 `rc 0 0 0 0`)을 노드 안에 둔다.
+- **rc 타임아웃 정지:** 수동 조작은 `FlightController`(데드맨 0.3초)가 맡는다. 자율비행 드라이버([tello_driver](../tello_driver/README.md))도 `FlightController.set_input()`을 그대로 쓰고, `FlightController(..., operator_controlled=False)`로 만들어 자율비행 회차가 사람 조종으로 남지 않게 한다. 영상은 `TelloVideo.rgb()`(최신 프레임 RGB 배열)로 받아 ROS 영상 토픽으로 낸다.
 - **비상 정지:** `TelloLink.emergency_now()`는 다른 명령의 응답을 기다리는 중에도 잠금 없이 바로 보낸다.
+- **rc:** `TelloLink.rc()`도 잠금을 기다리지 않는다(11/04). 잠금은 응답을 짝지어 읽으려는 것인데 rc는 응답이 없다. 전에는 전방 ToF
+  조회(`EXT tof?`, 응답을 최대 0.5초 기다림)가 잠금을 잡고 있는 동안 멈춤 rc까지 밀렸다.
 
 ## 게이트웨이 조종 입력 변환 (서버 연결 전)
 
@@ -227,6 +231,7 @@ python modules/autonomy/tello_link/gateway_server.py             # 실제 Tello 
 | --- | --- |
 | `GET /api/drone/state` | 최신 `drone_state` 1개 |
 | `WS /ws/drone` | 서버 → 화면: `drone_state` 약 10Hz, `event`, `result`. 화면 → 서버: `cmd`, `rc` |
+| `GET /api/events` | 이번 회차에 화면으로 보낸 알림(`event`·`detection_review`, `cmd_ignored` 빼고) 최근 200개, 오래된 순 `{"events": [...]}`. 새로 연 화면이 비행 기록을 채운다 |
 | `GET /video.mjpg` | 영상. 최신 프레임만 |
 | `GET /snapshot.jpg` | 최신 프레임 1장. 헤더 `X-Input-Id`(영상 세션, 켤 때마다 새 값)·`X-Frame-Id`·`X-Frame-Time`(게이트웨이 디코딩 시각, UTC)·`X-Frame-Age-Ms`·`X-Image-Size`. 영상이 꺼졌거나 끊겼으면 503(`video_off`·`video_stale`·`no_frame`), `--no-video`면 404 |
 | `POST /api/detections` | 사람 탐지 이벤트 `person-detection-event/1.0` 1개. 201 저장, 200 중복(`event_id`), 400 검증 실패, 403 다른 PC, 500 저장 실패 |
@@ -235,6 +240,12 @@ python modules/autonomy/tello_link/gateway_server.py             # 실제 Tello 
 | `POST /api/detections/<finding_id>/review` | 확인·오탐 `{"review": "confirmed" \| "false_positive" \| "unreviewed"}`. 200 저장(같은 값이면 `changed: false`), 400 모르는 값, 404 모르는 발견, 413 너무 큼, 500 저장 실패(되돌림), 기록 재생은 409 |
 | `WS /ws/autonomy` | 자율 비행 하나(`AUTONOMY_BRIDGE_V0_1`). 게이트웨이 → `hello`·`tello_state`(원문 약 10Hz)·`flight_status`(바뀔 때 + 1Hz)·`control`, 자율 → `hello`·`cmd_vel`·`mission_state`·`ack`·`request`·`pose`·`path`·`people`. 기본은 같은 PC만, 두 번째 연결은 `busy` |
 | `GET /api/autonomy` | 자율 위치·계획 경로·찾은 사람 전체. 상태(`drone_state.autonomy`)에는 버전만 싣는다 |
+| `GET`·`POST /api/board` | 지도 그림(화이트보드 1단계, `board.py`): 진입로와 사람 동선. POST `{"op": "add", "client", "item"}`·`{"op": "delete", "client", "id"}`. 200 저장(모든 화면에 ws `board`, 비행 기록 줄이 되는 것은 `logged`), 400 잘못된 그림, 404 모르는 그림, 413 너무 큼·그림 300개 넘음, 500 기록 실패(넣지 않음), 기록 재생은 409. 그림은 드론 명령이 아니다 |
+
+- 사람 동선(`route_plan.py`): 자율 비행 지도(비행 높이 단면) 위에서 게이트웨이가 계산한다. 몸 폭 0.6 m(문은 0.7 m부터), 벽에서 0.7 m 안은 비용을
+  더 쳐서 복도 가운데로, 못 본 곳은 지나가지 않음, 출발·도착이 막힌 칸(서 있는 사람)이면 1 m 안으로 옮김, 길이 없으면 갈 수 있는 데까지와 남은 거리,
+  걸리는 시간은 조심 걸음 0.5 m/s. 지도 번호가 바뀌면 3초에 한 번까지 다시 계산해 달라진 것만 알린다. 지도가 없으면 `no_map`(지도가 오면 계산).
+  드론 비행 높이(약 1 m) 지도라 바닥의 낮은 물체·계단은 없을 수 있다(추정 동선).
 
 - `gateway.py`가 화면 메시지 → 모드 판정기 → `FlightController`를 잇는다. 20Hz 루프에서 연결·안전 착륙·착륙 완료·비상 정지 뒤 지상을
   판정기에 알리고, 판정기가 고른 rc를 `FlightController.set_input()`에 넣는다.
@@ -259,7 +270,14 @@ python modules/autonomy/tello_link/gateway_server.py             # 실제 Tello 
   - 회차 폴더 `autonomy/`: `events.jsonl`(연결·control·ack·request·임무 상태 변화·찾은 사람 변화), `pose.jsonl`(1초에 한 번), `latest.json`(경로·찾은 사람).
   - 시험용 가짜 자율: `python modules/autonomy/tello_link/fake_autonomy.py --gateway http://127.0.0.1:8010` (2 m 네모를 돌며 사람 2명을 찾는다. `--stall-at 5`는 끊김 시험, `--reject-start`는 시작 거절)
   - 다리 노드(ROS 2)와 WSL2 접속(`--allow-remote-autonomy`), 영상 UDP 복사는 다음 단계.
-- 아직 없는 것: 전방 ToF 조회(`front_tof`는 `not_polled`, 자율에도 보내지 않음), 통신 품질(`link`), 기록 재생(`--replay`).
+- 전방 ToF(확장 키트 `EXT tof?`): 게이트웨이가 떠 있을 때 0.1초, 땅에서 0.5초마다 묻는다.
+  - 이륙·착륙·영상 명령 중에는 묻지 않는다(늦게 온 응답을 그 명령의 응답으로 읽지 않게). rc는 이 조회를 기다리지 않는다.
+  - `drone_state.front_tof`(`m`·`valid`·`reason`·`age_s`)에 싣는다. 1초 넘은 값은 `stale`. 관제 영상 칸 "앞"과 지도 콘솔(게이트웨이 모드)이 쓴다.
+  - 새 값(바뀌었거나 같은 값이 0.2초 이상, `tof_fresh.py`)이면 자율에 `front_tof`(+`seq`)로 보낸다. 무효도 보낸다.
+  - 20 mm 미만(`tof 0` 등)은 무효(`below_min`), 8190 이상은 범위 밖(`out_of_range`).
+  - 확장 키트가 없으면(값이 아닌 답이 3번 이어짐) `no_ext_kit`로 두고 묻지 않는다. 땅에서 30초마다만 다시 확인하고, 연결이 끊겼다 붙으면 처음부터 본다.
+  - 가짜 Tello(`--fake`)는 확장 키트가 없다(체험 지도에 지어낸 앞 거리가 섞이지 않게). `--fake-ext-kit`이면 단다(늘 0.481 m, 다리 노드 시험용).
+- 아직 없는 것: 통신 품질(`link`).
 - `check_server.py`와 같은 기본 포트(8010)를 쓴다. Tello는 처음 `command`를 보낸 쪽에만 답하므로 둘을 동시에 켜지 않는다.
 - 시험: `python -B -m unittest discover -s modules/autonomy/tello_link/tests -p "test_gateway.py"` (가짜 Tello, 약 6초), 자율 연결은 `-p "test_autonomy.py"`
 
@@ -287,18 +305,31 @@ WSL에서 보기 노드(`ros_view_node.py`)가 자율 드라이버 토픽을 구
 ```powershell
 # WSL (자율 비행 launch와 따로)
 source /opt/ros/jazzy/setup.bash
-python3 modules/autonomy/tello_link/ros_view_node.py                  # 127.0.0.1:8094
+python3 modules/autonomy/tello_link/ros_view_node.py                  # 127.0.0.1:8094 (YOLO 없이 띄운 시뮬레이션이면 -p need_yolo:=false)
 # Windows
 python modules/autonomy/tello_link/gateway_server.py --ros-view http://127.0.0.1:8094
-# ROS 없이 시험: 가짜 보기 노드
+# ROS 없이 시험: 가짜 보기 노드(화면 명령을 따라감, --auto면 스스로 되풀이)
 python modules/autonomy/tello_link/fake_ros_view.py
 ```
 
 - 보기 노드는 WSL 안에서 127.0.0.1에만 연다. Windows 게이트웨이는 127.0.0.1로 붙는다(WSL 기본 localhost 넘겨주기).
   - WSL 주소·드론 Wi-Fi로는 보이지 않고, Windows 방화벽 규칙이 필요 없다(11/13 확인).
 - 보기 노드가 구독하는 토픽: `/tt/state`(Tello 상태 원문), `/tt/flight_status`(자율 드라이버 상태), `/tt/tof_front`, `/tt/camera/image_raw`.
-  - 1단계는 구독만 하고 아무것도 내지 않는다.
-  - 내주는 것: `GET /api/state`(ros-view/0.1), `/frame.jpg`, `/video.mjpg`. 시계가 달라 절대 시각 대신 받은 지 몇 초(`age_s`)를 준다.
+  - 자율 정보: `/tt/pose_est`(위치), `/tt/path`(계획 경로), `/tt/mission_state`(임무 단계), `/tt/operator_goal`(찍은 자리).
+  - 찾은 사람은 자율 비행 기록 폴더(`flights/<시각>/people.json`) 중 가장 새 회차 파일을 읽는다(자율 비행 웹과 같은 파일). 새 회차에 아직 없으면 비운다.
+  - YOLO 결과(`/tt/detections`)는 받은 때만 본다(3초 안이면 준비됨, 자율 비행 웹과 같음).
+  - 내주는 것: `GET /api/state`(ros-view/0.1), `/api/path`, `/api/people`, `/frame.jpg`, `/video.mjpg`. 시계가 달라 절대 시각 대신 받은 지 몇 초(`age_s`)를 준다.
+  - 명령(`POST /api/<명령>`, 자율 비행 웹 API와 같은 이름): 게이트웨이만(헤더 `X-Ros-View-Client: 1`, Host 127.0.0.1). 자율 비행 웹과 같은 토픽·문자열로 낸다.
+
+    | 명령 | 내는 것 |
+    | --- | --- |
+    | `mission/start` | `/tt/mission_cmd` `start` |
+    | `mission/land` | `/tt/mission_cmd` `land`, 떠 있는데 임무가 없거나 끝·중단이면 `/tt/flight_cmd` `land`도 |
+    | `mission/goto {x, y}` · `mission/goto_cancel` | `/tt/mission_cmd` `goto <x> <y>` · `goto cancel` |
+    | `flight/emergency` | `/tt/flight_cmd` `emergency` 두 번 |
+    | `flight/confirm {confirmed}` | `/tt/flight_cmd` `confirm` · `unconfirm` |
+
+  - `-p commands:=false`면 아무것도 내지 않는다(보기만).
 - 게이트웨이는 드론에 붙지 않는다(TelloLink·FlightController·모드 판정 없음).
   - 상태는 Tello 원문을 `parse_state`로 푼다. 모드는 자율 드라이버 상태로 나눈다.
 
@@ -313,10 +344,34 @@ python modules/autonomy/tello_link/fake_ros_view.py
 - 영상은 보기 노드 MJPEG를 프레임 저장소에 넣는다(`/snapshot.jpg`·`/video.mjpg`).
   - 자율 launch 기본은 480×360·15장/초다. 사람 탐지 연결기가 지금처럼 가져간다.
   - 영상 켜고 끄기는 자율 드라이버가 정한다(화면 버튼 잠금).
-- 명령은 받지 않는다(`ros_view_read_only`, 1단계). 조종·비상 정지는 자율 비행 화면에서 한다. 자율 연결(`/ws/autonomy`)도 받지 않는다.
-- 회차 폴더(`ros_…`, manifest `source: "ros"`)에 상태·모드 바뀜·보기 노드 연결·탐지·지도를 남긴다.
+  - 지도용 영상(`/video.mjpg?mapping=1`)은 지도 파트 보정 크기 960×720으로 키운다(실기체 드라이버는 480×360으로 줄여 낸다).
+  - `--ros-view-sensor-pose`면 실기체 게이트웨이처럼 지도용 장마다 그때 센서 자세(`X-Tello-Pose`)를 붙이고 센서 기록
+    (`GET /api/drone/sensors`)을 준다. 드라이버가 받은 Tello 상태 원문을 같은 적분(`sensor_pose.TelloOdometry`)으로 쓴다.
+    실시간으로 도는 실기체·가짜 Tello만 켠다(실행기 `autonomy`). 이 PC 시뮬레이터는 실제보다 느려 끈다(`sim`, 영상만).
+    보기 노드는 마지막 상태만 들고 있어 0.05초마다 묻는다(Tello 상태 약 10 Hz를 빠뜨리지 않게).
+  - 실기체 자율 launch(`real.launch.py`)는 시작 전 YOLO 준비를 기다린다(웹 `need_yolo`). 보기 노드 `need_yolo`도 기본 켬이고, YOLO 없이 띄운 시뮬레이션이면 끈다.
+- 자율 정보는 자율 창구(`AutonomyLink`)에 그대로 넣는다. 2D 자율 지도·발견 지점(탐지 사진의 그때 위치)·자율 기록(`autonomy/`)이 `/ws/autonomy` 때와 같이 돈다.
+  - 좌표: 자율 비행 `world`(켠 자리 원점, x 앞·y 왼쪽, m)가 게이트웨이 `map`과 같은 약속이라 바꾸지 않는다.
+  - 위치나 임무 단계가 오면 연결로 열고(땅에서 열리면 원점 = 출발점), 5초 넘게 안 오면 닫는다(비행 노드 꺼짐).
+  - 임무 단계 이름(WAIT_POSE·FOLLOW·LOOK 등)은 `drone_state.mission.state`로 그대로 싣고, `phase`는 대기·진행 중·도착(DONE)·실패(ABORT)로 나눈다. 진행은 탐색 넓이(`coverage`).
+- 화면 버튼(3단계)은 보기 노드에 넘긴다. 자율 비행 웹과 같은 명령을, 웹이 버튼을 켜는 조건과 같을 때만 연다(`allowed`).
+
+  | 화면 | 명령 | 열리는 때(자율 비행 웹과 같음) |
+  | --- | --- | --- |
+  | 이륙 전 확인 칸의 주변 확인 | `confirm_area` → `flight/confirm` | 드라이버 연결, 떠 있지 않고 이륙·착륙 중 아님 |
+  | 이륙(4초 안에 두 번) | `takeoff` → `mission/start` | 임무 READY + 드라이버 이륙 가능(주변 확인 포함) + YOLO 준비(`need_yolo`일 때) |
+  | 착륙 | `land` → `mission/land` | 떠 있거나 이륙·착륙 중, 또는 임무가 공중 단계 |
+  | 비상 정지(0.6초 길게·Esc) | `emergency` → `flight/emergency` | 늘(보기 노드가 명령을 받을 때) |
+  | 2D 지도 클릭 → 여기로 보내기(G) | `goto` → `mission/goto` | 탐색 비행 단계(PLAN·FOLLOW·REPLAN·BACKOFF·HOLD·EXIT·LOOK·RELOC·DOOR) |
+  | 지우기·가기 취소 | `goto_cancel` → `mission/goto_cancel` | 찍은 자리가 있을 때 |
+
+  - 시작 못 하는 까닭은 `drone_state.ros_view.start`(임무 단계·드라이버 점검·YOLO)로 화면이 웹과 같은 말로 보인다.
+  - 수동 조종·일시정지·넘겨받기·영상 켜고 끄기는 자율 비행 웹에 없어 받지 않는다(`ros_view_not_available`). 보기 노드가 끊기면 `ros_view_unreachable`, 명령을 안 받게 켰으면 `commands_disabled`.
+  - 명령은 회차 `events.jsonl`의 `gateway_cmd`(이름·결과·낸 문자열)로 남는다. 바깥 자율 연결(`/ws/autonomy`)은 받지 않는다(자율 정보는 보기 노드에서 온다).
+  - 드라이버가 스스로 내리면 그 까닭(속도 명령 끊김 `cmd_timeout`, 배터리·상태 끊김·충돌·뒤집힘 등)을, 이 화면의 비상 정지 뒤 땅이면 `emergency`를 모드 바뀜 까닭으로 남긴다.
+- 회차 폴더(`ros_…`, manifest `source: "ros"`)에 상태·모드 바뀜·보기 노드 연결·자율 정보·탐지·지도를 남긴다.
   - 게이트웨이 회차와 같은 모양이라 `--replay`로 다시 볼 수 있다. 영상 원본은 자율 드라이버가 자기 폴더에 남긴다.
-- 시험: `python -B -m unittest discover -s modules/autonomy/tello_link/tests -p "test_ros_view.py"`. ROS 노드는 ROS가 있는 PC에서 확인한다.
+- 시험: `python -B -m unittest discover -s modules/autonomy/tello_link/tests -p "test_ros_view*.py"`. ROS 노드는 ROS가 있는 PC에서 확인한다.
 
 ## 회차 로그
 
@@ -333,6 +388,7 @@ python modules/autonomy/tello_link/fake_ros_view.py
 | `detections.jsonl`·`detections/` | 게이트웨이만. 사람 탐지 결과와 발견 사진(실제 사람이 찍히므로 저장소·공유에 올리지 않는다) |
 | `map/latest.json`, `map/snapshots/NNNN_rev<버전>.json.gz`, `map_updates.jsonl` | 게이트웨이만. 3D 지도 최신본, 5초마다 + 형식·세션·구간이 바뀔 때 한 버전, 버전마다 요약(`saved` = 남긴 파일) |
 | `autonomy/` | 게이트웨이만. `events.jsonl`, `pose.jsonl`(받는 대로 전부), `path.jsonl`·`people.jsonl`(바뀔 때마다), `latest.json` |
+| `board.jsonl`, `board.json` | 게이트웨이만. 지도 그림(진입로·사람 동선): 바뀔 때마다 ws `board`와 같은 한 줄, `board.json`은 지금 그림 전부(바뀔 때마다 덮어씀) |
 
 pose는 만들지 않는다(`manifest.files.pose = null`). 자율 비행이 보낸 위치는 `autonomy/pose.jsonl`에 있다.
 영상·지도 버전·자율 기록은 기록 재생과 화면 시험용 목업 데이터를 만들려고 남긴다. 실제 사람이 찍힌 영상·사진은 저장소에 넣지 않는다.
@@ -383,7 +439,7 @@ pose는 만들지 않는다(`manifest.files.pose = null`). 자율 비행이 보�
 - 이륙 전 점검 게이트, 이륙·제자리·착륙, 키보드 rc(±30), 데드맨, 상태 연속 수신이 실기체에서 동작했다.
 - 상승 키를 계속 누르면 `h`가 150cm에서 멈췄다. 높이 상한(1.5m)이 작동했다.
 - rc 앞뒤 ±30을 누르는 동안 `vgx`는 -2~3이었다. rc 30이 0.2~0.3m/s 정도라면 `vgx`는 dm/s 단위로 보인다. **줄자로 재지 않은 추정**이다.
-- 이륙 명령은 응답이 오기까지 약 8.6초 걸린다. 이 동안 다른 명령은 잠금 때문에 기다리고, 비상 정지만 바로 나간다.
+- 이륙 명령은 응답이 오기까지 약 8.6초 걸린다. 이 동안 다른 명령은 잠금 때문에 기다리고, 비상 정지만 바로 나간다(rc는 이륙 중에 보내지 않는다).
 
 ### 조작감: 폰 앱보다 매끄럽지 않음
 

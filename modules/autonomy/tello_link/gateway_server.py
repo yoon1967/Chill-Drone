@@ -19,6 +19,8 @@
 - WS  /ws/autonomy        자율 비행 하나(AUTONOMY_BRIDGE_V0_1). 게이트웨이 → hello·tello_state·flight_status·control,
                           자율 → hello·cmd_vel·mission_state·ack·request·pose·path·people. 기본은 같은 PC만, 두 번째는 busy
 - GET  /api/autonomy      자율 위치·경로·찾은 사람 전체 (시험용 가짜 자율: fake_autonomy.py)
+- GET·POST /api/board     지도 그림(진입로·사람 동선, board.py). 모든 화면에 board로 알리고 회차 board.jsonl에 남긴다.
+                          동선은 자율 비행 지도 위에서 게이트웨이가 계산한다(route_plan.py). 기록 재생에서는 없음(POST 409)
 --replay <회차 폴더>: 기체 대신 회차 기록(상태·모드·영상·탐지·지도·자율)을 시간에 맞춰 내보낸다(replay.py). 화면은 그대로, 명령은 거절.
 --ros-view <주소>: 자율 비행 보기. 자율 비행 프로그램(ROS 2, WSL)이 드론에 붙어 날고, 게이트웨이는 보기 노드(ros_view_node.py)에서
   상태·영상을 받아 화면에 보인다(ros_view.py). 드론에는 붙지 않고 명령은 거절(1단계).
@@ -36,6 +38,7 @@ import os
 import sys
 import threading
 import time
+from collections import deque
 from contextlib import asynccontextmanager
 from urllib.parse import urlsplit
 
@@ -56,9 +59,12 @@ CONTROLLER_DIR = os.path.join(REPO_ROOT, "apps", "controller")
 STATE_PERIOD_S = 0.1
 MAX_EVENT_BYTES = 1_000_000
 MAX_REVIEW_BYTES = 1_000     # 확인·오탐 한 건({"review": ...})
+MAX_BOARD_BYTES = 32_000     # 지도 그림 한 건(POST /api/board)
 MAX_MAP_BYTES = 16_000_000   # 점 6만 개 × 한 줄 약 60바이트 + 여유
 LOCAL_HOSTS = ("127.0.0.1", "::1", "localhost")
 GRACEFUL_STOP_S = 3   # 끄기(Ctrl+C) 뒤 남은 요청을 기다리는 최대 시간. 넘으면 끊고 회차를 닫는다(metrics.json)
+EVENT_HISTORY = 200   # GET /api/events로 내주는 최근 알림 수(화면 비행 기록도 200줄)
+HISTORY_TYPES = ("event", "detection_review")   # 비행 기록에 적히는 알림(상태·탐지 사진은 빼고)
 
 
 def mjpeg_frames(request, latest, running, stopping, pose_at=None, run_id=None):
@@ -114,7 +120,8 @@ def build_gateway(args):
     fake = None
     if getattr(args, "ros_view", None):   # 자율 비행 보기: 드론에는 자율 비행 프로그램이 붙고, 게이트웨이는 보기 노드에서 받는다
         from ros_view import RosViewGateway
-        return RosViewGateway(args.ros_view, log_root=args.log_root), None
+        return RosViewGateway(args.ros_view, log_root=args.log_root,
+                              sensor_pose=bool(getattr(args, "ros_view_sensor_pose", False))), None
     if getattr(args, "replay", None):   # 기록 재생: 기체 없이 회차 폴더를 시간에 맞춰 내보낸다(명령은 모두 거절)
         from replay import ReplayGateway
         return ReplayGateway(args.replay, speed=args.replay_speed, loop=args.replay_loop, start_s=args.replay_start,
@@ -123,6 +130,7 @@ def build_gateway(args):
         from fake_tello import FakeTello
         fake = FakeTello(cmd_port=18889, state_port=18890, video_port=11112, send_video=not args.no_video)
         fake.temp_override = 50  # 가짜는 온도가 계속 올라 이륙 전 점검에 걸리므로 고정한다
+        fake.ext_kit = bool(getattr(args, "fake_ext_kit", False))   # 확장 키트 흉내(전방 ToF 늘 0.481 m)
         fake.start()
         host, cmd_port, local_port, state_port, video_port, bind = "127.0.0.1", 18889, 0, 18890, 11112, "127.0.0.1"
     else:
@@ -149,21 +157,37 @@ def build_app(args) -> FastAPI:
     gw, fake = build_gateway(args)
     clients: dict[str, tuple[asyncio.Queue, asyncio.AbstractEventLoop]] = {}
     ids = itertools.count(1)
+    history: deque = deque(maxlen=EVENT_HISTORY)   # 이번 회차 비행 기록: 새로 연 화면이 GET /api/events로 채운다
+    history_lock = threading.Lock()
 
     def broadcast(msg: dict) -> None:  # 게이트웨이 스레드에서 불린다
+        if (msg.get("type") in HISTORY_TYPES and msg.get("kind") != "cmd_ignored") or (   # 1초마다 올 수 있어 기록을 밀어낸다
+                msg.get("type") == "board" and msg.get("logged")):   # 지도 그림은 비행 기록 줄이 되는 것만(동선 길이만 바뀐 것은 빼고)
+            with history_lock:
+                history.append(msg)
         for q, loop in list(clients.values()):
             loop.call_soon_threadsafe(q.put_nowait, msg)
 
     gw.listeners.append(broadcast)
+    board = None   # 지도 그림(진입로·사람 동선): 기록 재생은 원래 회차 폴더에 쓰지 않으므로 없다
+    if not getattr(args, "replay", None):
+        from board import Board
+        link = getattr(gw, "link", None)   # 회차 기록이 없으면(시험용 게이트웨이) 그림은 기록 없이 둔다
+        board = Board(getattr(getattr(link, "log", None), "dir", None), getattr(link, "run_id", None), broadcast,
+                      grid=getattr(gw, "autonomy_grid", None), discovered=getattr(gw, "autonomy_discovered", None))
 
     # 영상은 자동으로 켜지 않는다(지상 발열). 화면의 video_on 또는 이륙 성공 시 게이트웨이가 켠다.
     @asynccontextmanager
     async def lifespan(_app):
         gw.start()
+        if board is not None:
+            board.start()   # 자율 비행 지도가 바뀌면 동선을 다시 계산한다
         try:
             yield
         finally:
             try:
+                if board is not None:
+                    board.close()
                 gw.close()
             finally:
                 if gw.video is not None:
@@ -180,6 +204,13 @@ def build_app(args) -> FastAPI:
     def drone_state():
         return gw.drone_state()
 
+    @app.get("/api/events")
+    def events():
+        """이번 회차에 화면으로 보낸 알림(모드 바뀜·영상·자율·거절·확인/오탐) 최근 것부터 EVENT_HISTORY개, 오래된 순.
+        WS /ws/drone으로 보내던 것과 같은 모양이라 화면이 같은 글로 비행 기록을 채운다."""
+        with history_lock:
+            return {"events": list(history)}
+
     @app.get("/api/drone/sensors")
     def drone_sensors(request: Request, after: int = 0):
         if request.client is None or request.client.host not in LOCAL_HOSTS:
@@ -189,6 +220,54 @@ def build_app(args) -> FastAPI:
         if not hasattr(gw.link, 'sensor_samples'):
             raise HTTPException(404, "sensor_history_unavailable")
         return gw.link.sensor_samples(after)
+
+    @app.get("/api/autonomy/grid")
+    def autonomy_grid():
+        """자율 비행이 만드는 지도(비행 높이 단면, 자율 비행 웹 /api/grid와 같은 모양). 화면은 번호가 바뀔 때만 가져간다."""
+        data = gw.autonomy_grid() if hasattr(gw, "autonomy_grid") else None
+        if data is None:
+            return JSONResponse({"reason": "no_grid"}, 404)
+        return data
+
+    @app.get("/api/autonomy/map")
+    def autonomy_world_map():
+        """자율 비행 웹이 그리는 지도 파일(시뮬레이터 세계 지도의 벽·가구·목적지·출발, 실기체 빈 지도). 화면은 번호가 바뀔 때만 가져간다."""
+        data = gw.autonomy_world_map() if hasattr(gw, "autonomy_world_map") else None
+        if data is None:
+            return JSONResponse({"reason": "no_map"}, 404)
+        return data
+
+    @app.get("/api/autonomy/discovered")
+    def autonomy_discovered():
+        """자율 비행(비행 노드)이 찾은 장애물(discovered.json 모양)."""
+        data = gw.autonomy_discovered() if hasattr(gw, "autonomy_discovered") else None
+        if data is None:
+            return JSONResponse({"reason": "no_discovered"}, 404)
+        return data
+
+    @app.get("/api/board")
+    def get_board():
+        """지도 그림 전부(진입로·사람 동선, 지운 것은 빼고). 화면은 처음 열 때·다시 연결할 때 받고, 그 뒤로는 ws board."""
+        if board is None:
+            return JSONResponse({"reason": "no_board"}, 404)
+        return board.snapshot()
+
+    @app.post("/api/board")
+    async def post_board(request: Request):
+        """{"op": "add", "client", "item"} · {"op": "delete", "client", "id"}. 어느 화면이든 보낸다(인증 없음, 확인·오탐과 같음).
+        그림은 드론 명령이 아니다. 기록 재생에서는 409 replay_source."""
+        if board is None:
+            replaying = bool(getattr(args, "replay", None))
+            return JSONResponse({"ok": False, "reason": "replay_source" if replaying else "no_board"}, 409 if replaying else 404)
+        body = await request.body()
+        if len(body) > MAX_BOARD_BYTES:
+            return JSONResponse({"ok": False, "reason": "too_large"}, 413)
+        try:
+            msg = json.loads(body)
+        except ValueError:
+            return JSONResponse({"ok": False, "reason": "invalid_json"}, 400)
+        status, out = await asyncio.to_thread(board.apply, msg)
+        return JSONResponse(out, status)
 
     @app.websocket("/ws/drone")
     async def ws_drone(ws: WebSocket):
@@ -280,6 +359,11 @@ def build_app(args) -> FastAPI:
     def get_autonomy():
         """자율 위치·경로·찾은 사람 전체. 상태(drone_state.autonomy)에는 버전만 싣는다."""
         return gw.autonomy.snapshot()
+
+    @app.get("/api/autonomy/trail")
+    def get_autonomy_trail():
+        """이번 자율 연결의 지나온 길(받은 위치). 비행 중에 새로 연 화면이 처음부터 그리게 한 번 가져간다."""
+        return gw.autonomy.trail()
 
     @app.get("/snapshot.jpg")
     def snapshot():
@@ -387,9 +471,12 @@ def build_app(args) -> FastAPI:
     async def video_mjpg(request: Request, mapping: bool = False):
         if gw.video is None:
             raise HTTPException(404, "영상이 꺼져 있습니다")
-        mapping = mapping and hasattr(gw.link, "sensor_pose_at")
-        latest = gw.video.jpeg_snapshot if mapping else gw.video.jpeg
-        return mjpeg(request, latest, lambda: gw.video.running, mapping=mapping)
+        pose = mapping and hasattr(gw.link, "sensor_pose_at")   # 지도용 장마다 그때 센서 자세(실기체, 자율 비행 보기 실기체)
+        if mapping and hasattr(gw.video, "map_snapshot"):   # 자율 비행 보기: 지도 파트 보정 크기(960×720)에 맞춘 장
+            latest = gw.video.map_snapshot if pose else gw.video.map_jpeg
+        else:
+            latest = gw.video.jpeg_snapshot if pose else gw.video.jpeg
+        return mjpeg(request, latest, lambda: gw.video.running, mapping=pose)
 
     @app.get("/overlay.mjpg")
     async def overlay_mjpg(request: Request):
@@ -404,6 +491,8 @@ def build_app(args) -> FastAPI:
 def main():
     ap = argparse.ArgumentParser(description="드론 게이트웨이 (관제 화면 ↔ Tello)")
     ap.add_argument("--fake", action="store_true", help="드론 없이 가짜 Tello로 실행")
+    ap.add_argument("--fake-ext-kit", action="store_true",
+                    help="가짜 Tello에 확장 키트를 단다(전방 ToF가 늘 0.481 m). 체험 지도에 섞이지 않게 기본은 없음")
     ap.add_argument("--replay", metavar="RUN_DIR",
                     help="기록 재생: 게이트웨이 회차 폴더(data/outputs/tello/<회차>)를 시간에 맞춰 다시 내보낸다. 기체에 붙지 않는다")
     ap.add_argument("--replay-speed", type=float, default=1.0, help="재생 속도 배율(기본 1)")
@@ -412,6 +501,9 @@ def main():
     ap.add_argument("--ros-view", metavar="주소",
                     help="자율 비행 보기: 드론 대신 보기 노드(ros_view_node.py, 보통 http://127.0.0.1:8094)에서 상태·영상을 받는다. "
                          "자율 비행 프로그램이 드론에 붙어 있을 때")
+    ap.add_argument("--ros-view-sensor-pose", action="store_true",
+                    help="자율 비행 보기: 드라이버가 받은 Tello 상태로 지도용 센서 자세를 만든다(실기체 게이트웨이와 같이). "
+                         "실시간으로 도는 실기체·가짜 Tello에서만. 실제보다 느린 시뮬레이터에서는 끈다(영상만)")
     ap.add_argument("--no-video", action="store_true", help="영상 수신 끄기")
     ap.add_argument("--no-record-video", action="store_true",
                     help="영상 원본을 회차 폴더(video/)에 남기지 않는다. 기본은 영상을 켤 때마다 남긴다(분당 약 10 MB)")
@@ -436,6 +528,7 @@ def main():
     else:
         if args.ros_view:
             print(f"보기 노드: {args.ros_view} (드론에는 자율 비행 프로그램이 붙어 있다. 명령은 보내지 않는다)")
+            print("지도용 센서 자세: " + ("드라이버가 받은 Tello 상태로 만든다" if args.ros_view_sensor_pose else "안 만든다(영상만)"))
         print(f"회차 로그: {app.state.gateway.link.log.dir}")
     server = make_server(app, args.host, args.port)
     try:

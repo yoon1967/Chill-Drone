@@ -26,6 +26,8 @@ from tello_link import now_iso
 FROM_AUTONOMY = ("hello", "cmd_vel", "mission_state", "ack", "request", "pose", "path", "people")
 POSE_STALE_S = 1.0          # 이보다 오래된 위치는 화면에 "오래됨"으로 보인다
 POSE_LOG_S = 0.0            # 위치는 받는 대로 다 남긴다(기록 재생용, 10Hz면 시간당 약 5 MB)
+TRAIL_STEP_M = 0.03         # 지나온 길: 이만큼 넘게 움직였을 때만 한 점(화면 지나온 길과 같은 규칙)
+TRAIL_MAX = 3000            # 지나온 길 점 수 상한(화면과 같음)
 MAX_PATH_POINTS = 5000
 MAX_PEOPLE = 200
 FLOAT_KEYS = ("baro", "agx", "agy", "agz")   # Tello 원문에서 소수 둘째 자리까지 오는 값
@@ -75,6 +77,7 @@ class AutonomyLink:
         self._pose: dict | None = None
         self._pose_mono: float | None = None
         self._pose_logged = -1e9
+        self._trail: deque = deque(maxlen=TRAIL_MAX)   # 이번 연결의 지나온 길 [x, y](새로 연 화면이 채운다)
         self._path: dict | None = None
         self._people: dict | None = None
         self.path_revision = 0
@@ -91,6 +94,7 @@ class AutonomyLink:
             self._cmd_times.clear()
             # 새 자율은 새 지도(원점이 다를 수 있다). 지난 연결의 위치·경로·찾은 사람은 회차 폴더에만 남기고 화면에서는 비운다.
             self._pose = self._pose_mono = self._path = self._people = None
+            self._trail.clear()
             self._mission_key = None
             self.path_revision += 1
             self.people_revision += 1
@@ -164,6 +168,9 @@ class AutonomyLink:
         now = self.clock()
         with self._lock:
             self._pose, self._pose_mono = pose, now
+            last = self._trail[-1] if self._trail else None
+            if last is None or math.hypot(pose["x_m"] - last[0], pose["y_m"] - last[1]) > TRAIL_STEP_M:
+                self._trail.append([round(pose["x_m"], 3), round(pose["y_m"], 3)])
             log = now - self._pose_logged >= POSE_LOG_S
             if log:
                 self._pose_logged = now
@@ -239,6 +246,12 @@ class AutonomyLink:
                 "coverage": people.get("coverage") if people else None,
                 "rejected": self.rejected,
             }
+
+    def trail(self) -> dict:
+        """GET /api/autonomy/trail: 이번 연결의 지나온 길(받은 위치, 3 cm 넘게 움직일 때만, 3000점까지).
+        화면은 연 뒤부터 지나온 길을 그려서, 비행 중에 새로 연 화면에는 처음 길이 없었다(11/17)."""
+        with self._lock:
+            return {"schema_version": SCHEMA_VERSION, "type": "autonomy_trail", "frame": "map", "points": list(self._trail)}
 
     def snapshot(self) -> dict:
         """GET /api/autonomy: 경로·찾은 사람 전체(상태에는 버전만 싣는다)."""

@@ -3,14 +3,15 @@
 사람 탐지 연결기(perception/inference/gateway_ai_client.py)와 같은 자리다. 지도 서버도 게이트웨이도 고치지 않고 둘 사이를 잇는다.
 - 읽는 곳: 지도 파트 계약 ONLINE_SPATIAL_V1의 `/api/<live|saved>/state`(버전 확인)와 `/api/<live|saved>/run`(점군·카메라).
   버전(revision)이 바뀔 때만 전체를 읽는다. 차분(`since_revision`)은 쓰지 않는다(같은 PC라 전체도 충분히 빠름).
-- 보내는 곳: 게이트웨이 `POST /api/map`(`gateway-map/0.1`). 점이 많으면 오차가 작은 점부터 --max-points개만 고른다.
+- 보내는 곳: 게이트웨이 `POST /api/map`(`gateway-map/0.1`). 점이 --max-points(기본 34,000 = 지도 쪽 실시간 최대)보다 많으면
+  오차가 작은 점부터 고르고, 오차가 같은 점끼리는 지도 전체에서 고르게 고른다(앞에서부터 자르지 않는다, pick_spread).
 - 좌표는 바꾸지 않는다(지도 표시 좌표, 단위는 지도 쪽 scale.unit). 화면이 보기 좋게 세우도록 카메라 화면 위쪽 평균(`up`)을 같이 보낸다.
   중력 방향이 아니다(카메라가 대체로 수평이라는 가정).
 - 지도 서버가 꺼졌거나 지도가 없어도 2초마다 상태(`status`)를 보내 화면이 이유를 보이게 한다.
   게이트웨이는 상태 응답에 받은 지도가 있는지(`has_map`)를 싣는다. 거짓이면(게이트웨이만 다시 켜 지도가 빔) 보낸 버전 기억을 지우고
   다음 차례에 지금 지도를 다시 보낸다. 지도 버전이 더 안 바뀌어도(복원 끝·저장 지도) 다시 켠 게이트웨이가 다음 상태(2초마다) 뒤 곧 받는다.
 - 깊이 지도(`backend=orb_slam3_depth`, -365): 복원이 끝나야 `map_available`이 켜진다. 그 전에는 상태의 `depth_job_id`로
-  지도 화면이 쓰는 진행 중 미리보기 `GET /api/import/preview?id=..&revision=..`을 읽는다(점 행 [x,y,z,r,g,b], 최대 약 1.2만 점).
+  지도 화면이 쓰는 진행 중 미리보기 `GET /api/import/preview?id=..&revision=..`을 읽는다(점 행 [x,y,z,r,g,b], 최대 약 3.4만 점).
   읽기만 한다. 화면 표시 확인(`presented`)은 지도 화면 몫이라 보내지 않는다(그래서 지도 화면이 열려 있어야 복원이 다음 프레임으로 간다).
   복원 중에는 상태를 STATE_EVERY_S(2초)마다만 다시 읽는다. 지도 서버는 상태를 줄 때마다 복원 진행 파일(progress.json)을 읽는데,
   Windows에서는 읽는 중에 복원 쪽이 그 파일을 바꾸지 못해 세션이 끝난 적이 있다(WinError 5). 미리보기는 그 파일을 읽지 않아 매번 본다.
@@ -37,6 +38,10 @@ import urllib.request
 SCHEMA = "gateway-map/0.1"
 STATUS_EVERY_S = 2.0
 STATE_EVERY_S = 2.0   # 깊이 지도 복원 중 상태(/state)를 다시 읽는 간격. 미리보기는 매번 본다
+# 지도 파트 실시간 지도가 내는 최대 점 수(정적 3만 2천 + 사람 2천, mapping_limits.MAX_PREVIEW_POINTS)와 같게.
+# 게이트웨이는 6만까지 받는다(map_inbox.MAX_POINTS). 전에는 2만이라 비행 중 미리보기가 절반만 갔다(11/17).
+DEFAULT_MAX_POINTS = 34_000
+GOLDEN = 0.6180339887498949   # i × 황금비의 소수 부분은 0~1을 고르게 채운다(pick_spread)
 
 
 def get_json(req, timeout: float) -> tuple[int, dict | None]:
@@ -57,14 +62,25 @@ def post_json(url: str, body: dict, timeout: float = 10) -> tuple[int, dict | No
     return get_json(req, timeout)
 
 
+def pick_spread(rows: list, max_points: int, rank=None) -> list:
+    """rows가 max_points보다 많으면 max_points개만 고른다. 고른 점은 원래 차례대로 돌려준다.
+
+    rank(점 → 작을수록 먼저)를 주면 그 차례로 고른다. rank가 같은 점끼리는(실시간 깊이 지도는 오차가 모두 0, 관측 수가
+    모두 1) 원래 차례 전체에서 고르게 고른다. 지도 쪽 점은 칸 번호(x 먼저) 차례로 놓여 있어, 앞에서부터 자르면 x가 큰 쪽이
+    통째로 빠졌다(11/17 비행 세 번 모두 끝난 지도의 24~30%, 10:23은 출발 자리를 포함한 오른쪽 전체)."""
+    if len(rows) <= max_points:
+        return rows
+    order = sorted(range(len(rows)), key=lambda i: ((rank(rows[i]) if rank else ()), (i * GOLDEN) % 1.0))
+    return [rows[i] for i in sorted(order[:max(0, max_points)])]
+
+
 def compact_scene(run: dict, state: dict, map_url: str, source: str, max_points: int) -> dict:
     """지도 서버 scene(phone-sfm-result/1.x) → gateway-map/0.1. 점 행은 [id,x,y,z,r,g,b,error_px,track_length]."""
     rows = [p for p in run.get("points") or [] if len(p) >= 7 and all(_finite(v) for v in p[1:4])]
     total = len(rows)
-    if total > max_points:   # 오차 작은 점 우선, 같으면 많이 관측된 점
-        rows.sort(key=lambda p: (p[7] if len(p) > 7 and _finite(p[7]) else math.inf,
-                                 -(p[8] if len(p) > 8 and _finite(p[8]) else 0)))
-        rows = rows[:max_points]
+    # 오차 작은 점 우선, 같으면 많이 관측된 점, 그것도 같으면 지도 전체에서 고르게
+    rows = pick_spread(rows, max_points, lambda p: (p[7] if len(p) > 7 and _finite(p[7]) else math.inf,
+                                                    -(p[8] if len(p) > 8 and _finite(p[8]) else 0)))
     points = [[round(p[1], 4), round(p[2], 4), round(p[3], 4), *(_byte(c) for c in p[4:7])] for p in rows]
     cams = [c for c in run.get("cameras") or [] if isinstance(c.get("position"), list) and len(c["position"]) == 3]
     cameras = [[round(v, 4) for v in c["position"]] for c in cams if all(_finite(v) for v in c["position"])]
@@ -100,11 +116,11 @@ def _up_from(rotations) -> list[float] | None:
 
 
 def compact_preview(preview: dict, state: dict, map_url: str, max_points: int) -> dict:
-    """깊이 지도 진행 중 미리보기 → gateway-map/0.1. 점 행은 [x,y,z,r,g,b](이미 지도 쪽에서 약 1.2만 점으로 솎음).
+    """깊이 지도 진행 중 미리보기 → gateway-map/0.1. 점 행은 [x,y,z,r,g,b](지도 쪽에서 약 3.4만 점까지로 솎음).
     좌표와 단위는 실시간 지도에서 전달받는다."""
     rows = [p for p in preview.get("points") or [] if isinstance(p, list) and len(p) >= 6 and all(_finite(v) for v in p[:3])]
-    if len(rows) > max_points:   # 오차 정보가 없으니 고르게 솎는다
-        rows = rows[::math.ceil(len(rows) / max_points)]
+    # 오차 정보가 없으니 고르게 솎는다. 전에는 간격(rows[::n])으로 솎아 3.1만 점에 최대 2만이면 절반만 갔다
+    rows = pick_spread(rows, max_points)
     points = [[round(p[0], 4), round(p[1], 4), round(p[2], 4), *(_byte(c) for c in p[3:6])] for p in rows]
     cameras = [[round(v, 4) for v in c] for c in preview.get("cameras") or []
                if isinstance(c, list) and len(c) == 3 and all(_finite(v) for v in c)]
@@ -145,7 +161,7 @@ class MapBridge:
     deliver는 (HTTP 상태, 응답)을 돌려준다: 게이트웨이 안에서는 MapInbox.receive, 따로 실행에서는 POST /api/map.
     보낸 버전을 기억해 같은 버전은 다시 읽지 않는다. 게이트웨이가 상태 응답에서 받은 지도가 없다고 하면 그 기억을 지운다."""
 
-    def __init__(self, map_url: str, deliver, *, source: str = "live", max_points: int = 20000,
+    def __init__(self, map_url: str, deliver, *, source: str = "live", max_points: int = DEFAULT_MAX_POINTS,
                  log=print, clock=time.monotonic):
         self.base, self.api = map_url.rstrip("/"), f"{map_url.rstrip('/')}/api/{source}"
         self.deliver, self.source, self.max_points, self.log, self.clock = deliver, source, max_points, log, clock
@@ -280,7 +296,8 @@ def main():
     ap.add_argument("--map", default="http://127.0.0.1:8790", help="지도 서버(apps/console/serve.py) 주소")
     ap.add_argument("--gateway", default="http://127.0.0.1:8010")
     ap.add_argument("--source", choices=("live", "saved"), default="live", help="실시간 지도(live, 기본) 또는 저장된 결과(saved)")
-    ap.add_argument("--max-points", type=int, default=20000, help="게이트웨이로 보낼 최대 점 수")
+    ap.add_argument("--max-points", type=int, default=DEFAULT_MAX_POINTS,
+                    help=f"게이트웨이로 보낼 최대 점 수(기본 {DEFAULT_MAX_POINTS} = 지도 쪽 실시간 최대)")
     ap.add_argument("--interval", type=float, default=0.5, help="지도 버전 확인 간격(초)")
     args = ap.parse_args()
     try:

@@ -1,6 +1,6 @@
 @echo off
 setlocal DisableDelayedExpansion
-rem Chill-Drone launcher. Double-click for the menu (1 fake drone, 2 real drone), or: start.cmd fake ^| real [--phone]
+rem Chill-Drone launcher. Double-click for the menu (1 fake drone, 2 real drone), or: start.cmd fake ^| real [--phone] ^| sim
 rem Details: apps\launcher\README.md
 set "CHILL_CALLER=%CD%"
 pushd "%~dp0.." || exit /b 1

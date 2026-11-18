@@ -1,0 +1,488 @@
+{
+  "schema_version": "2.0",
+  "model_name": "room_v2_evidence_based_blockout",
+  "description": "Measured outer envelope and manually digitized sketch layout checked against two videos. Not photogrammetric reconstruction.",
+  "units": "m",
+  "frame": {
+    "id": "room_map",
+    "handedness": "right",
+    "origin": "손그림 왼쪽 아래 바닥 모서리 (창문 벽과 시계 벽의 교차점)",
+    "x_positive": "손그림 오른쪽 / 출입문 벽 방향",
+    "y_positive": "손그림 위쪽 / 스크린 벽 방향",
+    "z_positive": "바닥에서 천장 방향",
+    "old_sketch_top_left_coordinates_to_current": "x_new=x_old; y_new=8.8-y_old; z_new=z_old",
+    "note": "이전 답변의 좌상단 원점과 다름. 이 프레임은 실내 로컬 좌표이며 GPS와 연동되지 않음."
+  },
+  "room": {
+    "interior_size_m": [
+      7.4,
+      8.8,
+      2.7
+    ],
+    "size_source": "user_confirmed_measurements_cm_740_880_270",
+    "rectangularity": "assumed_from_sketch_not_surveyed",
+    "survey_accuracy_m": null,
+    "wall_thickness_m": null
+  },
+  "objects": [
+    {
+      "id": "01",
+      "label": "전면 장비장·강연대 구역",
+      "kind": "equipment",
+      "min_m": [
+        0.2,
+        7.75,
+        0
+      ],
+      "size_m": [
+        1.15,
+        0.8,
+        1.3
+      ],
+      "geometry": "box",
+      "existence": "observed_in_video",
+      "xy_status": "manual_sketch_estimate",
+      "z_status": "illustrative_assumption_not_measured",
+      "validated_for_navigation": false,
+      "metric_accuracy_m": null,
+      "evidence": [
+        "IMG_6698[1].MOV: ~3–5 s",
+        "IMG_6697[1].MOV: ~12–13 s"
+      ],
+      "note": "장비장과 투명 강연대는 영상에 확인됨. 한 구역으로 단순화했으며 강연대 돌출부를 별도 계측하지 않음."
+    },
+    {
+      "id": "02",
+      "label": "전면 긴 책상열",
+      "kind": "desk",
+      "min_m": [
+        0.0,
+        5.95,
+        0
+      ],
+      "size_m": [
+        3.8,
+        1.3,
+        0.75
+      ],
+      "geometry": "box",
+      "existence": "observed_in_video",
+      "xy_status": "manual_sketch_estimate",
+      "z_status": "illustrative_assumption_not_measured",
+      "validated_for_navigation": false,
+      "metric_accuracy_m": null,
+      "evidence": [
+        "IMG_6697[1].MOV: ~11–14 s",
+        "IMG_6698[1].MOV: ~4–7 s"
+      ],
+      "note": "상판과 다리를 분리하지 않은 바닥부터의 단순 장애물 상자. 책상 아래를 통과 가능 공간으로 보지 않음."
+    },
+    {
+      "id": "03",
+      "label": "창가 장비·작업 책상열",
+      "kind": "desk",
+      "min_m": [
+        0.0,
+        2.65,
+        0
+      ],
+      "size_m": [
+        0.9,
+        2.6,
+        0.75
+      ],
+      "geometry": "box",
+      "existence": "observed_in_video",
+      "xy_status": "manual_sketch_estimate",
+      "z_status": "illustrative_assumption_not_measured",
+      "validated_for_navigation": false,
+      "metric_accuracy_m": null,
+      "evidence": [
+        "IMG_6697[1].MOV: ~14–18 s",
+        "IMG_6698[1].MOV: ~12–17 s"
+      ],
+      "note": "프린터 2대 및 노트북 작업석이 영상에서 보임. 책상열은 하나의 상자로 묶음."
+    },
+    {
+      "id": "04",
+      "label": "후면 창가 작업 책상",
+      "kind": "desk",
+      "min_m": [
+        0.25,
+        0.75,
+        0
+      ],
+      "size_m": [
+        1.9,
+        1.25,
+        0.75
+      ],
+      "geometry": "box",
+      "existence": "observed_in_video",
+      "xy_status": "manual_sketch_estimate",
+      "z_status": "illustrative_assumption_not_measured",
+      "validated_for_navigation": false,
+      "metric_accuracy_m": null,
+      "evidence": [
+        "IMG_6698[1].MOV: ~16–18 s, ~39–43 s"
+      ],
+      "note": "모니터·주변기기의 개별 형상과 치수는 미측정. 별도 장비 상자를 추정 추가함."
+    },
+    {
+      "id": "05A",
+      "label": "후면 회의책상 — 세로 부분",
+      "kind": "desk",
+      "min_m": [
+        3.35,
+        0.85,
+        0
+      ],
+      "size_m": [
+        0.85,
+        2.1,
+        0.75
+      ],
+      "geometry": "box",
+      "existence": "observed_in_video",
+      "xy_status": "manual_sketch_estimate",
+      "z_status": "illustrative_assumption_not_measured",
+      "validated_for_navigation": false,
+      "metric_accuracy_m": null,
+      "evidence": [
+        "IMG_6697[1].MOV: ~19–21 s",
+        "IMG_6698[1].MOV: ~26–29 s, ~39–43 s"
+      ],
+      "note": "손그림의 T형 배치를 두 상자로 단순화. 실제 개별 상판·의자 수는 모델링하지 않음."
+    },
+    {
+      "id": "05B",
+      "label": "후면 회의책상 — 가로 부분",
+      "kind": "desk",
+      "min_m": [
+        4.05,
+        1.4,
+        0
+      ],
+      "size_m": [
+        2.15,
+        1.25,
+        0.75
+      ],
+      "geometry": "box",
+      "existence": "observed_in_video",
+      "xy_status": "manual_sketch_estimate",
+      "z_status": "illustrative_assumption_not_measured",
+      "validated_for_navigation": false,
+      "metric_accuracy_m": null,
+      "evidence": [
+        "IMG_6698[1].MOV: ~26–29 s, ~39–43 s"
+      ],
+      "note": "05A와 연결되는 같은 책상군. 독립된 두 번째 회의책상군이 아님."
+    },
+    {
+      "id": "06",
+      "label": "이동식 디스플레이 구역",
+      "kind": "display",
+      "min_m": [
+        6.38,
+        1.15,
+        0
+      ],
+      "size_m": [
+        0.9,
+        1.65,
+        1.9
+      ],
+      "geometry": "box",
+      "existence": "observed_in_video",
+      "xy_status": "manual_sketch_estimate",
+      "z_status": "illustrative_assumption_not_measured",
+      "validated_for_navigation": false,
+      "metric_accuracy_m": null,
+      "evidence": [
+        "IMG_6697[1].MOV: ~21–23 s",
+        "IMG_6698[1].MOV: ~27–42 s"
+      ],
+      "note": "영상의 전면과 뒷면은 동일한 이동식 디스플레이. 스탠드 바퀴를 포함하도록 깊이를 늘린 추정 상자."
+    },
+    {
+      "id": "07",
+      "label": "출입문 옆 보관장",
+      "kind": "cabinet",
+      "min_m": [
+        6.75,
+        5.4,
+        0
+      ],
+      "size_m": [
+        0.65,
+        1.6,
+        1.3
+      ],
+      "geometry": "box",
+      "existence": "observed_in_video",
+      "xy_status": "manual_sketch_estimate",
+      "z_status": "illustrative_assumption_not_measured",
+      "validated_for_navigation": false,
+      "metric_accuracy_m": null,
+      "evidence": [
+        "IMG_6697[1].MOV: ~0–5 s",
+        "IMG_6698[1].MOV: ~9 s, ~32–36 s"
+      ],
+      "note": "손그림의 60/120로 보이는 표기는 의미를 추가 확인하지 않아 실측 확정값으로 사용하지 않음."
+    },
+    {
+      "id": "08",
+      "label": "전면 우측 스탠드 에어컨",
+      "kind": "air_conditioner",
+      "geometry": "cylinder",
+      "min_m": [
+        5.68,
+        7.81,
+        0
+      ],
+      "size_m": [
+        0.6,
+        0.6,
+        1.9
+      ],
+      "existence": "observed_in_video",
+      "xy_status": "manual_sketch_estimate",
+      "z_status": "illustrative_assumption_not_measured",
+      "validated_for_navigation": false,
+      "metric_accuracy_m": null,
+      "evidence": [
+        "IMG_6697[1].MOV: ~5–8 s",
+        "IMG_6698[1].MOV: ~33 s, ~46 s"
+      ],
+      "note": "원기둥은 단순 표현이며 원형 단면·직경·높이는 실측한 값이 아님."
+    },
+    {
+      "id": "03P1",
+      "label": "창가 장비 1 (추정 외곽)",
+      "kind": "device",
+      "geometry": "box",
+      "min_m": [
+        0.05,
+        3.65,
+        0.75
+      ],
+      "size_m": [
+        0.65,
+        0.65,
+        0.85
+      ],
+      "existence": "observed_in_video",
+      "xy_status": "relative_to_estimated_desk",
+      "z_status": "illustrative_assumption_not_measured",
+      "validated_for_navigation": false,
+      "metric_accuracy_m": null,
+      "evidence": [
+        "IMG_6698[1].MOV: ~13–15 s"
+      ],
+      "note": "프린터로 보이는 두 장비. 위쪽 파란 배기덕트는 연결 경로가 미계측되어 이 상자에 포함되지 않음."
+    },
+    {
+      "id": "03P2",
+      "label": "창가 장비 2 (추정 외곽)",
+      "kind": "device",
+      "geometry": "box",
+      "min_m": [
+        0.05,
+        4.45,
+        0.75
+      ],
+      "size_m": [
+        0.65,
+        0.65,
+        0.85
+      ],
+      "existence": "observed_in_video",
+      "xy_status": "relative_to_estimated_desk",
+      "z_status": "illustrative_assumption_not_measured",
+      "validated_for_navigation": false,
+      "metric_accuracy_m": null,
+      "evidence": [
+        "IMG_6698[1].MOV: ~13–15 s"
+      ],
+      "note": "프린터로 보이는 두 장비. 위쪽 파란 배기덕트는 연결 경로가 미계측되어 이 상자에 포함되지 않음."
+    }
+  ],
+  "landmarks": [
+    {
+      "id": "SCREEN",
+      "label": "스크린 벽",
+      "wall": "y_max",
+      "position_m": [
+        3.7,
+        8.8,
+        1.5
+      ],
+      "status": "wall_identity_verified_position_estimated"
+    },
+    {
+      "id": "CLOCK",
+      "label": "시계 벽",
+      "wall": "y_min",
+      "position_m": [
+        4.1,
+        0,
+        2.1
+      ],
+      "status": "wall_identity_verified_position_estimated"
+    },
+    {
+      "id": "WINDOWS",
+      "label": "창문 벽",
+      "wall": "x_min",
+      "position_m": [
+        0,
+        4.4,
+        1.5
+      ],
+      "status": "wall_identity_verified_individual_window_extents_unknown"
+    },
+    {
+      "id": "DOOR",
+      "label": "출입문 (위치·높이 추정)",
+      "wall": "x_max",
+      "position_m": [
+        7.4,
+        8.06,
+        1.05
+      ],
+      "width_m": 0.9,
+      "height_m": 2.1,
+      "status": "observed_location_estimated_width_read_from_sketch_unconfirmed",
+      "note": "폭 90cm로 읽히지만 문틀·유효 통과폭을 확인하지 않음. 열림방향은 확정하지 않음."
+    }
+  ],
+  "review_zones": [
+    {
+      "id": "R_02",
+      "label": "전면 긴 책상열 주변 의자 확인구역",
+      "min_m": [
+        0,
+        5.45,
+        0
+      ],
+      "max_m": [
+        4.3,
+        7.75,
+        1.1
+      ],
+      "status": "illustrative_review_zone_not_measured",
+      "note": "0.5m 확장은 확인용 표시일 뿐 의자 실제 외곽 또는 안전거리 보장이 아님."
+    },
+    {
+      "id": "R_03",
+      "label": "창가 장비·작업 책상열 주변 의자 확인구역",
+      "min_m": [
+        0,
+        2.15,
+        0
+      ],
+      "max_m": [
+        1.4,
+        5.75,
+        1.1
+      ],
+      "status": "illustrative_review_zone_not_measured",
+      "note": "0.5m 확장은 확인용 표시일 뿐 의자 실제 외곽 또는 안전거리 보장이 아님."
+    },
+    {
+      "id": "R_04",
+      "label": "후면 창가 작업 책상 주변 의자 확인구역",
+      "min_m": [
+        0,
+        0.25,
+        0
+      ],
+      "max_m": [
+        2.65,
+        2.5,
+        1.1
+      ],
+      "status": "illustrative_review_zone_not_measured",
+      "note": "0.5m 확장은 확인용 표시일 뿐 의자 실제 외곽 또는 안전거리 보장이 아님."
+    },
+    {
+      "id": "R_05A",
+      "label": "후면 회의책상 — 세로 부분 주변 의자 확인구역",
+      "min_m": [
+        2.85,
+        0.35,
+        0
+      ],
+      "max_m": [
+        4.7,
+        3.45,
+        1.1
+      ],
+      "status": "illustrative_review_zone_not_measured",
+      "note": "0.5m 확장은 확인용 표시일 뿐 의자 실제 외곽 또는 안전거리 보장이 아님."
+    },
+    {
+      "id": "R_05B",
+      "label": "후면 회의책상 — 가로 부분 주변 의자 확인구역",
+      "min_m": [
+        3.55,
+        0.8999999999999999,
+        0
+      ],
+      "max_m": [
+        6.699999999999999,
+        3.15,
+        1.1
+      ],
+      "status": "illustrative_review_zone_not_measured",
+      "note": "0.5m 확장은 확인용 표시일 뿐 의자 실제 외곽 또는 안전거리 보장이 아님."
+    }
+  ],
+  "unknowns": [
+    "가구 실측 좌표·높이·크기 및 카메라 궤적 미복원",
+    "의자·바퀴·바닥 케이블의 정확한 범위",
+    "천장 프로젝터·디스플레이·천장 단차 및 파란 배기덕트의 3D 좌표",
+    "창가 기둥·창틀 돌출·강연대 베이스의 정확한 크기",
+    "가려진 바닥과 가구 뒤의 빈 공간 여부",
+    "문틀 유효 폭·문 열림방향 및 운용 중 열림상태",
+    "영상의 실제 벽과 스케치 외곽 사이의 정합 오차"
+  ],
+  "safety": {
+    "ready_for_autonomous_navigation": false,
+    "free_space_certified": false,
+    "accuracy_bound_m": null,
+    "instruction": "구조 확인·좌표 편집용 초안. 객체가 없는 공간도 검증된 자유공간이 아님. 실측/센서 지도와 검증 없이 실제 주행·비행에 사용하지 말 것."
+  },
+  "method": {
+    "input_videos": [
+      "IMG_6697[1].MOV",
+      "IMG_6698[1].MOV"
+    ],
+    "sampled_keyframes": 72,
+    "layout_source": "manual digitization of user sketch; object and wall identities crosschecked visually against video keyframes",
+    "trajectory_assumed": false,
+    "photogrammetry_completed": false,
+    "camera_calibration_completed": false,
+    "point_cloud_measured": false,
+    "source_of_heights": "provisional drawing assumptions except measured room height",
+    "sketch_homography": [
+      [
+        0.013546783396308937,
+        -0.00028562495112699525,
+        -2.002434925222473
+      ],
+      [
+        -0.0006185398645251511,
+        -0.013251027097711867,
+        15.305316937773839
+      ],
+      [
+        5.171840068017331e-05,
+        -1.5191018916501804e-05,
+        1.0
+      ]
+    ],
+    "excluded_source": "previous generated room illustration is not used as evidence"
+  }
+}

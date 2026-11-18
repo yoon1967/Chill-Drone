@@ -1,4 +1,5 @@
 """Windows 프로세스·창·네트워크 도우미(표준 라이브러리만). 실행기(켜기·끄기)가 쓴다."""
+import base64
 import ctypes
 from dataclasses import dataclass
 import json
@@ -59,6 +60,21 @@ def powershell(script, timeout=30):
     except (OSError, subprocess.TimeoutExpired):
         return ''
     return result.stdout.decode('utf-8', errors='replace')
+
+
+def elevated_argv(script):
+    """관리자 권한 PowerShell로 script를 돌리는 명령(Windows 관리자 확인 창이 뜬다). script는 인코딩해 따옴표 문제가 없다."""
+    encoded = base64.b64encode(script.encode('utf-16-le')).decode('ascii')
+    return ("try { $p = Start-Process -FilePath powershell.exe -Verb RunAs -Wait -PassThru -WindowStyle Hidden "
+            "-ArgumentList '-NoProfile','-NonInteractive','-ExecutionPolicy','Bypass','-EncodedCommand','%s'; "
+            "'exit=' + $p.ExitCode } catch { 'canceled' }" % encoded)
+
+
+def powershell_elevated(script, timeout=180):
+    """script를 관리자 권한으로 돌린다. 사람이 Windows 관리자 확인 창에서 '예'를 눌러야 돈다.
+    'ok'(끝까지 돎), 'canceled'(확인 창에서 '아니요'·닫음·못 띄움), 'failed'(돌았지만 실패, 시간 넘김)."""
+    out = powershell(elevated_argv(script), timeout=timeout).strip()
+    return 'ok' if out == 'exit=0' else 'canceled' if out == 'canceled' else 'failed'
 
 
 def processes():
