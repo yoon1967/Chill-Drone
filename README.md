@@ -1,7 +1,7 @@
 # Chill-Drone
 
 <p align="center">
-  <img src="docs/architecture/chill-drone-logo.png" width="240" alt="Chill-Drone 드론 로고">
+  <img src="docs/architecture/chill-drone-logo-green.svg" width="240" alt="Chill-Drone 드론 로고">
 </p>
 
 **팀 출발!드론팀**
@@ -23,7 +23,7 @@ Set-Location S15P31B205
 ## 대표 실행 장면
 
 <p align="center">
-  <img src="docs/architecture/autonomous-exploration.png" width="720" alt="자율 탐색 관제 화면의 2D 지도와 드론 위치">
+  <img src="docs/architecture/autonomous-exploration.gif" width="720" alt="자율 탐색 관제 화면의 2D 지도와 드론 위치">
 </p>
 
 ### 실시간 3D 매핑
@@ -39,7 +39,7 @@ Set-Location S15P31B205
 드론 영상에서 사람을 찾으면 윤곽선과 신뢰도를 표시하고, 새 발견을 관제 화면에 알립니다.
 
 <p align="center">
-  <img src="docs/architecture/person-detection.png" width="660" alt="드론 영상에서 사람 윤곽선과 탐지 신뢰도를 표시한 관제 화면">
+  <img src="docs/architecture/person-detection.gif" width="660" alt="드론 영상에서 사람 윤곽선과 탐지 신뢰도를 표시한 관제 화면">
 </p>
 
 ## 프로젝트 참여자
