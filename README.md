@@ -3,6 +3,18 @@
 휴대폰 영상 기반 3D 복원과 사람 탐지, ROS 2·Gazebo 자율비행을 개발하는 팀 저장소입니다.
 각 기능의 구현·검증 수준은 연결된 Jira 작업과 MR의 실제 결과를 기준으로 확인합니다.
 
+## 통합 실행(최종)
+
+관제 화면 하나에서 자율 비행·사람 탐지·3D 지도를 같이 켭니다(Windows, `scripts\start.cmd`).
+준비는 [포팅 매뉴얼](exec/PORTING_MANUAL.md), 시연 순서는 [시연 시나리오](exec/DEMO_SCENARIO.md)를 봅니다.
+
+| 명령 | 하는 일 |
+| --- | --- |
+| `scripts\start.cmd fake` | 체험: 드론 없이 가짜 드론으로 관제 화면·사람 탐지·지도 |
+| `scripts\start.cmd real` | 실기체 손 조종: 게이트웨이·사람 탐지·3D 지도 |
+| `scripts\start.cmd sim` | 자율 비행 시뮬레이터(WSL ROS 2) + 관제 화면·사람 탐지·3D 지도 |
+| `scripts\start.cmd autonomy` | 실기체 자율 비행(WSL ROS 2 + Windows 중계) + 관제 화면·사람 탐지·3D 지도. `--fake-tello`면 드론 없이 |
+
 ## 처음 참여한다면
 
 1. [팀 시작 안내](docs/team/START_HERE.md): 계정 설정부터 첫 브랜치·MR까지.

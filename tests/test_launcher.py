@@ -103,7 +103,7 @@ class RealModeTests(unittest.TestCase):
             if target.endswith('/api/drone/state'):
                 return next(states, tello('grounded', battery_pct=70, temp_high_c=60))
             return next(console_up, {'enabled': True})
-        with patch.object(drone, 'show_code'), patch.object(drone, 'firewall_hint'), \
+        with patch.object(drone, 'show_code'), patch.object(drone, 'ensure_firewall'), \
                 patch.object(drone.prepare, 'ensure_all', return_value=ready), \
                 patch.object(winproc, 'wifi_ssids', return_value=['TELLO-59FA6D']), \
                 patch.object(winproc, 'get_json', side_effect=get_json), \

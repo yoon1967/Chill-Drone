@@ -1,0 +1,321 @@
+<?xml version="1.0"?>
+<!--
+  RoboMaster TT(Tello Talent) 사양을 흉내 낸 시뮬레이션 드론.
+
+  비행 동역학(프로펠러 추력)은 흉내 내지 않는다. 실제 TT도 SDK로 속도 명령(rc)과
+  상대 이동(go)만 받고 자세 안정화는 기체가 하므로, VelocityControl로
+  "속도 명령 → 그대로 이동"하는 운동학 모델로 둔다.
+  이 모델은 중력이 0인 월드(generate_world.py가 만드는 world.sdf)에서 써야 한다.
+
+  값 출처: DJI RoboMaster TT 사양 (이륙 무게 87 g, 98×92.5×41 mm,
+  카메라 5 MP·720p 30 fps·FOV 82.6°, 단일점 ToF 최대 1.2 m).
+  "가정"이라고 적힌 값은 실기체를 측정해 바꿔야 한다.
+-->
+<sdf version="1.9">
+  <model name="tt_drone">
+    <link name="base_link">
+      <inertial>
+        <mass>0.087</mass>
+        <!-- 98×92.5×41 mm 상자로 근사 -->
+        <inertia>
+          <ixx>7.4e-05</ixx>
+          <iyy>8.2e-05</iyy>
+          <izz>1.32e-04</izz>
+          <ixy>0</ixy>
+          <ixz>0</ixz>
+          <iyz>0</iyz>
+        </inertia>
+      </inertial>
+
+      <!-- 충돌 외곽은 프로펠러 가드까지 포함한 지름 0.18 m 원기둥 (가정).
+           네모 상자로 두면 물체에 붙었을 때 모서리가 걸려 제자리 회전을 못 한다. -->
+      <collision name="body_collision">
+        <geometry>
+          <cylinder>
+            <radius>0.09</radius>
+            <length>0.05</length>
+          </cylinder>
+        </geometry>
+      </collision>
+
+      <visual name="body">
+        <geometry>
+          <box>
+            <size>0.098 0.0925 0.041</size>
+          </box>
+        </geometry>
+        <material>
+          <ambient>0.15 0.15 0.15 1</ambient>
+          <diffuse>0.2 0.2 0.2 1</diffuse>
+        </material>
+      </visual>
+      <visual name="rotor_front_left">
+        <pose>0.06 0.06 0.022 0 0 0</pose>
+        <geometry>
+          <cylinder>
+            <radius>0.038</radius>
+            <length>0.004</length>
+          </cylinder>
+        </geometry>
+        <material>
+          <ambient>0.6 0.6 0.6 1</ambient>
+          <diffuse>0.7 0.7 0.7 1</diffuse>
+        </material>
+      </visual>
+      <visual name="rotor_front_right">
+        <pose>0.06 -0.06 0.022 0 0 0</pose>
+        <geometry>
+          <cylinder>
+            <radius>0.038</radius>
+            <length>0.004</length>
+          </cylinder>
+        </geometry>
+        <material>
+          <ambient>0.6 0.6 0.6 1</ambient>
+          <diffuse>0.7 0.7 0.7 1</diffuse>
+        </material>
+      </visual>
+      <visual name="rotor_back_left">
+        <pose>-0.06 0.06 0.022 0 0 0</pose>
+        <geometry>
+          <cylinder>
+            <radius>0.038</radius>
+            <length>0.004</length>
+          </cylinder>
+        </geometry>
+        <material>
+          <ambient>0.6 0.6 0.6 1</ambient>
+          <diffuse>0.7 0.7 0.7 1</diffuse>
+        </material>
+      </visual>
+      <visual name="rotor_back_right">
+        <pose>-0.06 -0.06 0.022 0 0 0</pose>
+        <geometry>
+          <cylinder>
+            <radius>0.038</radius>
+            <length>0.004</length>
+          </cylinder>
+        </geometry>
+        <material>
+          <ambient>0.6 0.6 0.6 1</ambient>
+          <diffuse>0.7 0.7 0.7 1</diffuse>
+        </material>
+      </visual>
+
+      <!-- 전방 단안 카메라: 영상 스트림 960×720, 30 fps -->
+      <sensor name="front_camera" type="camera">
+        <pose>0.05 0 0 0 0 0</pose>
+        <always_on>1</always_on>
+        <update_rate>30</update_rate>
+        <visualize>false</visualize>
+        <topic>/tt/camera/image</topic>
+        <camera>
+          <!-- DJI 표기 FOV 82.6° = 1.4416 rad. 영상 스트림은 크롭될 수 있어
+               실기체 캘리브레이션 결과로 바꿔야 한다. -->
+          <horizontal_fov>1.4416</horizontal_fov>
+          <image>
+            <width>960</width>
+            <height>720</height>
+            <format>R8G8B8</format>
+          </image>
+          <clip>
+            <near>0.05</near>
+            <far>40</far>
+          </clip>
+          <noise>
+            <type>gaussian</type>
+            <mean>0</mean>
+            <stddev>0.007</stddev>
+          </noise>
+        </camera>
+      </sensor>
+
+      <!-- (평가 전용) 정답 깊이 카메라: 앞 카메라와 같은 자리·화각, 절반 해상도, 5 Hz.
+           카메라 영상으로 추정한 거리(perception/depth.py)를 재는 데만 쓰고, 비행 코드는 쓰지 않는다.
+           실기체 TT에는 없는 센서다. -->
+      <sensor name="depth_gt" type="depth_camera">
+        <pose>0.05 0 0 0 0 0</pose>
+        <always_on>1</always_on>
+        <update_rate>5</update_rate>
+        <visualize>false</visualize>
+        <topic>/tt/camera/depth_gt</topic>
+        <camera>
+          <horizontal_fov>1.4416</horizontal_fov>
+          <image>
+            <width>480</width>
+            <height>360</height>
+            <format>R_FLOAT32</format>
+          </image>
+          <clip>
+            <near>0.05</near>
+            <far>20</far>
+          </clip>
+        </camera>
+      </sensor>
+
+      <!-- 전방 단일점 ToF: 최대 1.2 m. 시야 25°(±12.5°, VL53L0X 계열 센서 기준)와
+           갱신 10 Hz는 가정. 실제 센서는 원뿔 안에서 가장 가까운 거리 하나만 주므로
+           가운데·위(+12.5°)·아래(-12.5°) 세 줄 × 7개 광선으로 흉내 내고, 읽는 쪽은 21개 중 최솟값만 쓴다.
+           (ros_gz_bridge의 LaserScan은 한 줄만 넘기므로 줄마다 센서를 따로 둔다.) -->
+      <sensor name="tof_front" type="gpu_lidar">
+        <pose>0.05 0 0 0 0 0</pose>
+        <always_on>1</always_on>
+        <update_rate>10</update_rate>
+        <visualize>false</visualize>
+        <topic>/tt/tof_front</topic>
+        <lidar>
+          <scan>
+            <horizontal>
+              <samples>7</samples>
+              <resolution>1</resolution>
+              <min_angle>-0.2182</min_angle>
+              <max_angle>0.2182</max_angle>
+            </horizontal>
+            <vertical>
+              <samples>1</samples>
+              <resolution>1</resolution>
+              <min_angle>0</min_angle>
+              <max_angle>0</max_angle>
+            </vertical>
+          </scan>
+          <range>
+            <min>0.1</min>
+            <max>1.2</max>
+            <resolution>0.001</resolution>
+          </range>
+          <noise>
+            <type>gaussian</type>
+            <mean>0</mean>
+            <stddev>0.01</stddev>
+          </noise>
+        </lidar>
+      </sensor>
+      <!-- 위 줄 (SDF에서 pitch가 음수면 위를 본다) -->
+      <sensor name="tof_front_up" type="gpu_lidar">
+        <pose>0.05 0 0 0 -0.2182 0</pose>
+        <always_on>1</always_on>
+        <update_rate>10</update_rate>
+        <visualize>false</visualize>
+        <topic>/tt/tof_front_up</topic>
+        <lidar>
+          <scan>
+            <horizontal>
+              <samples>7</samples>
+              <resolution>1</resolution>
+              <min_angle>-0.2182</min_angle>
+              <max_angle>0.2182</max_angle>
+            </horizontal>
+            <vertical>
+              <samples>1</samples>
+              <resolution>1</resolution>
+              <min_angle>0</min_angle>
+              <max_angle>0</max_angle>
+            </vertical>
+          </scan>
+          <range>
+            <min>0.1</min>
+            <max>1.2</max>
+            <resolution>0.001</resolution>
+          </range>
+          <noise>
+            <type>gaussian</type>
+            <mean>0</mean>
+            <stddev>0.01</stddev>
+          </noise>
+        </lidar>
+      </sensor>
+      <!-- 아래 줄 -->
+      <sensor name="tof_front_down" type="gpu_lidar">
+        <pose>0.05 0 0 0 0.2182 0</pose>
+        <always_on>1</always_on>
+        <update_rate>10</update_rate>
+        <visualize>false</visualize>
+        <topic>/tt/tof_front_down</topic>
+        <lidar>
+          <scan>
+            <horizontal>
+              <samples>7</samples>
+              <resolution>1</resolution>
+              <min_angle>-0.2182</min_angle>
+              <max_angle>0.2182</max_angle>
+            </horizontal>
+            <vertical>
+              <samples>1</samples>
+              <resolution>1</resolution>
+              <min_angle>0</min_angle>
+              <max_angle>0</max_angle>
+            </vertical>
+          </scan>
+          <range>
+            <min>0.1</min>
+            <max>1.2</max>
+            <resolution>0.001</resolution>
+          </range>
+          <noise>
+            <type>gaussian</type>
+            <mean>0</mean>
+            <stddev>0.01</stddev>
+          </noise>
+        </lidar>
+      </sensor>
+
+      <!-- 하방 거리 센서: 바닥까지 높이. 최대 6 m와 갱신 10 Hz는 가정. -->
+      <sensor name="tof_down" type="gpu_lidar">
+        <pose>0 0 -0.025 0 1.5708 0</pose>
+        <always_on>1</always_on>
+        <update_rate>10</update_rate>
+        <visualize>false</visualize>
+        <topic>/tt/tof_down</topic>
+        <lidar>
+          <scan>
+            <horizontal>
+              <samples>3</samples>
+              <resolution>1</resolution>
+              <min_angle>-0.0175</min_angle>
+              <max_angle>0.0175</max_angle>
+            </horizontal>
+            <vertical>
+              <samples>1</samples>
+              <resolution>1</resolution>
+              <min_angle>0</min_angle>
+              <max_angle>0</max_angle>
+            </vertical>
+          </scan>
+          <range>
+            <min>0.1</min>
+            <max>6.0</max>
+            <resolution>0.001</resolution>
+          </range>
+          <noise>
+            <type>gaussian</type>
+            <mean>0</mean>
+            <stddev>0.01</stddev>
+          </noise>
+        </lidar>
+      </sensor>
+
+      <sensor name="imu" type="imu">
+        <always_on>1</always_on>
+        <update_rate>100</update_rate>
+        <topic>/tt/imu</topic>
+      </sensor>
+    </link>
+
+    <!-- 기체 기준 속도 명령(x 앞, y 왼쪽, z 위, 요 회전)을 그대로 적용한다.
+         TT SDK의 rc a b c d 명령을 이 속도로 바꾸는 일은 어댑터가 맡는다. -->
+    <plugin filename="gz-sim-velocity-control-system"
+            name="gz::sim::systems::VelocityControl">
+      <topic>/tt/cmd_vel</topic>
+    </plugin>
+
+    <!-- 정답 위치(월드 좌표). 위치 추정 알고리즘 평가용이며 드론 코드가 직접 쓰면 안 된다. -->
+    <plugin filename="gz-sim-odometry-publisher-system"
+            name="gz::sim::systems::OdometryPublisher">
+      <dimensions>3</dimensions>
+      <odom_publish_frequency>50</odom_publish_frequency>
+      <odom_topic>/tt/odometry_gt</odom_topic>
+      <odom_frame>world</odom_frame>
+      <robot_base_frame>tt_drone/base_link</robot_base_frame>
+    </plugin>
+  </model>
+</sdf>

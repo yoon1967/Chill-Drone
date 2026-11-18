@@ -13,11 +13,11 @@ def function_body(name):
 
 class AlertButtonTest(unittest.TestCase):
     def test_alert_buttons_follow_allowed(self):
-        # 자율 연결 끊김·자율 명령 끊김의 넘겨받기, 임무 끝의 착륙은 게이트웨이가 그 명령을 받을 때만 보인다.
-        # 착륙하는 동안이나 명령을 받지 않는 모드에서 누르면 거절 알림만 떴다.
+        # 높이 지켜보기(어긋남·아래 가까움)의 착륙, 자율 연결 끊김·자율 명령 끊김의 넘겨받기, 임무 끝의 착륙은
+        # 게이트웨이가 그 명령을 받을 때만 보인다. 착륙하는 동안이나 명령을 받지 않는 모드에서 누르면 거절 알림만 떴다.
         body = function_body('alertBox')
         self.assertRegex(body, r'const act = \(name, label\) => \(st\.allowed\.includes\(name\) \?')
-        self.assertEqual(re.findall(r'act\("(\w+)"', body), ['takeover', 'takeover', 'land'])
+        self.assertEqual(re.findall(r'act\("(\w+)"', body), ['land', 'land', 'takeover', 'takeover', 'land'])
         self.assertEqual(re.findall(r'data-cmd="(\w+)"', body), ['return_home'])   # 복귀는 아직 화면 자리만(누르면 안내)
 
     def test_person_alert_stop_follows_allowed(self):   # 사람 발견의 "여기서 멈추기"는 자율 탐색 중에만

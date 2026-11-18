@@ -25,7 +25,7 @@ from mode_arbiter import SCHEMA_VERSION
 from tello_link import now_iso
 
 SCHEMA = "gateway-map/0.1"
-MAX_POINTS = 60_000          # 연결기 기본은 20,000. 지도 쪽 최대 융합 셀 50,000보다 조금 넉넉히
+MAX_POINTS = 60_000          # 연결기 기본은 34,000(지도 쪽 실시간 최대 3만 2천 + 사람 2천). 그보다 넉넉히
 MAX_CAMERAS = 20_000
 ALIVE_S = 5.0                # 연결기 소식이 이 시간 안에 왔으면 동작 중
 SNAPSHOT_S = 5.0             # 지도 버전은 이 간격마다 하나씩 남긴다(점 2만 개면 gzip 약 0.3 MB)

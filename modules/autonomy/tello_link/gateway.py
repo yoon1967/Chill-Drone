@@ -14,6 +14,9 @@
 - 자율 비행: `autonomy`(autonomy_link.py)가 `/ws/autonomy`로 붙은 자율 하나와 주고받는다(AUTONOMY_BRIDGE_V0_1).
   속도 명령·임무 상태·ack·request는 판정기에 넘기고, 판정기가 내준 `control`을 자율에 보낸다.
   자율에는 Tello 상태 원문(10Hz)과 `flight_status`(바뀔 때 + 1Hz)를 보낸다. 위치·경로·찾은 사람은 화면용으로 들고 있다.
+- 전방 ToF: 확장 키트(RoboMaster TT)의 `EXT tof?`를 떠 있을 때 0.1초, 땅에서 0.5초마다 묻는다(이륙·착륙·영상 명령 중에는 묻지 않음).
+  `drone_state.front_tof`에 싣고, 새 값(바뀌었거나 같은 값이 0.2초 이상)이면 자율에 `front_tof`로 보낸다(tof_fresh.py).
+  확장 키트가 없으면(값이 아닌 답이 3번 이어짐) 묻지 않고 땅에서 30초마다만 다시 확인한다.
 - 영상 원본 녹화: 영상을 켤 때마다 회차 폴더 video/에 받은 H.264 그대로 한 조각씩 남긴다(video_recorder.py).
   기록 재생·화면 시험용. `record_video=False`(서버 `--no-record-video`)면 남기지 않는다.
 실행(이륙·착륙·비상 정지, rc 전송, 안전 착륙, 높이 상한, 데드맨)은 실기체로 검증한 FlightController가 그대로 맡는다.
@@ -33,7 +36,8 @@ from frame_store import FrameStore
 from map_inbox import MapInbox
 from overlay_store import OverlayStore
 from mode_arbiter import OPERATOR_DEADMAN_S, SCHEMA_VERSION, ModeArbiter
-from tello_link import TelloLink, now_iso
+from tello_link import TelloLink, now_iso, parse_ext_tof
+from tof_fresh import FreshFilter
 
 LOOP_HZ = 20
 SDK_RETRY_S = 2.0            # command 응답이 없으면 이 간격으로 다시 보낸다
@@ -48,6 +52,13 @@ VIDEO_GROUND_OFF_S = None    # 지상에서도 영상을 자동으로 끄지 않
 VIDEO_CMDS = ("video_on", "video_off")
 AUTONOMY_STATE_S = 0.1       # 자율에 Tello 상태 원문을 보내는 간격(약 10Hz)
 AUTONOMY_STATUS_S = 1.0      # flight_status는 바뀔 때 + 이 간격
+FRONT_TOF_PERIOD_S = 0.1     # 떠 있을 때 전방 ToF를 묻는 간격. 센서는 약 0.2초마다 바뀐다(자율 드라이버 driver_core.py와 같다)
+FRONT_TOF_GROUND_PERIOD_S = 0.5  # 땅에서(이륙 전 화면, 손으로 들고 지도 만들기)
+FRONT_TOF_TIMEOUT_S = 0.5    # 실측 왕복 최대 507 ms. 늦게 온 응답은 다음 명령 전에 비운다(TelloLink._drain)
+FRONT_TOF_STALE_S = 1.0      # 이보다 오래된 값은 무효(stale)로 싣는다
+EXT_KIT_PROBES = 3           # 값이 아닌 답(무응답·error·unknown command)이 이만큼 이어지면 확장 키트가 없다고 본다
+EXT_KIT_LOST = 10            # 있다고 본 뒤에는 땅에서 이만큼 이어져야 없다고 본다(실기체도 드물게 unknown command)
+EXT_KIT_REPROBE_S = 30.0     # 없다고 본 뒤에는 땅에서 이 간격으로만 다시 물어 본다(기체를 바꿔 끼운 경우)
 CLIENTS = ("monitor", "control")
 AREA_CONFIRM_S = 30.
 
@@ -96,6 +107,13 @@ class Gateway:
         self._autonomy_state_mono = -1e9
         self._autonomy_status = None            # 마지막으로 보낸 flight_status(시각 뺀 것)
         self._autonomy_status_mono = -1e9
+        # 전방 ToF(확장 키트 EXT tof?). _front_tof_loop가 묻는다
+        self._ext_kit: bool | None = None       # 확장 키트: None 모름, True 있음, False 없음
+        self._ext_misses = 0                    # 값이 아닌 답이 이어진 수
+        self._ext_probe_mono = -1e9             # 없다고 본 뒤 마지막으로 다시 물어 본 때
+        self._tof: tuple[dict, float] | None = None   # (parse_ext_tof 결과, 잰 순간 = 왕복의 가운데)
+        self._tof_fresh = FreshFilter()
+        self._tof_thread: threading.Thread | None = None
         # 영상 원본 녹화(회차 폴더 video/). 영상 수신기와 회차 폴더가 있을 때만
         self.recorder = VideoRecorder(link.log.dir) if record_video and video is not None and link.log else None
 
@@ -105,6 +123,8 @@ class Gateway:
         self._stop.clear()
         self._thread = threading.Thread(target=self._loop, name="drone-gateway", daemon=True)
         self._thread.start()
+        self._tof_thread = threading.Thread(target=self._front_tof_loop, name="gateway-front-tof", daemon=True)
+        self._tof_thread.start()
         return self
 
     def close(self) -> None:
@@ -114,6 +134,8 @@ class Gateway:
             self._release_rc(self._rc_owner)
         if self._thread:
             self._thread.join(timeout=2)
+        if self._tof_thread:
+            self._tof_thread.join(timeout=2)
         while self._flight_action:
             action = self._flight_action
             action.join()
@@ -487,8 +509,74 @@ class Gateway:
             self._link_lost = True
             self.link.event("gateway_link", {"lost": True, "state_age_s": None if age == float("inf") else round(age, 1)})
             self._forget_video()
+            self._forget_ext_kit()
         self._sdk_try_mono = self.clock()
         threading.Thread(target=lambda: self.link.send("command", timeout=1.5, source="gateway"), daemon=True).start()
+
+    # ---------- 전방 ToF (확장 키트 EXT tof?) ----------
+    def _front_tof_loop(self) -> None:
+        while not self._stop.wait(FRONT_TOF_PERIOD_S if self.flight.flying else FRONT_TOF_GROUND_PERIOD_S):
+            try:
+                if self._front_tof_due():
+                    self.poll_front_tof()
+            except Exception as e:   # 끄는 중 소켓이 닫힘 등. 이 스레드가 죽으면 앞 거리가 조용히 사라지므로 계속 돈다
+                if self._stop.is_set():
+                    break
+                self.link.event("front_tof_error", {"error": repr(e)})
+                self._stop.wait(1.0)
+
+    def _front_tof_due(self) -> bool:
+        """지금 물어도 되는가. 이륙·착륙·영상 명령 중에는 묻지 않는다(늦게 온 tof 응답을 그 명령의 응답으로 읽지 않게).
+        확장 키트가 없다고 본 뒤에는 땅에서 EXT_KIT_REPROBE_S마다만."""
+        if not (self.link.sdk_mode and self.arbiter.link_ok) or self.flight.busy or self.arbiter.busy or self._video_busy:
+            return False
+        if self._ext_kit is False:
+            return not self.flight.flying and self.clock() - self._ext_probe_mono >= EXT_KIT_REPROBE_S
+        return True
+
+    def poll_front_tof(self) -> dict:
+        """`EXT tof?` 한 번. 상태(drone_state.front_tof)를 고치고, 새 값이면 자율에 front_tof로 보낸다. 읽은 값을 돌려준다."""
+        t0 = self.clock()
+        r = self.link.send("EXT tof?", timeout=FRONT_TOF_TIMEOUT_S, source="gateway:front_tof")
+        t1 = self.clock()
+        reading = parse_ext_tof(r.response)
+        before = self._ext_kit
+        if reading["valid"] or reading["reason"] in ("out_of_range", "below_min"):   # 센서가 답했다
+            self._ext_misses = 0
+            self._ext_kit = True
+        else:
+            self._ext_misses += 1
+            if before is None and self._ext_misses >= EXT_KIT_PROBES or (
+                    before is True and not self.flight.flying and self._ext_misses >= EXT_KIT_LOST):
+                self._ext_kit = False
+        if self._ext_kit is False:
+            self._ext_probe_mono = t1
+        if self._ext_kit != before:
+            self.link.event("ext_kit", {"present": self._ext_kit, "reason": reading["reason"], "raw": reading["raw"]})
+        self._tof = (reading, (t0 + t1) / 2)   # 잰 순간은 왕복의 가운데로 본다
+        if self._ext_kit is not False:
+            seq = self._tof_fresh.update(reading, t1)
+            if seq is not None and self._autonomy_send is not None:
+                self._send_autonomy({"schema_version": SCHEMA_VERSION, "type": "front_tof", "at": now_iso(),
+                                     **self._front_tof_state(), "seq": seq})
+        return reading
+
+    def _front_tof_state(self) -> dict:
+        """drone_state.front_tof·자율 front_tof의 m·valid·reason·age_s. 오래되면 stale, 확장 키트가 없으면 no_ext_kit."""
+        if self._ext_kit is False:
+            return {"m": None, "valid": False, "reason": "no_ext_kit", "age_s": None}
+        tof = self._tof
+        if tof is None:
+            return {"m": None, "valid": False, "reason": "not_polled", "age_s": None}
+        reading, stamp = tof
+        age = round(max(0.0, self.clock() - stamp), 3)
+        if reading["valid"] and age > FRONT_TOF_STALE_S:
+            return {"m": None, "valid": False, "reason": "stale", "age_s": age}
+        return {"m": reading["front_tof_m"], "valid": reading["valid"], "reason": reading["reason"], "age_s": age}
+
+    def _forget_ext_kit(self) -> None:
+        """끊긴 동안 기체를 바꿔 끼웠을 수 있다. 다시 붙으면 확장 키트가 있는지 처음부터 확인한다."""
+        self._ext_kit, self._ext_misses, self._tof = None, 0, None
 
     def _state_age(self) -> float:
         state = self.link.latest_state()
@@ -606,7 +694,7 @@ class Gateway:
             "height_source": "down_tof",
             "temp_high_c": temp,
             "attitude": {k: si.get(k) for k in ("roll_rad", "pitch_rad", "yaw_rad")},
-            "front_tof": {"m": None, "valid": False, "reason": "not_polled", "age_s": None},
+            "front_tof": self._front_tof_state(),   # 확장 키트 EXT tof?. 없으면 no_ext_kit, 묻기 전 not_polled
             "down_tof": {"m": si.get("tof_m"), "valid": down_valid, "reason": si.get("tof_reason")},
             "pose": self.autonomy.pose_state(),   # 자율 위치(frame map). 자율이 없으면 None
             "mission": snap["mission"],

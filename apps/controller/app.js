@@ -13,21 +13,33 @@ const ui = {
   alertFirst: 0,                        // 사람 발견 알림이 묶고 있는 새 발견의 첫 번호(알림이 닫힌 뒤 오는 발견부터 새로 센다)
   live: false, ws: null, wsOpen: false, everOpen: false, state: null, timeline: [], seq: 0, cache: {}, view: null,
   findings: new Map(), lastDet: null, newFindingAt: 0,   // 실시간 사람 탐지: finding_id → 발견, 영상 위 윤곽선용 최근 탐지
+  hold: null,                           // 처음 연결해 이번 회차 기록(GET /api/events)을 채우는 동안 잡아 둔 WS 메시지
   feed: loadPref("controller.feed", "raw") === "ai" ? "ai" : "raw",   // 영상 칸: raw(원본) / ai(사람 탐지 합성 영상). 합성이 끊기면 원본을 보여 준다
   outline: loadPref("controller.outline", "on") !== "off",   // 영상 칸: 원본 위에 사람 윤곽선을 그릴지(보기 고르기, 이 브라우저에 기억)
   map3d: { mode: loadPref("map-mode", "3d"), host: null, view: null, revision: undefined, loading: false, has: false,  // 3D 점군(지도 연결기)
-    data: null, plan: null, planOf: null },   // 받은 지도 한 버전과 그것으로 만든 평면도(2D 지도 칸, floorplan.js)
+    data: null, plan: null, planOf: null,   // 받은 지도 한 버전과 그것으로 만든 평면도(2D 지도 칸, floorplan.js)
+    photo: loadPref("map3d-photo", "0") === "1", ceiling: loadPref("map3d-ceiling", "0") === "1" },   // 3D 보기: 사진 색(아니면 높이 색)·천장 보기(아니면 뺌)
   mapBig: loadPref("map-big", "0") === "1",   // 지도 칸을 가장 큰 칸(기본 프리셋은 영상)과 바꿔 크게 본다
   mapHidden: new Set(loadPref("controller.map.hidden", "").split(",").filter(Boolean)),   // 지도 칸에서 끈 표시(flown·planned·people)
+  mapView: { zoom: 1, px: 0, py: 0, rot: 0 }, mapFrame: null,   // 2D 지도 보기(mapview.js): 늘 다 보이게 맞춘 그림 위의 확대·이동·회전(웹과 같음)
+  mapHeights: loadPref("controller.map.heights", "0") === "1",   // 막힌 칸을 높이로 나눠 칠하기(우리 것, 기본 꺼짐: 웹과 같은 한 색)
   preset: new URLSearchParams(location.search).get("preset") || loadPref("controller.preset", ""),   // 실시간 감독 칸 배치(presets.js)
   edit: null,   // 화면 편집 중이면 { draft: 고치는 배치, from: 시작한 프리셋 id }
   console: { frame: null, url: null, slot: null, ro: null, loadedUp: null, height: 0, viewportHeight: 0 },
-  autonomy: { connected: false, path: null, people: null, pathRev: 0, peopleRev: 0, loading: false, track: [] },  // 자율 지도(/api/autonomy)
-  selFinding: null,                     // 고른 발견(event_id): 발견 카드와 지도의 발견 지점을 같이 강조한다
-  takeoff: { open: false, confirmedAt: null, sampleChecked: false, focus: null },   // 이륙 전 확인 칸(열림, 주변 확인 보낸 시각, 샘플 체크, 다시 그린 뒤 초점)
+  autonomy: { connected: false, path: null, people: null, pathRev: 0, peopleRev: 0, loading: false, track: [],  // 자율 지도(/api/autonomy)
+              grid: null, gridCodes: null, gridVer: undefined, gridLoading: false, gridAt: 0, found: null, foundVer: undefined,
+              world: null, worldVer: undefined },   // world: 자율 비행 웹이 그리는 지도 파일(시뮬레이터 벽·가구·목적지, 실기체 빈 지도)
+  selFinding: null,                     // 고른 발견(event_id): 그 발견 카드를 강조한다
+  takeoff: { open: false, confirmedAt: null, sampleChecked: false, focus: null,   // 이륙 전 확인 칸(열림, 주변 확인 보낸 시각, 샘플 체크, 다시 그린 뒤 초점)
+    armedUntil: 0 },   // 자율 비행 보기: 시작을 한 번 누른 뒤 4초 안에 한 번 더(자율 비행 웹과 같은 두 번 누르기)
+  goto: { pick: null, view: null },   // 자율 비행 보기: 2D 지도에서 찍은 자리(보내기 전, map m)와 지금 지도 좌표 변환
+  fell: null,   // 드론이 스스로 내려앉은 까닭(flipped·crash·grounded)과 판단한 곳. 다음 이륙·새 회차까지 빨간 띠로 둔다
 };
 if (!["2d", "3d"].includes(ui.map3d.mode)) ui.map3d.mode = "3d";   // 지도 콘솔은 따로 화면(#/map)
 const liveSave = window.createLiveMapSave?.({onChange: () => render()});
+// 지도 그림(board.js): 2D 자율 지도 칸의 진입로·사람 동선. 그리기를 켜면 실시간 감독 지도를 크게(끄면 되돌림)
+const mapBoard = window.createMapBoard?.({ render: () => render(), toast: (msg) => toast(msg), ready: () => ui.live && ui.wsOpen,
+  setBig: (on) => { if (on === ui.mapBig || (on && !ui.mapCanBig)) return false; ui.mapBig = on; return true; } });
 function loadPref(key, fallback) { try { return localStorage.getItem(key) || fallback; } catch (e) { return fallback; } }
 function savePref(key, value) { try { localStorage.setItem(key, value); } catch (e) { /* 저장 안 돼도 화면은 동작 */ } }
 const DET_OVERLAY_MS = 1000;   // 탐지 결과는 실시간 영상보다 조금 늦게 온다. 윤곽선은 1초만 보이고 지연을 함께 적는다
@@ -40,6 +52,14 @@ const MODE = {
 const AUTHORITY = { operator: "사람이 조종 중", autonomy: "자율이 조종 중", none: "제자리 대기" };
 const LINK = { good: ["통신 좋음", "success"], fair: ["통신 주의", "warning"], weak: ["통신 약함", "warning"], critical: ["통신 위험", "danger"] };
 const PHASE = { idle: "대기", running: "진행 중", paused: "멈춤", arrived: "도착", failed: "실패", stopped: "종료" };
+// 자율 비행(ROS) 비행 노드의 단계 이름 → 쉬운 말. 모르는 이름은 PHASE로 보인다(코드를 그대로 적지 않는다).
+const MISSION_STATE = {
+  WAIT_POSE: "위치 잡는 중", READY: "출발 대기", TAKEOFF: "비행 높이로", PLAN: "경로 계산", FOLLOW: "경로 따라 이동",
+  LOOK: "둘러보기", REPLAN: "경로 다시 계산", BACKOFF: "물러나기", RELOC: "위치 다시 잡기", DOOR: "문 지나기", HOLD: "제자리",
+  EXIT: "되짚어 나오기", HOMESPIN: "출발 방향 확인", LAND: "착륙", DONE: "끝", ABORT: "중단",
+  UNSTICK: "닿은 곳에서 떼어 내기", WANDER: "둘러보기 비행", TURN: "방향 바꾸기", GAP: "틈(문) 지나기",
+};
+const missionWords = (m) => !m ? "없음" : MISSION_STATE[m.state] || PHASE[m.phase] || m.phase || "없음";
 const SOURCES = { drone: "드론 상태", autonomy: "자율 비행", detect: "사람 탐지", map: "지도", video: "드론 영상" };
 const REASON = {
   not_allowed_in_mode: "지금 상태에서는 할 수 없습니다", preflight_failed: "이륙 전 점검을 통과하지 못했습니다",
@@ -50,6 +70,9 @@ const REASON = {
   client_not_allowed: "자율 시작은 PC 감독 화면에서만 할 수 있습니다", autonomy_not_connected: "자율 비행이 연결되지 않았습니다",
   autonomy_joined_in_air: "이륙 뒤에 연결된 자율이라 시작할 수 없습니다", replay_source: "기록 재생 중에는 명령을 보내지 않습니다",
   ros_view_read_only: "자율 비행 보기에서는 명령을 보내지 않습니다(조종은 자율 비행 화면에서)",
+  ros_view_not_available: "자율 비행 보기에는 없는 조작입니다(자율 비행 프로그램이 조종합니다)",
+  ros_view_unreachable: "자율 비행 보기 노드에 닿지 않습니다", bad_xy: "보낼 자리 좌표가 잘못됐습니다",
+  commands_disabled: "보기 노드가 명령을 받지 않게 켜져 있습니다(commands:=false)",
   autonomy_rejected: "자율이 시작을 거절했습니다",
   busy: "앞 요청을 처리하는 중입니다", unknown_message: "알 수 없는 요청입니다",
   video_disabled: "게이트웨이가 영상 수신 없이(--no-video) 실행됐습니다", video_receiver_failed: "영상 수신을 시작하지 못했습니다",
@@ -68,13 +91,24 @@ const WHY = {
   autonomy_land: "자율이 착륙 요청", emergency_request: "자율이 비상 요청(제자리 멈춤)",
   mission_arrived: "임무 끝(도착)", mission_failed: "임무 실패",
   route_done: "경로 끝", goal_reached: "목표 도착", operator_stop: "사람이 멈춤", pose_not_ready: "위치가 아직 준비되지 않음",
+  // 자율 비행 보기(--ros-view): 모드는 자율 비행 드라이버 상태를 따른다
+  autonomy_flying: "자율 비행이 띄움", autonomy_landing: "자율 비행이 착륙 중", autonomy_ground: "자율 비행 드론이 땅에 있음",
+  ros_view_unreachable: "자율 비행 보기 노드 끊김", autonomy_driver_silent: "자율 비행 드라이버 응답 없음",
+  drone_not_connected: "자율 비행 드라이버가 드론과 끊김",
+  // 기체가 스스로 내린 까닭(비행 제어 _crash_check, 자율 비행 드라이버). 말은 자율 비행 웹과 같게
+  crash: "충돌로 보임(크게 기운 뒤 바닥)", flipped: "뒤집힘(모터를 끔)", grounded: "스스로 내려앉음(배터리 약함 의심)",
+  cmd_timeout: "비행 노드 속도 명령 끊김",
 };
 const reasonText = (code) => (code == null ? "" : WHY[code] || code);
 
 const esc = (s) => String(s).replace(/[&<>"]/g, (c) => ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;" })[c]);
 const pct = (v) => (v == null ? "없음" : `${Math.round(v * 100)}%`);
-const clock = (s) => (s == null ? "없음" : `${String(Math.floor(s / 60)).padStart(2, "0")}:${String(Math.round(s % 60)).padStart(2, "0")}`);
+// 분:초. 초는 버린다(반올림하면 59.6초가 "00:60"으로 나왔다)
+const clock = (s) => (s == null ? "없음" : `${String(Math.floor(s / 60)).padStart(2, "0")}:${String(Math.floor(s % 60)).padStart(2, "0")}`);
 const meters = (v) => (v == null ? "없음" : `${v.toFixed(2)}m`);
+// 시간 이름: 게이트웨이가 비행 시간을 센 것(자율 비행 보기: 시뮬레이터 Tello는 모터 시간이 늘 0)이면 "비행",
+// 실기체 게이트웨이는 Tello가 준 모터 동작 시간이라 "모터". 샘플은 비행 시간.
+const timeLabel = (long) => (!ui.live || ui.state?.flight_time_s != null ? (long ? "비행 시간" : "비행") : (long ? "모터 동작 시간" : "모터"));
 const chip = (text, tone = "neutral", cls = "") => `<span class="chip ${tone} ${cls}">${esc(text)}</span>`;
 const src = (key) => `<span class="src" title="이 칸에 들어올 팀원 작업물">${esc(SOURCES[key])}</span>`;
 const hhmmss = (iso) => (iso ? new Date(iso).toLocaleTimeString("ko-KR", { hour12: false }) : "");
@@ -100,12 +134,14 @@ function current() {
     if (!ui.wsOpen) { st.mode = ui.everOpen ? "disconnected" : st.mode; st.allowed = []; }
     const w = st.warnings;
     const done = st.mode === "paused" && ["arrived", "failed"].includes(st.mission?.phase);
-    const alert = !ui.wsOpen ? (ui.everOpen ? "gateway" : "connecting") : w.includes("link_weak") ? "link"
+    const alert = !ui.wsOpen ? (ui.everOpen ? "gateway" : "connecting") : fellNow(st) ? "fell"
+      : w.includes("height_mismatch") ? "height_gap" : w.includes("low_altitude") ? "height_low" : w.includes("link_weak") ? "link"
       : w.includes("autonomy_disconnected") && st.mode === "paused" ? "autonomy_lost" : w.includes("autonomy_timeout") ? "autonomy_timeout"
       : w.includes("autonomy_stale") ? "stale" : done ? "mission_done" : null;
     const events = liveFindings();
     const person = !alert && events[0] && Date.now() - ui.newFindingAt < PERSON_ALERT_MS && events[0].review === "unreviewed";
-    return { sc: { alert: alert || (person ? "person" : null) }, st, events, track: [] };
+    const doing = !alert && !person && doingText(st) ? "doing" : null;   // 자율 비행 보기: 다른 알림이 없을 때 지금 하는 일과 이유
+    return { sc: { alert: alert || (person ? "person" : doing) }, st, events, track: [] };
   }
   const sc = S.scenarios[ui.scenario];
   const events = S.events.slice(0, sc.detections).map((e) => ({ ...e, review: ui.reviews[e.event_id] || "unreviewed" }));
@@ -185,13 +221,23 @@ function partStates(st, events) {
 }
 
 function statusStrip(st, events, compact = false) {
-  const [mode, tone] = MODE[st.mode] || [st.mode, "neutral"];
-  const who = [AUTHORITY[st.authority], st.mission?.progress != null ? `진행 ${pct(st.mission.progress)}` : ""].filter(Boolean).join(" · ");
+  const fell = ui.live && fellNow(st);
+  const [mode, modeTone] = MODE[st.mode] || [st.mode, "neutral"];
+  const tone = fell ? "danger" : modeTone;
+  // 조종권 말("제자리 대기" 등)은 떠 있을 때만. 땅·끊김·이륙 중에 "제자리 대기"는 떠서 기다리는 것처럼 읽혔다(11/17)
+  const air = AIR_MODES.includes(st.mode);
+  const who = [fell ? reasonText(ui.fell.reason) : "", air ? AUTHORITY[st.authority] : "",
+    rosTakeoffWords(st) || MISSION_STATE[st.mission?.state] || "",
+    st.mission?.progress != null ? `진행 ${pct(st.mission.progress)}` : ""].filter(Boolean).join(" · ");
   const b = st.battery_pct;
   const btone = b == null ? "" : b <= 15 ? "danger" : b < 30 ? "warning" : "";
   const d = st.down_tof;
-  const hsub = d.valid ? "하방 센서" : d.reason === "below_min_or_on_ground" ? "땅이거나 너무 가까움" : "하방 센서 값 없음";
-  const n = events.length, unreviewed = events.filter((e) => e.review === "unreviewed").length;
+  const hw = ui.live ? st.height_watch : null;   // 게이트웨이 높이 지켜보기(자율 비행 보기): 어긋남·아래 가까움이면 주의 색
+  const hsub = hw?.gap ? `하방 센서 · 자율 추정 ${meters(hw.gap.est_m)}(어긋남)` : hw?.low ? "하방 센서 · 아래가 가까움"
+    : d.valid ? "하방 센서" : d.reason === "below_min_or_on_ground" ? "땅이거나 너무 가까움" : "하방 센서 값 없음";
+  const n = events.length, unreviewed = events.filter((e) => e.review === "unreviewed").length, k = autonomyPeople();
+  const fsub = [n ? `미확인 ${unreviewed}${n > unreviewed ? ` · 정리 ${n - unreviewed}` : ""}` : k ? "" : "아직 없음",
+    k ? `자율 비행 ${k}명` : ""].filter(Boolean).join(" · ");   // 자율 비행이 찾은 사람은 사람 탐지 발견과 따로 센다
   // 연결 전·꺼짐(빈 점)은 말을 줄이고 마우스를 올리면 설명을 보인다. 주의·끊김·모름은 말을 붙인다.
   const parts = partStates(st, events).map(([name, [ptone, word, tip]]) => {
     const say = word && (ptone !== "neutral" || word === "모름");
@@ -201,9 +247,9 @@ function statusStrip(st, events, compact = false) {
   const recv = st.link.state_hz != null ? ` · ${st.link.state_hz}Hz · ${st.link.rtt_ms}ms` : "";
   return `<section class="status ${compact ? "compact" : ""}" data-part="strip" aria-label="비행 상태">
     ${statCard("모드", esc(mode), esc(who), tone === "neutral" ? "" : tone)}
-    ${statCard("배터리", b == null ? "없음" : `${b}%`, `${ui.live ? "모터" : "비행"} ${clock(st.flight_time_s)}`, btone)}
-    ${statCard("높이", d.valid ? meters(d.m) : "없음", hsub)}
-    ${statCard("발견", n ? `${n}건` : "없음", n ? `미확인 ${unreviewed}${n > unreviewed ? ` · 정리 ${n - unreviewed}` : ""}` : "아직 없음", n ? "person" : "")}
+    ${statCard("배터리", b == null ? "없음" : `${b}%`, `${timeLabel(false)} ${clock(st.flight_time_s)}`, btone)}
+    ${statCard("높이", d.valid ? meters(d.m) : "없음", hsub, hw?.gap || hw?.low ? "warning" : "")}
+    ${statCard("발견", n ? `${n}건` : "없음", fsub, n || k ? "person" : "")}
     <div class="stat wide"><span>연결</span><p class="parts">${parts}</p><small>${esc(linkText + recv)}</small></div>
   </section>`;
 }
@@ -223,6 +269,55 @@ function personAlert(events, st) {
     <div class="alert-actions" data-event="${esc(e.event_id)}">${reviewButtons(e)}${stop}</div></div>`;
 }
 
+// 자율 비행 보기: 지금 하는 일과 이유(비행 노드 /tt/mission_note → 게이트웨이 mission.note). 자율 비행 웹 머리글 밑 띠와 같은 때·같은 말.
+// 11/16 실기체: 탐색 시간 120초가 다 돼 출발점으로 돌아와 내렸는데, 화면에는 단계만 나와 왜 내렸는지 몰랐다.
+// 알림 띠의 맨 아래 차례다(게이트웨이 연결·사람 발견 알림이 먼저). [굵은 말, 나머지, 색, 매초 바뀜(남은 시간)] 또는 null
+const ROS_AIRBORNE = ["TAKEOFF", "PLAN", "FOLLOW", "REPLAN", "BACKOFF", "HOLD", "UNSTICK", "EXIT", "LOOK", "RELOC", "HOMESPIN",
+  "DOOR", "WANDER", "TURN", "GAP", "LAND"];   // 게이트웨이 AIRBORNE·자율 비행 웹과 같은 공중 단계
+function doingText(st) {
+  const m = st.source === "ros" ? st.mission : null, n = m?.note;
+  if (!n) return null;
+  const home = n.return_home === false ? "그 자리에 내립니다" : "출발점으로 돌아와 내립니다";
+  if (m.state === "DONE") return ["비행 끝", `내린 이유: ${n.why_end || "기록 없음"}`, "success"];
+  if (m.state === "ABORT") return ["중단", `이유: ${n.why_end || "기록 없음"}`, "danger"];
+  if (n.stale) return null;   // 비행 노드가 3초 넘게 조용하다(꺼짐): 끝·중단 이유만 남긴다
+  if (m.state === "LAND") return ["내리는 중", `이유: ${n.why_end || "기록 없음"}`, "warning"];
+  if (n.returning) {
+    return ["출발점으로 돌아가는 중", `이유: ${n.why_return || "기록 없음"} · 더 보내려면 지도를 찍고 [여기로 보내기](다녀온 뒤 다시 돌아옵니다)`, "warning"];
+  }
+  if (!n.search || !ROS_AIRBORNE.includes(m.state)) return null;
+  const left = n.search.limit - n.search.elapsed;
+  if (left > 0) {
+    return ["자율 탐색 중", `남은 탐색 시간 ${clock(left)}(전체 ${clock(n.search.limit)}) · 다 되면 ${home}`, left <= 30 ? "warning" : "neutral", true];
+  }
+  return [`탐색 시간(${Math.round(n.search.limit)}초)이 다 됐습니다`, `${activeGoal(st) ? "찍은 자리를 다녀온 뒤" : "하던 동작을 마치면"} ${home}`, "warning"];
+}
+// 비행 기록 한 줄: 돌아가기 시작한 이유와 내리는(중단한) 이유(게이트웨이 mission_note, 자율 비행 웹 기록과 같은 때)
+const missionNoteText = (d) => (d.what === "returning" ? `자율 비행: ${d.why_return} 출발점으로 돌아갑니다`
+  : `자율 비행: ${d.state === "ABORT" ? "중단한" : "내리는"} 이유 · ${d.why_end}`);
+
+// 드론이 스스로 내려앉았다: 비행 제어·자율 비행 드라이버의 충돌 판단(_crash_check)이 모드를 땅으로 바꾼 까닭.
+// 11/17 실기체: 뒤집혀 모터가 꺼졌는데 비행 기록 한 줄뿐이었고, 그 10초 동안 알림 띠는 사람 발견 알림이 차지했다.
+// 그래서 사람 발견보다 앞에 빨간 띠로 두고, 다음 이륙이나 새 회차까지 남긴다(그사이 드론이 꺼져 끊겨도).
+const FELL = {
+  flipped: ["드론이 뒤집혔습니다", "모터를 껐습니다"],
+  crash: ["충돌로 보입니다", "크게 기운 뒤 바닥에 내려앉았습니다"],
+  grounded: ["드론이 스스로 내려앉았습니다", "충돌은 아니고 배터리 약함이 의심됩니다(완충 배터리로 바꾸세요)"],
+};
+// 실시간 게이트웨이는 안전 착륙(landing, 까닭 flipped 등) → 땅(landed), 자율 비행 보기는 바로 땅(까닭 flipped 등)으로 바뀐다
+const FLYING_MODES = ["manual", "auto", "paused"];
+function noteFell(st) {
+  const t = st.last_transition;
+  if (t && ["landing", "grounded"].includes(t.to) && FELL[t.reason]) ui.fell = { reason: t.reason, source: st.source };
+  else if (FLYING_MODES.includes(st.mode) || st.flight_busy === "takeoff") ui.fell = null;   // 다시 떴다
+}
+const fellNow = (st) => !!ui.fell && !FLYING_MODES.includes(st.mode);
+function fellAlert() {
+  const [head, text] = FELL[ui.fell.reason];
+  const who = ui.fell.source === "ros" ? "자율 비행 드라이버가 판단" : "비행 제어가 판단";
+  return `<div class="alert danger" role="alert"><b>${head}</b><span>${text}(${who}). 드론을 확인하세요: 프로펠러·가드·모터. 다음 이륙 전까지 보입니다.</span></div>`;
+}
+
 function alertBox(sc, events, st) {
   // 알림 띠의 버튼은 게이트웨이가 지금 받는 명령일 때만 보인다. 눌러도 거절 알림만 뜨는 버튼을 두지 않는다(사람 발견의 멈추기는 personAlert).
   const act = (name, label) => (st.allowed.includes(name) ? `<button data-cmd="${name}">${label}</button>` : "");
@@ -231,6 +326,18 @@ function alertBox(sc, events, st) {
     body = `<div class="alert warning slim" role="status"><b>게이트웨이 연결 중</b><span>연결되면 버튼이 열립니다.</span></div>`;
   } else if (sc.alert === "gateway") {
     body = `<div class="alert danger" role="alert"><b>게이트웨이 연결 끊김</b><span>다시 연결하는 중입니다. 이 화면에서 보낸 조종 입력은 0으로 처리됩니다.</span></div>`;
+  } else if (sc.alert === "fell") {
+    body = fellAlert();
+  } else if (sc.alert === "height_gap" && st.height_watch?.gap) {
+    // 게이트웨이 높이 지켜보기(height_watch.py): 비행에 끼어들지 않고 알리기만. 11/17 충돌은 이 상태로 바닥까지 내려갔다
+    const g = st.height_watch.gap, high = g.gap_m > 0;
+    body = `<div class="alert warning" role="alert"><b>자율 비행이 높이를 실제보다 ${Math.abs(g.gap_m).toFixed(1)} m ${high ? "높게" : "낮게"} 보고 있습니다</b>
+      <span>추정 ${meters(g.est_m)} · 기압 ${meters(g.baro_m)} · 하방 ${meters(g.tof_m)}. ${high ? "실제보다 낮게 내려갈" : "실제보다 높이 오를"} 수 있습니다. 위험하면 착륙하세요.</span>
+      ${act("land", "착륙")}</div>`;
+  } else if (sc.alert === "height_low" && st.height_watch?.low) {
+    const t = st.height_watch.low.tof_m;
+    body = `<div class="alert warning" role="alert"><b>드론 아래가 가깝습니다(하방 ${t == null ? "0.1 m 아래" : meters(t)})</b>
+      <span>바닥이나 가구 위 0.5 m 안에서 2초 넘게 날고 있습니다. 위험하면 착륙하세요.</span>${act("land", "착륙")}</div>`;
   } else if (sc.alert === "person" && events[0]) {
     body = personAlert(events, st);
   } else if (sc.alert === "link") {
@@ -249,6 +356,9 @@ function alertBox(sc, events, st) {
       ${act("land", "착륙")}</div>`;
   } else if (sc.alert === "stale") {
     body = `<div class="alert warning" role="alert"><b>자율 응답 지연</b><span>0.5초 넘게 명령이 없어 제자리에서 기다립니다. 2초가 지나면 일시정지합니다.</span></div>`;
+  } else if (sc.alert === "doing") {
+    const [head, text, tone, ticking] = doingText(st);   // 남은 시간은 매초 바뀌어 화면 읽기 프로그램에 알리지 않는다
+    body = `<div class="alert ${tone} slim" ${ticking ? "" : 'role="status"'}><b>${esc(head)}</b><span>${esc(text)}</span></div>`;
   }
   return `<div class="alert-slot" data-part="alert">${body}</div>`;
 }
@@ -341,7 +451,7 @@ function detectionCard(e, big = false) {
     : `<div class="thumb" aria-hidden="true"><span>${n}</span></div>`;
   const spot = e.drone?.pose?.frame === "map" ? e.drone.pose : null;   // 그때 자율 위치(사진을 찍을 때 드론 자리)
   const where = !big ? ""
-    : e.seen_at ? `<div class="muted">${spot ? `그때 드론 위치 (${spot.x_m.toFixed(1)}, ${spot.y_m.toFixed(1)}) m · 지도의 ${n}번 네모` : "그때 드론 위치 없음(자율 비행 연결 전)"} · ${(MODE[e.drone?.mode] || ["없음"])[0]} · 높이 ${meters(e.drone?.height_m)} · 사람 위치는 아직 없음</div>`
+    : e.seen_at ? `<div class="muted">${spot ? `그때 드론 위치 (${spot.x_m.toFixed(1)}, ${spot.y_m.toFixed(1)}) m` : "그때 드론 위치 없음(자율 비행 연결 전)"} · ${(MODE[e.drone?.mode] || ["없음"])[0]} · 높이 ${meters(e.drone?.height_m)} · 사람 위치는 아직 없음</div>`
     : `<div class="muted">발견 위치: 그때 드론 위치 (${poseAt(e.pts_us / 1e6).x_m.toFixed(1)}, ${poseAt(e.pts_us / 1e6).y_m.toFixed(1)}) m · 사람 위치는 아직 없음</div>`;
   const more = e.seen_at ? ` · ${e.people > 1 ? `최대 ${e.people}명 · ` : ""}${e.events}번 봄` : ` · ${esc(e.frame_id)}`;   // 이 발견으로 묶인 탐지 장면 수
   return `<article class="det ${big ? "big" : ""} ${e.review}${ui.selFinding === e.event_id ? " sel" : ""}" data-event="${esc(e.event_id)}" tabindex="0">
@@ -388,8 +498,10 @@ function detectionList(events, big = false) {
     : ds.ever ? "사람 탐지 결과가 끊겼습니다 · 실행기로 켜면 함께 켜집니다"
     : "사람 탐지가 아직 연결되지 않았습니다 · 실행기로 켜면 함께 켜지고, 발견은 최신순으로 쌓입니다";
   const body = events.length ? events.map((e) => detectionCard(e, big)).join("") : `<p class="empty">${esc(empty)}</p>`;
+  const k = autonomyPeople();
+  const found = k ? `<span class="chip person src-inline" title="자율 비행이 지도에 찍은 사람(2D 지도의 원). 사람 탐지 발견(사진)과 따로 셉니다">자율 비행이 찾은 사람 ${k}명</span>` : "";
   return `<section class="panel dets ${big ? "big" : ""}" data-part="dets" aria-label="발견 목록">
-    <header><h2>발견</h2>${src("detect")}${ds ? chip(ds.text, ds.tone, "src-inline") : ""}</header>
+    <header><h2>발견</h2>${src("detect")}${ds ? chip(ds.text, ds.tone, "src-inline") : ""}${found}</header>
     <div class="det-list">${body}</div>
   </section>`;
 }
@@ -399,21 +511,38 @@ const MAP_MODE_TIP = { "2d": "자율 비행이 보낸 드론 위치·경로·찾
 
 // 지도 칸 표시 고르기: 범례가 곧 켜고 끄는 버튼이다. 끈 표시는 이 브라우저에 기억한다(controller.map.hidden).
 // 드론 위치와 출발은 늘 그린다. 3D 점군은 지나온 길(카메라 경로)만 고른다(사람 점은 지도 파트가 점군에 칠한다).
-const LAYER_SWATCH = { flown: "flown", planned: "planned", people: "mark", finds: "find" };
+const LAYER_SWATCH = { flown: "flown", planned: "planned" };   // 샘플 지도. 3D·평면도는 "cam"을 준다
 const shown = (key) => !ui.mapHidden.has(key);
 
-// 발견 지점: 그 발견(사람 탐지 파트)의 대표 사진을 찍을 때 드론이 있던 자리. 사람 위치가 아니다.
-// 자율 비행이 찍은 사람(원)과 나누려고 번호 네모로 그린다. 번호는 발견 칸 번호, 색은 확인 상태(미확인·확인·오탐).
-const REVIEW_LABEL = { confirmed: "확인됨", false_positive: "오탐", unreviewed: "미확인" };
-function findMark(x, y, e, n) {
-  const tip = `발견 ${n}번 · ${REVIEW_LABEL[e.review] || "미확인"} · 그때 드론 위치(사람 위치 아님) · 누르면 발견 칸에서 찾습니다`;
-  return `<g class="find ${e.review}${ui.selFinding === e.event_id ? " sel" : ""}" data-event="${esc(e.event_id)}"><title>${esc(tip)}</title>`
-    + `<rect x="${(+x - 9).toFixed(1)}" y="${(+y - 9).toFixed(1)}" width="18" height="18" rx="4"/><text x="${x}" y="${(+y + 4).toFixed(1)}">${n}</text></g>`;
+// 발견 지점(사람 탐지가 사진을 찍을 때 드론이 있던 자리)은 2D 지도에 그리지 않는다(11/17 "추가된 게 많아 가시성이 안 좋다":
+// 사람 위치가 아니라 구조에 쓸모가 적고 사람 원 옆에 겹쳤다). 그때 드론 위치는 발견 카드·탐색 결과에 글로 남는다.
+
+function layerButton(key, label, tip, swatch = LAYER_SWATCH[key]) {
+  const on = shown(key);
+  return `<button class="layer" data-map-layer="${key}" aria-pressed="${on}" title="${esc(`${tip} · 누르면 ${on ? "숨깁니다" : "다시 보입니다"}`)}"><i class="lg ${swatch}"></i>${esc(label)}</button>`;
 }
 
-function layerButton(key, label, tip) {
-  const on = shown(key);
-  return `<button class="layer" data-map-layer="${key}" aria-pressed="${on}" title="${esc(`${tip} · 누르면 ${on ? "숨깁니다" : "다시 보입니다"}`)}"><i class="lg ${LAYER_SWATCH[key]}"></i>${esc(label)}</button>`;
+// 찾은 장애물(비행 노드 discovered.json, 지도에 없던 것): 자율 비행 웹과 같이 빨간 면에 빨간 실선 테두리, 사람만으로 생긴 것도 그린다.
+// 이름(비행 노드 sources: YOLO가 피하는 물체 AVOID_CLASSES·닿음·센서를 쉬운 말로)은 마우스를 올리면 보인다.
+const FOUND_NAME = { "yolo:chair": "의자", "yolo:dining table": "탁자", "yolo:couch": "소파", "yolo:bed": "침대", "yolo:bench": "벤치",
+  "yolo:potted plant": "화분", "yolo:refrigerator": "냉장고", "yolo:toilet": "변기", "yolo:suitcase": "여행 가방", "yolo:backpack": "가방",
+  "yolo:bicycle": "자전거", "yolo:dog": "개", "yolo:cat": "고양이", "yolo:person": "사람", contact: "닿음", tof: "앞 센서", under: "밑 센서" };
+function foundTip(w) {
+  const src = (Array.isArray(w.sources) ? w.sources : []).filter((x) => typeof x === "string");
+  const name = [...new Set(src.map((x) => FOUND_NAME[x] || x.replace(/^yolo:/, "")))].join("·");
+  return `찾은 장애물(지도에 없던 것)${name ? ` · ${name}${src.some((x) => x.startsWith("yolo:")) ? "(YOLO)" : ""}` : ""} · ${w.sx.toFixed(1)}×${w.sy.toFixed(1)} m`;
+}
+
+// 자율 비행 웹 지도 범례 그대로(autonomy_web/static/index.html .legend): 카메라 지도는 지도가 있을 때, 사람은 찾았을 때만
+function webLegend(hasGrid, hasPeople, hasTruth = false) {
+  const i = (cls) => `<i class="wl ${cls}"></i>`;
+  return `<span class="wlegend">`
+    + `<span>${i("wall")}벽</span><span>${i("obst")}가구·장애물</span><span>${i("found")}찾은 장애물(지도에 없던 것)</span>`
+    + (hasGrid ? `<span>${i("cam")}카메라 지도 막힘 ${i("cam-sus")}의심(경로는 피함) ${i("seen")}본 곳</span>` : "")
+    + (hasPeople ? `<span>${i("person")}찾은 사람(길 막음) ${i("person-gone")}지나간 사람(다시 봤는데 없음)</span>` : "")
+    + `<span>${i("path")}계획 경로</span><span>${i("trail")}지나온 길(추정)</span><span>${i("drone")}드론(추정)</span>`
+    + `<span>${i("goal")}목적지</span><span>${i("pick")}찍은 자리(운용자)</span>`
+    + (hasTruth ? `<span>${i("truth")}정답 위치(시뮬레이션)</span>` : "") + `</span>`;
 }
 
 // 지도 칸 아래 줄: 상태 칩과 설명(왼쪽), 범례 겸 표시 고르기(오른쪽).
@@ -429,16 +558,33 @@ function mapPanel(st, events, track, tall = false) {
   const seg = ui.live && !tall ? `<div class="seg map-mode" role="group" aria-label="지도 보기">
       ${Object.entries(MAP_MODES).map(([m, label]) => `<button data-map-mode="${m}" class="${mode === m ? "on" : ""}" aria-pressed="${mode === m}" title="${MAP_MODE_TIP[m]}">${label}</button>`).join("")}</div>
       ${!ui.mapCanBig ? "" : `<button class="map-big" data-map-big aria-pressed="${ui.mapBig}" title="${ui.mapBig ? "지도를 원래 칸으로 되돌립니다" : "지도와 가장 큰 칸의 자리를 바꿔 지도를 크게 봅니다"}">${ui.mapBig ? "⤡ 원래대로" : "⤢ 크게"}</button>`}` : "";
-  // 출처는 칩 하나: 2D는 자율 비행이 보낸 위치·경로·찾은 사람, 3D와 평면도는 지도 파트의 점군. 샘플의 발견 지점은 사람 탐지 결과다.
+  // 출처는 칩 하나: 2D는 자율 비행이 보낸 위치·경로·찾은 사람, 3D와 평면도는 지도 파트의 점군. 샘플은 지어낸 회차다.
   const source = mode === "3d" || plan ? "지도 파트" : ui.live ? "자율 비행" : "자율 비행 · 사람 탐지";   // 제목 "지도"와 겹치지 않게 "지도 파트"
   const head = `<header><h2>지도</h2><span class="src" title="이 칸을 채우는 파트">${source}</span><span class="spacer"></span>${seg || '<a class="link" href="#/map">지도 콘솔 열기</a>'}</header>`;
   if (mode === "3d") return map3dPanel(st, head);
   if (plan) return floorPlanPanel(st, head, plan, tall);
-  if (ui.live) return autonomyMapPanel(st, head, tall, events);
+  if (ui.live) return autonomyMapPanel(st, head, tall);
   return sampleMapPanel(st, events, track, head, tall);
 }
 
-// 샘플 2D 지도(게이트웨이 없이): 방 구획·지나온 길·계획 경로·발견 지점. 발견 지점은 그때 드론 위치다(사람 위치 아님).
+// 계획 경로(자율 비행이 가려는 길): 자율 비행 웹과 같이 2 px 점선(6·4)과 처음·끝을 포함한 모든 점에 점(반지름 3)
+function plannedSvg(pts, X, Y) {
+  if (!pts.length) return "";
+  const xy = pts.map(([x, y]) => [X(x), Y(y)]);
+  const line = xy.length > 1 ? `<polyline class="planned" points="${xy.map((p) => p.join(",")).join(" ")}"/>` : "";
+  return `<g class="plan"><title>계획 경로: 자율 비행이 가려는 길</title>${line}`
+    + `${xy.map(([x, y]) => `<circle class="plan-pt" cx="${x}" cy="${y}" r="3"/>`).join("")}</g>`;
+}
+// 드론(웹 drawMap): 끝 (r, 0)·뒤 (−0.7r, ±0.6r)·오목 (−0.4r, 0) 화살촉을 기수 방향으로 돌린다(지도 y가 위라 −yaw)
+function droneArrow(x, y, yawRad, r) {
+  const f = (v) => v.toFixed(1);
+  return `<path transform="translate(${x},${y}) rotate(${f(-yawRad * 180 / Math.PI)})" `
+    + `d="M${f(r)},0 L${f(-0.7 * r)},${f(0.6 * r)} L${f(-0.4 * r)},0 L${f(-0.7 * r)},${f(-0.6 * r)} Z"/>`;
+}
+// 출발(웹 spawn): 14×14 회색 네모, 글 없음
+const spawnSvg = (x, y, tip) => `<rect class="spawn" x="${(+x - 7).toFixed(1)}" y="${(+y - 7).toFixed(1)}" width="14" height="14"><title>${esc(tip)}</title></rect>`;
+
+// 샘플 2D 지도(게이트웨이 없이): 방 구획·지나온 길·계획 경로·지금 드론 위치.
 function sampleMapPanel(st, events, track, head, tall) {
   const pts = [...S.track, ...S.plan, ...S.rooms.flatMap((r) => [{ x_m: r.x, y_m: r.y }, { x_m: r.x + r.w, y_m: r.y + r.h }])];
   const minX = Math.min(...pts.map((p) => p.x_m)) - 0.6, maxX = Math.max(...pts.map((p) => p.x_m)) + 0.6;
@@ -450,21 +596,16 @@ function sampleMapPanel(st, events, track, head, tall) {
     <text class="room-label" x="${+X(r.x) + 8}" y="${+Y(r.y + r.h) + 18}">${esc(r.name)}</text>`).join("");
   const path = shown("flown") && track.length > 1 ? `<polyline class="flown" points="${track.map((p) => `${X(p.x_m)},${Y(p.y_m)}`).join(" ")}"/>` : "";
   const planned = shown("planned") && st.mission && st.mode !== "grounded"
-    ? `<polyline class="planned" points="${S.plan.map((p) => `${X(p.x_m)},${Y(p.y_m)}`).join(" ")}"/>` : "";
-  const marks = !shown("finds") ? "" : events.map((e) => {
-    const p = poseAt(e.pts_us / 1e6);
-    return findMark(X(p.x_m), Y(p.y_m), e, findingNo(e));
-  }).join("");
+    ? plannedSvg(S.plan.map((p) => [p.x_m, p.y_m]), X, Y) : "";
   const now = track[track.length - 1] || S.track[0];
-  const drone = `<g class="drone" transform="translate(${X(now.x_m)},${Y(now.y_m)})"><path d="M0,-11 L8,7 L0,3 L-8,7 Z"/></g>`;
-  const start = `<circle class="start" cx="${X(0)}" cy="${Y(0)}" r="7"/><text class="start-label" x="${+X(0) + 12}" y="${+Y(0) + 4}">출발</text>`;
-  const layers = layerButton("flown", "지나온 길", "드론이 지나온 길") + layerButton("planned", "계획 경로", "자율 비행이 가려는 길")
-    + layerButton("finds", "발견 지점", "사람을 발견했을 때 드론이 있던 자리(사람 위치 아님). 번호는 발견 칸 번호");
+  const drone = `<g class="drone">${droneArrow(X(now.x_m), Y(now.y_m), Math.PI / 2, 9)}</g>`;
+  const start = spawnSvg(X(0), Y(0), "출발");
+  const layers = layerButton("flown", "지나온 길", "드론이 지나온 길") + layerButton("planned", "계획 경로", "자율 비행이 가려는 길");
   return `<section class="panel map ${tall ? "tall" : ""}" data-part="map" aria-label="2D 지도">${head}
-    <svg viewBox="0 0 ${W} ${H}" preserveAspectRatio="xMidYMid meet" role="img" aria-label="샘플 지도: 지나온 길, 계획 경로, 발견 지점, 지금 드론 위치">
-      ${rooms}${path}${planned}${start}${marks}${drone}
+    <svg viewBox="0 0 ${W} ${H}" preserveAspectRatio="xMidYMid meet" role="img" aria-label="샘플 지도: 지나온 길, 계획 경로, 지금 드론 위치">
+      ${rooms}${path}${planned}${start}${drone}
     </svg>
-    ${mapFoot(null, shown("finds") && events.length ? "발견 지점은 그때 드론 위치입니다(사람 위치 아님)" : "", layers)}
+    ${mapFoot(null, "", layers)}
   </section>`;
 }
 
@@ -474,7 +615,7 @@ function sampleMapPanel(st, events, track, head, tall) {
 function syncAutonomy(st) {
   const a = ui.autonomy, s = st.autonomy;
   if (!s) return;
-  if (s.connected && !a.connected) a.track = [];
+  if (s.connected && !a.connected) { a.track = []; loadTrail(); }   // 새로 연 화면·새 연결: 게이트웨이가 모아 둔 지나온 길로 채운다
   a.connected = s.connected;
   const p = st.pose;
   if (p && p.valid) {
@@ -483,12 +624,168 @@ function syncAutonomy(st) {
     if (a.track.length > 3000) a.track.splice(0, a.track.length - 3000);
   }
   if ((s.path_revision !== a.pathRev || s.people_revision !== a.peopleRev) && !a.loading) loadAutonomy();
+  // 자율 비행이 만드는 지도(벽·장애물): 번호가 바뀔 때만, 1초에 한 번까지. 새 자율 연결이면 지난 지도는 지운다
+  if (s.grid && s.grid.ver !== a.gridVer && !a.gridLoading && performance.now() - a.gridAt > GRID_MIN_MS) loadGrid();
+  else if (!s.grid && a.gridVer !== undefined) clearGrid();
+  if ((s.discovered?.version ?? null) !== (a.foundVer ?? null)) loadFound(s.discovered);
+  if ((s.world_map?.version ?? null) !== (a.worldVer ?? null)) loadWorldMap(s.world_map);
 }
+
+// 지나온 길은 화면이 받은 위치로 그린다. 비행 중에 새로 연 화면은 처음 길이 없어서(11/17), 게이트웨이가 이번 연결에서
+// 모아 둔 길(GET /api/autonomy/trail)이 더 길면 그것으로 바꾼다(그 뒤로는 받은 위치를 이어 붙인다).
+async function loadTrail() {
+  try {
+    const r = await fetch("/api/autonomy/trail", { cache: "no-store" });
+    if (!r.ok) return;
+    const pts = ((await r.json()).points || []).filter((p) => Array.isArray(p) && Number.isFinite(p[0]) && Number.isFinite(p[1]));
+    if (pts.length > ui.autonomy.track.length) { ui.autonomy.track = pts.slice(-3000); render(); }
+  } catch (e) { /* 지나온 길을 내주지 않는 게이트웨이: 연 뒤부터 그린다 */ }
+}
+
+// ---------- 자율 비행 지도(비행 노드 /tt/obstacle_grid, 자율 비행 웹 /api/grid와 같은 칸 코드 0 모름·1 본 곳·2 의심·3 막힘) ----------
+const GRID_MIN_MS = 1000;
+async function loadGrid() {
+  const a = ui.autonomy;
+  a.gridLoading = true;
+  a.gridAt = performance.now();
+  try {
+    const r = await fetch("/api/autonomy/grid", { cache: "no-store" });
+    if (r.ok) {
+      const g = await r.json(), bin = atob(g.cells), codes = new Uint8Array(bin.length);
+      for (let i = 0; i < bin.length; i++) codes[i] = bin.charCodeAt(i);
+      if (codes.length === g.w * g.h) {
+        a.gridCodes = { x0: g.x0, y0: g.y0, w: g.w, h: g.h, res: g.res, counts: g.counts, codes, heights: gridHeights(g) };
+        a.gridVer = g.ver;
+        await paintGrid();
+      }
+    }
+  } catch (e) { /* 다음 상태 때 다시 */ }
+  a.gridLoading = false;
+  render();
+}
+// 칸 코드 → 그림(한 칸 = 한 화소, 테마 색). 지도 y는 위가 +라 그림 줄은 뒤집는다. 본 곳이 있는 범위(bbox)도 셈한다
+function cssRgba(name) {
+  const t = document.createElement("canvas").getContext("2d");
+  t.fillStyle = getComputedStyle(document.documentElement).getPropertyValue(name).trim() || "#000";
+  t.fillRect(0, 0, 1, 1);
+  return t.getImageData(0, 0, 1, 1).data;
+}
+async function paintGrid() {
+  const a = ui.autonomy, g = a.gridCodes;
+  if (!g) return;
+  if (g.heights && ui.mapHeights) return paintHeightGrid(a, g);   // "벽·가구 나눠 보기"를 켰을 때만 높이로 나눠 칠한다(아래). 기본은 웹과 같은 한 색
+  const cv = document.createElement("canvas");
+  cv.width = g.w; cv.height = g.h;
+  const cx = cv.getContext("2d"), img = cx.createImageData(g.w, g.h);
+  const colors = [null, cssRgba("--map-seen"), cssRgba("--map-suspect"), cssRgba("--map-blocked")];
+  let i0 = Infinity, i1 = -1, j0 = Infinity, j1 = -1;
+  for (let j = 0; j < g.h; j++) {
+    for (let i = 0; i < g.w; i++) {
+      const c = colors[g.codes[j * g.w + i]];
+      if (!c) continue;
+      const k = ((g.h - 1 - j) * g.w + i) * 4;
+      img.data[k] = c[0]; img.data[k + 1] = c[1]; img.data[k + 2] = c[2]; img.data[k + 3] = c[3];
+      i0 = Math.min(i0, i); i1 = Math.max(i1, i); j0 = Math.min(j0, j); j1 = Math.max(j1, j);
+    }
+  }
+  cx.putImageData(img, 0, 0);
+  const blob = await new Promise((done) => cv.toBlob(done));
+  if (a.grid?.url) URL.revokeObjectURL(a.grid.url);   // 지도 그림은 blob 주소로: 지도 칸 HTML이 커지지 않게
+  a.grid = { x0: g.x0, y0: g.y0, w: g.w, h: g.h, res: g.res, counts: g.counts, url: blob ? URL.createObjectURL(blob) : null,
+             bbox: i1 < 0 ? null : [g.x0 + i0 * g.res, g.y0 + j0 * g.res, g.x0 + (i1 + 1) * g.res, g.y0 + (j1 + 1) * g.res] };
+}
+// 지도 높이 층(11/17): 보기 노드가 비행 노드 3D 카메라 지도(camera_map.npz)로 칸마다 0 없음·1 낮은 물체·2 벽·높은 것·3 높이 모름을 준다.
+// 칸 수가 지도와 같을 때만 쓴다. 없으면 null(옛 보기 노드·가짜 노드·시뮬레이터): 지금처럼 막힘 한 색.
+function gridHeights(g) {
+  if (typeof g.heights !== "string") return null;
+  const bin = atob(g.heights);
+  if (bin.length !== g.w * g.h) return null;
+  const h = new Uint8Array(bin.length);
+  for (let i = 0; i < bin.length; i++) h[i] = bin.charCodeAt(i);
+  return h;
+}
+// 높이 층으로 칠하기: 막힌 칸만 나눈다. 벽·높은 것 --map-wall, 낮은 물체 --map-low 면에 --map-blocked 테두리, 그 밖(높이 모름, 3D 지도가
+// 30초마다 저장돼 아직 모르는 새 칸)은 --map-unsure. 의심·본 곳은 지금 색 그대로. 테두리를 그리려고 칸마다 GRID_PX화소로 그린다.
+// 막힌 칸 종류별 수도 센다(높이 층이 있다는 표시).
+const GRID_PX = 4;
+async function paintHeightGrid(a, g) {
+  const S = GRID_PX, W = g.w * S, H = g.h * S, n = g.w * g.h;
+  const cv = document.createElement("canvas");
+  cv.width = W; cv.height = H;
+  const cx = cv.getContext("2d"), img = cx.createImageData(W, H), px = img.data;
+  const kind = new Uint8Array(n), kinds = { low: 0, tall: 0, unsure: 0 };   // 칸 종류: 0 안 그림·1 본 곳·2 의심·3 높이 모름·4 낮은 물체·5 벽·높은 것
+  let i0 = Infinity, i1 = -1, j0 = Infinity, j1 = -1;
+  for (let c = 0; c < n; c++) {
+    let k = g.codes[c];
+    if (!k || k > 3) continue;
+    if (k === 3) {
+      k = g.heights[c] === 2 ? 5 : g.heights[c] === 1 ? 4 : 3;
+      kinds[k === 5 ? "tall" : k === 4 ? "low" : "unsure"]++;
+    }
+    kind[c] = k;
+    const i = c % g.w, j = (c - i) / g.w;
+    i0 = Math.min(i0, i); i1 = Math.max(i1, i); j0 = Math.min(j0, j); j1 = Math.max(j1, j);
+  }
+  const fill = [null, cssRgba("--map-seen"), cssRgba("--map-suspect"), cssRgba("--map-unsure"), cssRgba("--map-low"), cssRgba("--map-wall")];
+  const edge = cssRgba("--map-blocked"), low = (i, j) => i >= 0 && j >= 0 && i < g.w && j < g.h && kind[j * g.w + i] === 4;
+  for (let j = 0; j < g.h; j++) {
+    for (let i = 0; i < g.w; i++) {
+      const k = kind[j * g.w + i];
+      if (!k) continue;
+      const left = i * S, top = (g.h - 1 - j) * S;   // 지도 y는 위가 +라 그림 줄은 뒤집는다
+      const eL = k === 4 && !low(i - 1, j), eR = k === 4 && !low(i + 1, j), eT = k === 4 && !low(i, j + 1), eB = k === 4 && !low(i, j - 1);
+      for (let y = 0; y < S; y++) {
+        for (let x = 0; x < S; x++) {
+          const col = (eL && x === 0) || (eR && x === S - 1) || (eT && y === 0) || (eB && y === S - 1) ? edge : fill[k];
+          const o = ((top + y) * W + left + x) * 4;
+          px[o] = col[0]; px[o + 1] = col[1]; px[o + 2] = col[2]; px[o + 3] = col[3];
+        }
+      }
+    }
+  }
+  cx.putImageData(img, 0, 0);
+  const blob = await new Promise((done) => cv.toBlob(done));
+  if (a.grid?.url) URL.revokeObjectURL(a.grid.url);
+  a.grid = { x0: g.x0, y0: g.y0, w: g.w, h: g.h, res: g.res, counts: g.counts, heights: kinds, url: blob ? URL.createObjectURL(blob) : null,
+             bbox: i1 < 0 ? null : [g.x0 + i0 * g.res, g.y0 + j0 * g.res, g.x0 + (i1 + 1) * g.res, g.y0 + (j1 + 1) * g.res] };
+}
+function clearGrid() {
+  const a = ui.autonomy;
+  if (a.grid?.url) URL.revokeObjectURL(a.grid.url);
+  a.grid = a.gridCodes = null;
+  a.gridVer = undefined;
+}
+async function loadFound(info) {
+  const a = ui.autonomy;
+  a.foundVer = info?.version;
+  if (!info) { a.found = null; return; }
+  try {
+    const r = await fetch("/api/autonomy/discovered", { cache: "no-store" });
+    a.found = r.ok ? (await r.json()).obstacles || [] : null;
+  } catch (e) { a.foundVer = undefined; }   // 다음 상태 때 다시
+  render();
+}
+// 자율 비행 웹이 그리는 지도 파일(GET /api/autonomy/map): 번호가 바뀔 때만(보통 켤 때 한 번)
+async function loadWorldMap(info) {
+  const a = ui.autonomy;
+  a.worldVer = info?.version;
+  if (!info) { a.world = null; return; }
+  try {
+    const r = await fetch("/api/autonomy/map", { cache: "no-store" });
+    a.world = r.ok ? await r.json() : null;
+  } catch (e) { a.worldVer = undefined; }   // 다음 상태 때 다시
+  render();
+}
+window.addEventListener("themechange", () => { paintGrid().then(render); });   // 테마 색으로 다시 칠한다
+
+// 자율 비행이 지도에 찍은 사람 수(확정, 다시 봤는데 없음은 뺌 = 2D 지도 범례와 같은 수). 사람 탐지 발견(사진)과 따로 센다.
+const autonomyPeople = () => (ui.autonomy.people?.people || []).filter((q) => !q.gone).length;
 
 // 자율 비행이 보낸 것(위치·경로·찾은 사람)이 하나라도 있는지. 없으면 2D 지도 칸은 평면도나 빈 칸 안내를 그린다.
 function autonomyHas(st) {
   const a = ui.autonomy;
-  return !!(st.pose || a.path?.points?.length || a.people?.people?.length || a.people?.unconfirmed?.length);
+  return !!(st.pose || a.path?.points?.length || a.people?.people?.length || a.people?.unconfirmed?.length || a.grid?.bbox
+    || a.found?.length);
 }
 
 async function loadAutonomy() {
@@ -515,11 +812,20 @@ function autonomyStatus(st) {
   return ["자율 연결됨", "success", ""];
 }
 
-function autonomyMapPanel(st, head, tall, events = []) {
+// 자율 비행 웹(modules/autonomy/autonomy_web/static/index.html drawMap)과 똑같이 그린다(11/17 송승우 "똑같이 맞추기"):
+// 칸 범위·1 m 눈금·그리는 차례(눈금 → 카메라 지도 → 출발 → 찾은 장애물 → 사람 → 지나온 길 → 계획 경로 → 찍은 자리 → 드론 → 축척)·
+// 모양·색·글·범례가 웹과 같다. 우리 것은 회전(요청)·지도 그림(쓸 때만)·막힌 칸 높이로 나눠 칠하기(기본 꺼짐)뿐.
+const WEB_FIT = { pad: 1, minSpan: 6, px: 16 };   // 웹: 데이터 둘레 1 m(가장 좁아도 6 m), 가장자리 16 화소
+const PIN_LABEL = { pending: "받음", arrived: "둘러보는 중" };   // 비행 노드가 받은 찍은 자리 글(나머지는 "가는 중"), 웹과 같음
+function webBox(pts) {   // 웹 drawMap의 b(눈금을 긋는 범위): 점들 가운데 ± (반폭 + 1 m, 가장 작아도 3 m)
+  const xs = pts.map((p) => p[0]), ys = pts.map((p) => p[1]);
+  const cx = (Math.min(...xs) + Math.max(...xs)) / 2, cy = (Math.min(...ys) + Math.max(...ys)) / 2;
+  const hx = Math.max(3, (Math.max(...xs) - Math.min(...xs)) / 2 + 1), hy = Math.max(3, (Math.max(...ys) - Math.min(...ys)) / 2 + 1);
+  return { xmin: cx - hx, xmax: cx + hx, ymin: cy - hy, ymax: cy + hy };
+}
+function autonomyMapPanel(st, head, tall) {
   const a = ui.autonomy, pose = st.pose, s = st.autonomy || {};
-  const path = a.path?.points || [], found = a.people?.people || [], unsure = a.people?.unconfirmed || [];
-  // 발견 지점: 게이트웨이가 탐지 사진에 붙인 그때 자율 위치가 있는 발견만(자율 연결 전에 찍힌 발견은 위치가 없다)
-  const spots = events.filter((e) => e.drone?.pose?.frame === "map");
+  const path = a.path?.points || [], people = a.people?.people || [];
   if (!autonomyHas(st)) {
     // 빈 칸: 무엇을 기다리는지 쉬운 말로. 지도 파트의 3D 점군이 들어오고 있으면 바로 바꿔 볼 수 있게 한다.
     const why = !ui.wsOpen ? "게이트웨이에 연결되지 않았습니다 · 연결되면 자율 비행이 보낸 지도를 그립니다"
@@ -529,48 +835,182 @@ function autonomyMapPanel(st, head, tall, events = []) {
     return `<section class="panel map ${tall ? "tall" : ""}" data-part="map" aria-label="2D 지도">${head}
       <div class="map-empty"><span>${esc(why)}</span>${to3d}</div>${mapSaveBar()}</section>`;
   }
-  const pts = [[0, 0], ...path, ...a.track, ...found.map((q) => [q.x_m, q.y_m]), ...unsure.map((q) => [q.x_m, q.y_m]),
-    ...spots.map((e) => [e.drone.pose.x_m, e.drone.pose.y_m]), ...(pose ? [[pose.x_m, pose.y_m]] : [])];
-  const span = (vals) => {
-    const lo = Math.min(...vals) - 0.6, hi = Math.max(...vals) + 0.6, d = Math.max(3, hi - lo), c = (lo + hi) / 2;
-    return [c - d / 2, c + d / 2];
-  };
-  const [minX, maxX] = span(pts.map((p) => p[0])), [minY, maxY] = span(pts.map((p) => p[1]));
-  const W = 800, H = tall ? 360 : 260, k = Math.min(W / (maxX - minX), H / (maxY - minY));
-  const X = (x) => ((x - minX) * k + (W - (maxX - minX) * k) / 2).toFixed(1);
-  const Y = (y) => (H - (y - minY) * k - (H - (maxY - minY) * k) / 2).toFixed(1);
-  const line = (list, cls) => list.length > 1 ? `<polyline class="${cls}" points="${list.map((p) => `${X(p[0])},${Y(p[1])}`).join(" ")}"/>` : "";
+  // 자율 비행 보기: 지도를 한 번 클릭하면 보낼 자리를 찍고, [여기로 보내기]·G로 비행 노드에 보낸다(자율 비행 웹과 같음)
+  const rosGoto = ui.live && st.source === "ros", canGoto = rosGoto && st.allowed.includes("goto");
+  const goal = rosGoto ? activeGoal(st) : null, pick = rosGoto ? ui.goto.pick : null;
+  // 출발(웹 spawn): 실기체 빈 지도는 원점. 게이트웨이가 이륙한 자리를 주면 거기(시뮬레이터는 세계 좌표라 원점이 출발이 아니다)
+  const sp = s.start_pose, took = sp && Number.isFinite(sp.x_m) && Number.isFinite(sp.y_m), o = took ? [sp.x_m, sp.y_m] : [0, 0];
+  const occ = a.grid, found = (a.found || []).filter((w) => [w.x, w.y, w.sx, w.sy].every(Number.isFinite));
+  // 지도 파일(웹 mapData): 시뮬레이터는 세계 지도(벽·가구·목적지·출발), 실기체는 빈 지도(open, 출발만). 출발은 지도 파일 것을 쓴다(웹과 같음)
+  const wm = a.world, wb0 = wm && !wm.open ? wm.bounds : null, sp0 = wm?.spawn ? [wm.spawn.x, wm.spawn.y] : o;
+  const truth = st.autonomy?.truth;
+  // 칸 범위(웹과 같음): 지도 파일이 빈 지도가 아니면 그 범위, 아니면 지나온 길·드론·찾은 사람·출발·본 곳 둘레.
+  // 계획 경로·찍은 자리·찾은 장애물은 넣지 않는다. 지도 그림(우리)은 빈 지도일 때만 넣는다
+  const pts = wb0 ? [[wb0.xmin, wb0.ymin], [wb0.xmax, wb0.ymin], [wb0.xmin, wb0.ymax], [wb0.xmax, wb0.ymax]]
+    : [...a.track, ...(pose ? [[pose.x_m, pose.y_m]] : []), ...people.map((q) => [q.x_m, q.y_m]), sp0,
+      ...(occ?.bbox ? [[occ.bbox[0], occ.bbox[1]], [occ.bbox[2], occ.bbox[3]]] : []), ...(mapBoard?.points() || [])];
+  const H = tall ? 360 : 260, W = fitWidth(H);
+  const fitFor = (r) => MapView.fit(pts, W, H, r, wb0 ? { pad: 0, minSpan: 0, px: 16 } : WEB_FIT), F = fitFor(ui.mapView.rot);
+  const v = MapView.absolute(ui.mapView, F);   // 늘 다 보이게 맞춘 그림(F) 위의 확대·이동(웹 view.zoom·px·py)
+  v.base = F.k;
+  v.fitFor = fitFor;
+  ui.mapFrame = v;
+  const k = v.k, rot = v.rot, b = wb0 || webBox(pts);
+  const X = (x) => MapView.X(v, x).toFixed(1), Y = (y) => MapView.Y(v, y).toFixed(1);
+  const wb = mapBoard?.frame({ X, Y, k, minX: b.xmin, maxX: b.xmax, minY: b.ymin, maxY: b.ymax, W, H, start: o, hidden: !shown("board"),   // 지도 그림(board.js)
+    fromClient: mapLocal, people: people.map((q, i) => ({ n: i + 1, x: q.x_m, y: q.y_m, gone: q.gone })) });
+  // 1 m 눈금은 칸 범위 안에만(웹과 같음)
   const grid = [];
-  for (let gx = Math.ceil(minX); gx <= maxX; gx++) grid.push(`<line x1="${X(gx)}" y1="0" x2="${X(gx)}" y2="${H}"/>`);
-  for (let gy = Math.ceil(minY); gy <= maxY; gy++) grid.push(`<line x1="0" y1="${Y(gy)}" x2="${W}" y2="${Y(gy)}"/>`);
-  const label = { found: "확정", gone: "다시 봤는데 없음", unsure: "미확정" };
-  const person = (q, n, cls) => {
-    const tip = `사람 ${n} · ${label[cls]} · 신뢰도 ${q.conf != null ? q.conf.toFixed(2) : "?"} · ${q.hits ?? "?"}번 봄${q.top_m != null ? ` · 키 약 ${q.top_m.toFixed(1)} m` : ""}`;
-    const num = cls === "unsure" ? "" : `<text x="${X(q.x_m)}" y="${+Y(q.y_m) + 4}">${n}</text>`;
-    return `<g class="mark ${cls}"><title>${esc(tip)}</title><circle cx="${X(q.x_m)}" cy="${Y(q.y_m)}" r="${cls === "unsure" ? 7 : 10}"/>${num}</g>`;
-  };
-  const marks = !shown("people") ? "" : found.map((q, i) => person(q, i + 1, q.gone ? "gone" : "found")).join("")
-    + unsure.map((q, i) => person(q, found.length + i + 1, "unsure")).join("");
-  const finds = !shown("finds") ? "" : [...spots].reverse().map((e) => findMark(X(e.drone.pose.x_m), Y(e.drone.pose.y_m), e, findingNo(e))).join("");   // 최근 것이 위에
-  // 게이트웨이와 끊기거나 위치가 늦으면 드론을 흐리게 그린다(마지막 위치).
-  const drone = pose ? `<g class="drone ${pose.valid && ui.wsOpen ? "" : "stale"}" transform="translate(${X(pose.x_m)},${Y(pose.y_m)}) rotate(${(90 - pose.yaw_rad * 180 / Math.PI).toFixed(1)})"><path d="M0,-11 L8,7 L0,3 L-8,7 Z"/></g>` : "";
-  const start = `<g><title>출발: 자율 비행 지도의 원점(켠 자리)</title><circle class="start" cx="${X(0)}" cy="${Y(0)}" r="7"/><text class="start-label" x="${+X(0) + 12}" y="${+Y(0) + 4}">출발</text></g>`;
-  const scale = `<g class="scale"><line x1="12" y1="${H - 12}" x2="${(12 + k).toFixed(1)}" y2="${H - 12}"/><text x="${(16 + k).toFixed(1)}" y="${H - 8}">1 m</text></g>`;
-  // 범례: 고르기 버튼 셋에, 사람 표시가 켜져 있으면 지도에 있는 것만(다시 봤는데 없음·미확정) 덧붙인다.
-  // 임무 진행은 모드 카드에, 자율 연결은 아래 칩에 있어 범례에 다시 적지 않는다.
-  const n = found.filter((q) => !q.gone).length, gone = found.length - n;
-  const keys = !shown("people") ? "" : `${gone ? `<span class="key"><i class="lg mark gone"></i>다시 봤는데 없음 ${gone}</span>` : ""}${unsure.length ? `<span class="key"><i class="lg mark unsure"></i>미확정 ${unsure.length}</span>` : ""}`;
-  const layers = layerButton("flown", "지나온 길", "드론이 지나온 길(화면이 받은 위치를 이어 그림)")
-    + layerButton("planned", "계획 경로", "자율 비행이 가려는 길")
-    + layerButton("people", n ? `사람 ${n}명` : "사람", "자율 비행이 지도에 찍은 사람 위치(원). 번호는 찾은 사람, 점선은 다시 봤는데 없음, 흐린 점은 미확정")
-    + (spots.length ? layerButton("finds", `발견 지점 ${spots.length}`, "사람 탐지가 사람을 찍을 때 드론이 있던 자리(네모, 사람 위치 아님). 번호는 발견 칸 번호") : "");
+  for (let gx = Math.ceil(b.xmin); gx <= b.xmax; gx++) grid.push(`<line x1="${X(gx)}" y1="${Y(b.ymin)}" x2="${X(gx)}" y2="${Y(b.ymax)}"/>`);
+  for (let gy = Math.ceil(b.ymin); gy <= b.ymax; gy++) grid.push(`<line x1="${X(b.xmin)}" y1="${Y(gy)}" x2="${X(b.xmax)}" y2="${Y(gy)}"/>`);
+  // 자율 비행이 만드는 지도(카메라 지도 단면): 칸 그림(blob 주소)을 눈금 위에
+  const occImage = occ?.url ? `<image class="occ" href="${occ.url}" x="${X(occ.x0)}" y="${Y(occ.y0 + occ.h * occ.res)}" `
+    + `width="${(occ.w * occ.res * k).toFixed(1)}" height="${(occ.h * occ.res * k).toFixed(1)}" preserveAspectRatio="none"/>` : "";
+  // 지도 파일의 가구(옅은 회색)·벽(진한 회색): 웹 box처럼 가운데·크기·방향(yaw). 출발 네모, 목적지(초록 원 + "목적지")
+  const wbox = (q, cls) => `<rect class="${cls}" x="${(-q.sx * k / 2).toFixed(1)}" y="${(-q.sy * k / 2).toFixed(1)}" width="${(q.sx * k).toFixed(1)}" `
+    + `height="${(q.sy * k).toFixed(1)}" transform="translate(${X(q.x)},${Y(q.y)}) rotate(${(-(q.yaw || 0) * 180 / Math.PI).toFixed(1)})"/>`;
+  const worldBoxes = !wm ? "" : (wm.obstacles || []).map((q) => wbox(q, "wobst")).join("") + (wm.walls || []).map((q) => wbox(q, "wwall")).join("");
+  const spawn = spawnSvg(X(sp0[0]), Y(sp0[1]), wm?.spawn ? "출발(지도 파일)" : took ? "출발: 이륙한 자리" : "출발: 자율 비행 지도의 원점(켠 자리)");
+  const goalMark = !wm?.goal ? "" : `<g class="wgoal"><circle cx="${X(wm.goal.x)}" cy="${Y(wm.goal.y)}" r="8"/>`
+    + `<text x="${(+X(wm.goal.x) + 11).toFixed(1)}" y="${(+Y(wm.goal.y) + 4).toFixed(1)}">목적지</text></g>`;
+  // 정답 위치(시뮬레이션, 웹 truth): 회색 원
+  const truthMark = !truth ? "" : `<circle class="truth" cx="${X(truth.x_m)}" cy="${Y(truth.y_m)}" r="7"><title>정답 위치(시뮬레이션)</title></circle>`;
+  const foundBoxes = found.map((w) => `<rect class="found" x="${X(w.x - w.sx / 2)}" y="${Y(w.y + w.sy / 2)}" width="${(w.sx * k).toFixed(1)}" `
+    + `height="${(w.sy * k).toFixed(1)}"><title>${esc(foundTip(w))}</title></rect>`).join("");
+  // 찾은 사람(웹): 칠한 원은 길을 막는 사람, 점선 원은 다시 봤는데 없던 사람. 반지름 실제 0.25 m(가장 작아도 5)
+  const pr = Math.max(5, 0.25 * k);
+  const marks = people.map((q, i) => `<g class="mark${q.gone ? " gone" : ""}"><title>${esc(`사람 ${i + 1} · ${q.gone ? "다시 봤는데 없음" : "찾은 사람(길 막음)"} · `
+    + `${q.hits ?? "?"}번 봄${q.conf != null ? ` · 신뢰도 ${q.conf.toFixed(2)}` : ""}`)}</title><circle cx="${X(q.x_m)}" cy="${Y(q.y_m)}" r="${pr.toFixed(1)}"/></g>`).join("");
+  const trail = a.track.length > 1 ? `<polyline class="flown" points="${a.track.map((p) => `${X(p[0])},${Y(p[1])}`).join(" ")}"/>` : "";
+  // 운용자가 찍은 자리(웹): 비행 노드가 받은 것은 칠한 점(갈 자리, 받기만 했으면 빈 원)과 글, 찍은 곳과 갈 자리가 다르면 점선으로 잇고 찍은 곳에 빈 원.
+  // 아직 안 보낸 자리는 점선 원·십자와 "보낼 자리"
+  const pin = (q, on, text) => `<circle class="pin${on ? " on" : ""}" cx="${X(q[0])}" cy="${Y(q[1])}" r="7"/>`
+    + (text ? `<text class="pin-label" x="${(+X(q[0]) + 11).toFixed(1)}" y="${(+Y(q[1]) + 4).toFixed(1)}">${text}</text>` : "");
+  let opMarks = "";
+  if (goal?.click) {
+    const g = goal.goal || goal.click;
+    const apart = Math.hypot(g[0] - goal.click[0], g[1] - goal.click[1]) > 0.15
+      ? `<line class="pin-link" x1="${X(goal.click[0])}" y1="${Y(goal.click[1])}" x2="${X(g[0])}" y2="${Y(g[1])}"/>${pin(goal.click, false, "")}` : "";
+    opMarks = `<g class="goto-goal"><title>${esc(`찍은 자리 · ${GOAL_STATE[goal.state] || goal.state}`)}</title>${apart}`
+      + `${pin(g, goal.state !== "pending", PIN_LABEL[goal.state] || "가는 중")}</g>`;
+  }
+  const pickMark = !pick ? "" : (() => {
+    const px = +X(pick.x), py = +Y(pick.y), f = (n) => n.toFixed(1);
+    return `<g class="goto-pick"><title>보낼 자리(아직 안 보냄)</title><circle cx="${f(px)}" cy="${f(py)}" r="9"/>`
+      + `<line x1="${f(px - 14)}" y1="${f(py)}" x2="${f(px + 14)}" y2="${f(py)}"/><line x1="${f(px)}" y1="${f(py - 14)}" x2="${f(px)}" y2="${f(py + 14)}"/>`
+      + `<text x="${f(px + 13)}" y="${f(py - 8)}">보낼 자리</text></g>`;
+  })();
+  // 드론(웹): 위치 오차가 2 cm 넘으면 점선 원, 화살촉 반지름 실제 0.25 m(가장 작아도 9). 게이트웨이와 끊기면 흐리게(마지막 위치)
+  const drone = !pose ? "" : `<g class="drone${ui.wsOpen ? "" : " stale"}">`
+    + (Number.isFinite(pose.sigma_m) && pose.sigma_m > 0.02 ? `<circle class="sigma" cx="${X(pose.x_m)}" cy="${Y(pose.y_m)}" r="${(pose.sigma_m * k).toFixed(1)}"/>` : "")
+    + `${droneArrow(X(pose.x_m), Y(pose.y_m), pose.yaw_rad, Math.max(9, 0.25 * k))}</g>`;
+  // 축척(웹): 왼쪽 아래 1 m 막대. 돌리지 않는다
+  const scale = `<g class="scale"><line x1="16" y1="${H - 16}" x2="${(16 + k).toFixed(1)}" y2="${H - 16}"/><text x="16" y="${H - 21}">1 m</text></g>`;
+  // 막힌 칸 높이로 나눠 칠하기(우리 것, 기본 꺼짐): 자율 비행 3D 카메라 지도의 높이가 있을 때만 버튼을 보인다
+  const heights = a.gridCodes?.heights ? `<button class="layer" data-map-heights aria-pressed="${ui.mapHeights}" title="${esc(ui.mapHeights
+    ? "막힌 칸을 자율 비행 3D 카메라 지도의 높이로 나눠 칠했습니다: 진회색 벽·높은 것(1.6 m 위까지), 옅은 보라 면에 테두리 낮은 물체(꼭대기 1.4 m 아래: 책상·의자, 카메라 깊이로 잰 높이라 틀릴 수 있음), 보라 높이 모름 · 누르면 자율 비행 웹과 같은 한 색으로"
+    : "막힌 칸을 자율 비행 3D 카메라 지도의 높이로 나눠 벽·높은 것과 낮은 물체(책상·의자)를 다른 색으로 칠합니다(우리 화면만, 자율 비행 웹은 한 색)")}">벽·가구 나눠 보기</button>` : "";
   const status = autonomyStatus(st);
-  return `<section class="panel map ${tall ? "tall" : ""}" data-part="map" aria-label="2D 지도">${head}
-    <svg viewBox="0 0 ${W} ${H}" preserveAspectRatio="xMidYMid meet" role="img" aria-label="자율 지도: 드론 위치, 지나온 길, 계획 경로, 찾은 사람(1칸 1 m, 출발이 원점)">
-      <g class="grid">${grid.join("")}</g>${shown("planned") ? line(path, "planned") : ""}${shown("flown") ? line(a.track, "flown") : ""}${start}${marks}${finds}${drone}${scale}
-    </svg>
-    ${mapFoot(status, status[2], layers + keys)}${mapSaveBar()}
+  // 지도 그림의 도구 막대·목록은 지도와 한 몸통(.map-body)에 둔다: 넓은 칸이면 지도 옆 기둥, 좁으면 지도 위·아래(style.css)
+  const side = wb && (wb.bar || wb.list);
+  const tools = `<div class="map-tools" role="group" aria-label="지도 보기">`
+    + `<button type="button" data-map-view="ccw" title="왼쪽으로 15° 돌리기 · Shift+끌기·두 손가락으로도 돌립니다" aria-label="지도를 왼쪽으로 돌리기">↺</button>`
+    + `<button type="button" data-map-view="cw" title="오른쪽으로 15° 돌리기" aria-label="지도를 오른쪽으로 돌리기">↻</button>`
+    + `<button type="button" data-map-view="reset" title="확대·이동·회전을 처음대로(지도를 두 번 눌러도 됩니다)">처음대로</button></div>`;
+  return `<section class="panel map ${tall ? "tall" : ""}" data-part="map" aria-label="2D 지도">${wb ? wb.head(head) : head}
+    <div class="map-body${side ? " wb-side" : ""}">${wb?.bar || ""}<div class="map-canvas"><svg viewBox="0 0 ${W} ${H}" preserveAspectRatio="xMidYMid meet" role="img" aria-label="자율 지도(자율 비행 웹과 같음): 드론 위치, 지나온 길, 계획 경로, 찾은 사람(눈금 1칸 1 m). 휠·두 손가락: 확대 · 끌기: 이동 · Shift+끌기: 회전 · 두 번 클릭: 처음대로 · 한 번 클릭: 보낼 자리 찍기" data-map2d="1"${rosGoto ? ' data-goto-map="1"' : ""}${wb?.attr || ""}>
+      <g class="map-view" transform="rotate(${rot.toFixed(2)} ${W / 2} ${H / 2})" style="--map-rot:${rot.toFixed(2)}"><g class="grid">${grid.join("")}</g>${occImage}${worldBoxes}${spawn}${goalMark}${foundBoxes}${marks}${trail}${plannedSvg(path, X, Y)}${opMarks}${pickMark}${truthMark}${drone}${wb?.svg || ""}</g>${scale}
+    </svg>${tools}</div>${wb?.list || ""}</div>
+    ${mapFoot(status, status[2], webLegend(!!occ, people.length > 0, !!truth) + heights + (wb?.layer || ""))}${rosGoto ? gotoBar(st, canGoto, goal) : ""}${mapSaveBar()}
   </section>`;
+}
+
+// 화면 자리 → 2D 지도 m와 그림 좌표(회전 전). 지도 칸의 <g class="map-view">(회전) 변환을 거꾸로 쓴다(mapview.js 보기).
+// 보낼 자리 찍기(mapPoint)와 지도 그림(board.js fromClient)이 같이 쓴다
+function mapLocal(svg, clientX, clientY) {
+  const v = ui.mapFrame, m = svg?.querySelector("g.map-view")?.getScreenCTM?.();
+  if (!v || !m) return null;
+  const q = new DOMPoint(clientX, clientY).matrixTransform(m.inverse());
+  const [x, y] = MapView.toMap(v, q.x, q.y);
+  return Number.isFinite(x) && Number.isFinite(y) ? { x, y, sx: q.x, sy: q.y } : null;
+}
+function resetMapView() {   // 처음대로(두 번 클릭·버튼): 다 보이게 맞추고 돌리지 않은 보기. 두 번 클릭이 찍으려던 보낼 자리는 버린다
+  clearTimeout(ui.goto.tapTimer);
+  ui.mapView = { zoom: 1, px: 0, py: 0, rot: 0 };
+  render();
+}
+// 2D 지도 손동작(mapview.js): 휠·두 손가락 벌리기 확대·축소, 끌기 이동, Shift+끌기·두 손가락 돌리기 회전, 두 번 클릭 처음대로.
+// 놓으면 맞춘 그림 위의 확대·이동(relative)으로 남긴다: 새 위치·지도가 와도 웹처럼 맞춤이 따라 바뀌고 확대·이동은 그대로
+window.MapView?.attach({
+  frame: () => ui.mapFrame,
+  commit: (v) => { ui.mapView = MapView.relative(v, v.fitFor ? v.fitFor(v.rot) : v); render(); },
+  reset: resetMapView,
+  drawing: () => !!document.querySelector("svg[data-map2d].wb-drawing"),
+});
+
+// 한 화면 배치(WIDE)에서는 2D 지도 그림의 가로를 칸 비율에 맞춘다. 바로 앞에 그린 지도의 실제 크기를 재서 다음 그림에 쓴다.
+// (11/17: 800×260 고정이라 낮고 넓은 칸·높은 칸 모두 위아래나 양옆이 비어 지도가 작았다.) 쌓이는 배치는 그림 높이가 가로를 따라가므로 800 그대로
+function fitWidth(H) {
+  // 한 화면 배치(.live-main)만 칸이 그림 높이를 정한다. 탐색 결과처럼 높이가 그림 비율을 따르는 곳에서 재면 앞 그림 비율이 그대로 굳는다
+  const el = matchMedia(WIDE).matches ? document.querySelector(".live-main svg[data-map2d]") : null;
+  const r = el?.getBoundingClientRect();
+  return r && r.width > 40 && r.height > 40 ? Math.round(H * Math.min(4, Math.max(0.6, r.width / r.height))) : 800;
+}
+
+// ---------- 자율 비행 보기: 지도에서 찍은 자리 보내기 (자율 비행 웹 renderGoto와 같은 흐름·말) ----------
+const GOAL_STATE = { pending: "비행 노드가 받음", going: "가는 중", arrived: "도착해 둘러보는 중" };
+function activeGoal(st) {   // 비행 노드가 받아 기다리거나 가는 중·도착해 둘러보는 찍은 자리
+  const g = st.mission?.goal;
+  return g && GOAL_STATE[g.state] ? g : null;
+}
+// 말은 자율 비행 웹 renderGoto와 같다. 찍은 자리에 대한 비행 노드의 마지막 답(받음·거절·그만둠·도착, 게이트웨이 mission.goal_note)은
+// 가는 자리가 없을 때 20초 동안 보인다(11/16 실기체: 거절 세 번이 맨 아래 기록에만 한 줄씩 나와 까닭을 몰랐다).
+const GOAL_REPLY_S = 20;
+function gotoBar(st, canGoto, goal) {
+  const p = ui.goto.pick, n = st.mission?.note, reply = st.mission?.goal_note;
+  const xy = (q) => (Array.isArray(q) ? `(${q[0].toFixed(1)}, ${q[1].toFixed(1)})` : "");
+  const over = !!(n?.search && n.search.elapsed >= n.search.limit);   // 탐색 시간이 다 됨(웹 searchOver)
+  const after = !over ? "자율 탐색을 잇습니다" : n.return_home === false ? "그 자리에 내립니다(탐색 시간이 다 됨)" : "출발점으로 돌아갑니다(탐색 시간이 다 됨)";
+  const far = goal?.goal && goal.click && Math.hypot(goal.goal[0] - goal.click[0], goal.goal[1] - goal.click[1]) > 0.3;
+  let text, warn = false;
+  if (p) {
+    text = `보낼 자리 (${p.x.toFixed(1)}, ${p.y.toFixed(1)})` + (canGoto ? ` · [여기로 보내기]나 G를 누르면 그리로 갑니다. 둘러본 뒤 ${after}`
+      : " · 지금 단계에서는 보낼 수 없습니다(탐색 비행 중에만)");
+  } else if (goal?.state === "pending") text = `찍은 자리 ${xy(goal.click)}를 자율 비행이 받았습니다. 하던 동작을 마치면 갑니다`;
+  else if (goal?.state === "going") {
+    text = `찍은 자리 ${xy(goal.goal || goal.click)}로 가는 중입니다`
+      + (far ? ` (찍은 곳 ${xy(goal.click)}까지는 바로 갈 수 없어, 그쪽으로 가장 가까운 빈 자리로 가서 그쪽을 봅니다)` : "");
+  } else if (goal?.state === "arrived") text = `찍은 자리에 도착해 둘러보는 중입니다. 마치면 ${after}`;
+  else if (reply?.text && reply.age_s < GOAL_REPLY_S) { text = `자율 비행: ${reply.text}`; warn = !!reply.warn; }
+  else text = canGoto ? "지도를 한 번 클릭하면 보낼 자리가 찍힙니다(본 곳 밖을 찍으면 그쪽으로 갈 수 있는 데까지 갑니다)"
+    // 땅에서는 자율 비행 지도가 아직 없다(비행 노드가 이륙 뒤부터 낸다, 11/17): 빈 지도가 고장처럼 보이지 않게 까닭을 적는다
+    : !ui.autonomy.grid && st.mode === "grounded" ? "벽·장애물 지도는 이륙 뒤 자율 비행이 만들기 시작합니다 · 탐색 비행 중에 지도를 한 번 클릭하면 보낼 자리가 찍힙니다"
+    : "탐색 비행 중에 지도를 한 번 클릭하면 보낼 자리가 찍힙니다";
+  const sendOk = p && canGoto, cancelOff = !p && goal && !st.allowed.includes("goto_cancel");
+  const send = `<button data-goto="send" class="${sendOk ? "" : "off"}" ${sendOk ? "" : 'aria-disabled="true"'}>여기로 보내기 <small>G</small></button>`;
+  // 웹 .goto와 같이: 점(비행 노드가 받은 찍은 자리가 있으면 칠함)·글·[여기로 보내기]·[지우기/가기 취소](할 것이 없으면 흐림)
+  const clearOff = !(p || goal) || cancelOff;
+  const clear = `<button data-goto="clear" class="${clearOff ? "off" : ""}" ${clearOff ? 'aria-disabled="true"' : ""}>${!p && goal ? "가기 취소" : "지우기"}</button>`;
+  return `<div class="goto-bar" data-part="goto"><span class="goto-dot${!p && goal ? " on" : ""}" aria-hidden="true"></span><span class="${warn ? "goto-warn" : "muted"}" title="${esc(text)}">${esc(text)}</span><span class="spacer"></span>${send}${clear}</div>`;
+}
+function mapPoint(svg, ev) {   // 클릭한 화면 자리 → 지도 m(돌리고 확대한 보기 그대로 거꾸로)
+  const p = mapLocal(svg, ev.clientX, ev.clientY);
+  return p ? { x: p.x, y: p.y } : null;
+}
+function sendGoto() {
+  const st = current().st, p = ui.goto.pick;
+  if (!p) return toast("여기로 보내기: 먼저 지도를 한 번 클릭해 보낼 자리를 찍으세요");
+  if (!st.allowed.includes("goto")) return toast("여기로 보내기: 탐색 비행 중에만 보낼 수 있습니다");
+  ui.goto.pick = null;
+  sendCmd("goto", { x: Math.round(p.x * 100) / 100, y: Math.round(p.y * 100) / 100 });
+  render();
+}
+function clearGoto() {
+  if (ui.goto.pick) { ui.goto.pick = null; return render(); }
+  const st = current().st;
+  if (!activeGoal(st)) return;
+  if (!st.allowed.includes("goto_cancel")) return toast("가기 취소: 지금 상태에서는 할 수 없습니다");
+  sendCmd("goto_cancel");
 }
 
 // 평면도(2D): 자율 비행 지도가 없으면 2D 지도 칸에 받은 3D 점군을 위에서 본 그림을 그린다(floorplan.js).
@@ -609,7 +1049,7 @@ function floorPlanPanel(st, head, plan, tall) {
     const q = [X(p[0]), Y(p[1])], last = route[route.length - 1];
     if (!last || Math.hypot(q[0] - last[0], q[1] - last[1]) > 1.5) route.push(q);
   }
-  const flown = shown("flown") && route.length > 1 ? `<polyline class="flown" points="${route.map((q) => q.join(",")).join(" ")}"/>` : "";
+  const flown = shown("flown") && route.length > 1 ? `<polyline class="flown cam" points="${route.map((q) => q.join(",")).join(" ")}"/>` : "";
   const end = plan.path[plan.path.length - 1], fresh = ui.wsOpen && info[1] === "success";
   const now = end ? `<g class="cam-now ${fresh ? "" : "stale"}"><title>${fresh ? "지도 파트가 마지막으로 추정한 카메라(드론) 자리" : "마지막으로 받은 카메라(드론) 자리 · 지금은 새 지도가 오지 않습니다"}</title><circle cx="${X(end[0])}" cy="${Y(end[1])}" r="7"/></g>` : "";
   // 출발 글자는 맨 위에 그린다(드론이 출발 근처에 있으면 점이 글자를 가리므로).
@@ -620,7 +1060,7 @@ function floorPlanPanel(st, head, plan, tall) {
   const what = !plan.band ? "모든 점" : plan.metric ? `드론 높이 ±${plan.half} m의 점` : "드론 높이 근처의 점";
   const detail = ["위에서 본 3D 점군", what, plan.metric ? "1칸 1 m" : "실제 크기 모름", info[2]].filter(Boolean).join(" · ");
   const keys = `<span class="key" title="드론 높이 근처에 점이 많이 쌓인 곳일수록 진합니다"><i class="lg floor"></i>벽·물체</span>`;
-  const layers = layerButton("flown", "지나온 길", "지도 파트가 추정한 카메라 경로. 마지막 자리(큰 점)는 늘 보입니다");
+  const layers = layerButton("flown", "지나온 길", "지도 파트가 추정한 카메라 경로. 마지막 자리(큰 점)는 늘 보입니다", "cam");
   return `<section class="panel map ${tall ? "tall" : ""}" data-part="map" aria-label="2D 지도(위에서 본 3D 점군)">${head}
     <svg viewBox="0 0 ${W} ${H}" preserveAspectRatio="xMidYMid meet" role="img" aria-label="위에서 본 3D 점군: 드론 높이 근처의 점(벽·물체), 지나온 길, 지도 시작 자리${plan.metric ? "(1칸 1 m)" : "(실제 크기 모름)"}">
       <g class="grid">${grid.join("")}</g>${walls}${flown}${start}${now}${startLabel}${scale}
@@ -678,10 +1118,19 @@ function map3dPanel(st, head, cls = "map") {   // cls: 실시간 감독은 지�
   // 조작 안내는 지도에 마우스를 올리면 늘 보이고, 아래 줄에는 칸이 넉넉할 때만 적는다(낮은 칸은 그림을 지키려고 CSS가 숨김).
   const keys = "왼쪽 드래그 회전 · 우클릭 드래그 이동 · 휠/두 손가락 확대 · 두 번 눌러 처음 시점";
   const extra = has ? `<span class="muted keys-hint">${keys}</span>` : "";
-  const layers = has ? layerButton("flown", "지나온 길", "지도 파트가 추정한 카메라 경로. 지금 위치(큰 점)는 늘 보입니다") : "";
+  const layers = has ? layerButton("flown", "지나온 길", "지도 파트가 추정한 카메라 경로. 지금 위치(큰 점)는 늘 보입니다", "cam") + map3dOptions() : "";
   return `<section class="panel ${cls}" data-part="map3d" aria-label="3D 지도">${head}
     <div class="map3d-slot"${has ? ` title="${keys}"` : ""}>${has ? "" : `<div class="map-empty">${esc(info[2] || "점군을 기다리는 중입니다.")}</div>`}</div>
     ${mapFoot(info, detail, layers, extra)}${mapSaveBar()}</section>`;
+}
+
+// 3D 보기 고르기(11/17 3D 지도가 흐릿하다는 말에): 점 색은 기본 높이 색(낮음 청록 → 높음 주황), 누르면 사진 색.
+// 천장(카메라가 지난 가장 높은 곳보다 꽤 위의 점)은 기본으로 빼서 위에서 방 안이 보이게 하고, 누르면 다시 보인다. 지도 데이터는 그대로다.
+function map3dOptions() {
+  const m = ui.map3d;
+  const key = m.photo ? "" : `<span class="key" title="점 색 = 높이(위쪽 방향은 카메라 화면 위쪽 평균이라 대략)"><i class="lg h3d"></i>높이 낮음→높음</span>`;
+  return `<button class="layer" data-map3d-opt="photo" aria-pressed="${m.photo}" title="${esc(m.photo ? "사진 색입니다 · 누르면 높이 색(낮음 청록 → 높음 주황)으로 칠합니다" : "높이 색입니다 · 누르면 카메라가 본 사진 색으로 칠합니다")}">사진 색</button>`
+    + `<button class="layer" data-map3d-opt="ceiling" aria-pressed="${m.ceiling}" title="${esc(m.ceiling ? "천장까지 다 보입니다 · 누르면 드론이 지난 높이보다 꽤 위(천장·위쪽 튀는 점)를 숨깁니다" : "드론이 지난 높이보다 꽤 위(천장·위쪽 튀는 점)를 숨겨 방 안이 보이게 했습니다 · 누르면 다시 보입니다")}">천장</button>${key}`;
 }
 
 function attachMap3d() {
@@ -700,6 +1149,7 @@ function attachMap3d() {
     else if (m.data) m.view.setData(m.data);   // 2D 지도 칸(평면도)에서 먼저 받아 둔 점군
   }
   m.view?.setPathVisible?.(shown("flown"));   // 지도 칸 "지나온 길" 고르기(옛 map3d.js면 건너뜀)
+  m.view?.setStyle?.({ photo: m.photo, ceiling: m.ceiling });   // 3D 보기 고르기(사진 색·천장)
   if (m.has && m.host.parentNode !== slot) { slot.replaceChildren(m.host); m.view?.draw(); }
 }
 
@@ -790,8 +1240,9 @@ window.addEventListener("message", event => {
 const CMD_LABEL = {
   takeoff: "이륙", land: "착륙", pause: "일시정지", resume: "다시 시작", takeover: "넘겨받기",
   auto_start: "자율 시작", auto_stop: "자율 종료", return_home: "복귀", confirm_area: "주변 확인", emergency: "비상 정지",
-  video_on: "영상 켜기", video_off: "영상 끄기",
+  video_on: "영상 켜기", video_off: "영상 끄기", goto: "여기로 보내기", goto_cancel: "가기 취소",
 };
+const ROS_CMDS = ["takeoff", "land", "emergency", "confirm_area", "goto", "goto_cancel"];   // 자율 비행 보기에서 보내는 명령(자율 비행 웹과 같은 것)
 
 function areaConfirmed(st) {
   return !!(st.preflight || []).find((c) => c.key === "operator" && c.ok);
@@ -811,11 +1262,29 @@ function preflightChips(st) {
 // 게이트웨이 규칙은 그대로다: 이륙은 점검(주변 확인 포함)을 통과해야 받고, 지도 콘솔 수동 조종 모드는 확인 뒤 30초 안·영상 켜짐이어야 한다.
 const AREA_CONFIRM_MS = 30000;   // 게이트웨이 AREA_CONFIRM_S(지도 콘솔 수동 조종 모드)와 같게
 const onGround = (st) => st.mode === "grounded" && st.flight_busy !== "takeoff";
+// Esc가 비상 정지를 보낼 때: 떠 있거나 이륙 중. 자율 비행 보기는 상태가 잠깐 끊겨도(connected:false) 바로 앞이 공중이었고
+// 게이트웨이가 허락하면(allowed에 emergency, 보기 노드는 닿음) 보낸다(11/16 점검 A2). 땅에서는 보내지 않는다(임무가 끝난다)
+const AIR_MODES = ["manual", "auto", "paused", "landing"];
+const maybeAirborne = (st) => !!st && (st.flight_busy === "takeoff" || AIR_MODES.includes(st.mode) ||
+  (st.source === "ros" && st.mode === "disconnected" && ui.lastAir && st.allowed?.includes("emergency")));
 const areaChecked = (st) => (ui.live ? areaConfirmed(st) : ui.takeoff.sampleChecked);
+// 자율 비행 보기: 시작을 받은 자율 비행이 이륙하는 중(임무 TAKEOFF). 드론이 답하지 않거나 점검을 못 넘으면 자율 비행이
+// 20초 뒤 다시 요청한다(3번까지, 비행 노드 TAKEOFF_RETRY·TAKEOFF_TRIES). 그동안 확인 칸을 다시 열면 확인이 풀려 다시 요청이
+// 막히므로 칸은 닫아 두고, 이륙 버튼 자리는 이륙 취소(착륙 명령. 자율 비행 웹도 이때 착륙을 연다)로 바꾼다(11/16 실기체).
+// 드론이 바로 거절하면(error) 비행 노드(11/17)는 다시 보내지 않고 시작 대기(READY)로 돌아간다(기수 값이 흐를 때 거절해 왔다).
+const rosTakingOff = (st) => st?.source === "ros" && st.mission?.state === "TAKEOFF";
+function rosTakeoffWords(st) {   // 땅에서 이륙을 기다리는 동안의 임무 말. 아니면 null
+  if (!rosTakingOff(st) || st.mode !== "grounded") return null;
+  if (st.flight_busy === "takeoff") return "이륙 중";
+  const r = st.ros_view?.driver?.last_result;
+  return r?.cmd === "takeoff" && r.ok === false && (r.result?.reason ?? r.reason) !== "error_response"
+    ? "드론이 이륙 못 함 · 다시 요청 기다림" : "이륙 요청 중";
+}
 
 function takeoffBlocker(st) {   // 지금 이륙할 수 없는 까닭. 이륙할 수 있으면 null
   if (ui.live && !ui.wsOpen) return "게이트웨이에 연결되지 않았습니다";
   if (ui.live && !st.connected) return "드론 상태가 오지 않습니다";
+  if (st.source === "ros") return rosStartBlocker(st);
   if (!onGround(st) || !st.allowed.includes("takeoff")) return "지금 상태에서는 이륙할 수 없습니다";
   const failed = (st.preflight || []).filter((c) => c.key !== "operator" && !c.ok && c.blocking !== false);
   if (failed.length) return `기체 점검을 통과하지 못했습니다: ${failed.map((c) => c.title).join(", ")}`;
@@ -824,34 +1293,80 @@ function takeoffBlocker(st) {   // 지금 이륙할 수 없는 까닭. 이륙할
   return null;
 }
 
+// 자율 비행 보기: 시작(이륙)을 못 하는 까닭. 자율 비행 웹이 시작 버튼을 끄는 까닭과 같은 순서·같은 뜻이다.
+// 게이트웨이가 보기 노드에서 받은 임무 단계·드라이버 점검·YOLO 준비(ros_view.start)를 쓴다. 주변 확인은 이 칸의 체크로 한다.
+function rosStartBlocker(st) {
+  const s = st.ros_view?.start || {};
+  if (!st.ros_view?.commands) return "보기 노드가 명령을 받지 않게 켜져 있습니다(commands:=false)";
+  if (!onGround(st)) return "지금 상태에서는 시작할 수 없습니다";
+  if (s.mission !== "READY") return !s.mission || s.mission === "WAIT_POSE" ? "자율 비행 노드가 위치를 기다리는 중입니다"
+    : `자율 비행이 지금 단계(${MISSION_STATE[s.mission] || s.mission})에서는 시작할 수 없습니다`;
+  const failed = (st.preflight || []).filter((c) => c.key !== "operator" && !c.ok && c.blocking !== false);
+  if (failed.length) return `기체 점검을 통과하지 못했습니다: ${failed.map((c) => c.title).join(", ")}`;
+  if (!s.yolo) return "YOLO 준비 전입니다(사람 탐지 모델을 올리는 데 시작 뒤 20초쯤 걸립니다)";
+  if (!areaChecked(st)) return "주변을 확인하고 체크하세요";
+  if (!st.allowed.includes("takeoff")) return "지금 상태에서는 시작할 수 없습니다";
+  return null;
+}
+const rosArmed = () => ui.takeoff.armedUntil > Date.now();
+// 이륙 버튼은 이륙 전 확인 칸을 여는 버튼이다. 자율 비행 보기는 주변 확인을 칸 안에서 하므로, 확인을 보낼 수 있으면(confirm_area) 칸을 연다.
+// 실제 시작(칸의 이륙, 두 번째 누름)은 rosStartBlocker가 자율 비행 웹과 같은 조건으로 막는다.
+const canOpenTakeoff = (st) => !rosTakingOff(st) &&
+  (st.allowed.includes("takeoff") || (st.source === "ros" && st.allowed.includes("confirm_area")));
+
 // inline: 폰(현장 조작)은 큰 버튼 위에 그대로, PC는 조종 줄 위 오른쪽에 뜬다.
+// 자율 비행 보기: 이륙 = 자율 비행 시작(이륙부터 비행 노드가 한다). 자율 비행 웹처럼 한 번 누르면 4초 동안 "한 번 더"로 바뀐다.
+// 버튼 글은 짧게 둔다(11/17: 긴 글이 폰 375 px에서 줄을 바꿔 버튼이 화면 아래로 밀려 4초 안에 다시 누르기 어려웠다). 풀이는 옆 안내 글에
 function takeoffPanel(st, inline = false) {
   const wrap = (html) => (inline ? `<div data-part="takeoff">${html}</div>` : html);
   if (!ui.takeoff.open || !onGround(st)) return wrap("");
+  const ros = st.source === "ros";
   const checked = areaChecked(st), why = takeoffBlocker(st);
+  if (why && ros) ui.takeoff.armedUntil = 0;   // 웹처럼: 시작을 못 하게 되면 "한 번 더"를 푼다
+  const armed = ros && !why && rosArmed(), drifting = ros && !!st.ros_view?.start?.yaw_drifting;
   const video = !st.mapping_console_url ? "" : `<div class="to-row"><span class="to-name">영상</span>${st.video?.available
     ? chip("✓ 영상 켜짐", "success") : `${chip("✗ 영상 꺼짐", "danger")}<button data-cmd="video_on" class="mini">영상 켜기</button>`}</div>`;
   const deadline = st.mapping_console_url && checked && ui.takeoff.confirmedAt ? ui.takeoff.confirmedAt + AREA_CONFIRM_MS : null;
-  const hint = why || (ui.live ? "이륙 버튼이나 T를 누르면 이륙합니다" : "샘플 화면: 이륙 명령은 보내지 않습니다");
+  const hint = why || (!ui.live ? "샘플 화면: 이륙 명령은 보내지 않습니다"
+    : armed ? (drifting ? "4초 안에 한 번 더 누르면 시작을 보냅니다(기수 값이 흐르는 동안 자율 비행은 첫 시작을 받지 않습니다)"
+      : "4초 안에 한 번 더 누르면 자율 비행이 이륙합니다")
+    : ros ? (drifting ? "이륙 버튼이나 T를 두 번 누르면 시작을 보냅니다" : "이륙 버튼이나 T를 두 번 누르면 자율 비행이 이륙합니다(자율 비행 화면과 같음)")
+    : "이륙 버튼이나 T를 누르면 이륙합니다");
   return wrap(`<section class="takeoff-pop ${inline ? "inline" : ""}" role="dialog" aria-label="이륙 전 확인">
-    <header><h2>이륙 전 확인</h2><span class="spacer"></span><button data-takeoff="cancel">취소</button></header>
+    <header><h2>${ros ? "자율 비행 시작 전 확인" : "이륙 전 확인"}</h2><span class="spacer"></span><button data-takeoff="cancel">취소</button></header>
     <div class="to-row"><span class="to-name">기체 점검</span><span class="checks">${preflightChips(st)}</span></div>
+    ${ros ? yawRow(st) : ""}
     ${video}
     <button type="button" class="area-check" role="checkbox" aria-checked="${checked}" data-takeoff="area">주변에 사람·장애물이 없고, 프로펠러 가드와 안전 담당을 확인했습니다</button>
     <div class="to-go"><span class="muted">${esc(hint)}${deadline ? `<span data-countdown="${deadline}"></span>` : ""}</span>
-      <button class="primary ${why ? "off" : ""}" data-takeoff="go" ${why ? 'aria-disabled="true"' : ""}>이륙</button></div>
+      <button class="primary ${why ? "off" : ""} ${armed ? "armed" : ""}" data-takeoff="go" ${why ? 'aria-disabled="true"' : ""}>${armed ? "한 번 더" : "이륙"}</button></div>
   </section>`);
 }
 
-// 비상 정지(0.6초 길게). 자율 비행 보기에서는 이 화면이 명령을 보내지 않으므로 잠근 버튼으로 그린다(누르면 까닭을 알림).
+// 자율 비행 보기: 땅에서 기수 값이 흐르는지(게이트웨이 ros_view.start.yaw_*, 자율 비행 웹 시작 칸과 같은 잣대: 최근 10초에 2° 이상).
+// 흐르는 동안은 드론이 이륙을 거절해 와서 비행 노드가 시작을 받지 않는다(11/17). 막지는 않는다: 30초 안에 한 번 더 시작하면 그대로 요청한다.
+function yawRow(st) {
+  const s = st.ros_view?.start || {}, r = st.attitude?.yaw_rad;
+  const val = Number.isFinite(r) ? `${Math.round(r * 180 / Math.PI)}°` : "값 없음";
+  const c = s.yaw_drifting ? chip(`! ${val} · 흐름(10초에 ${Math.round(s.yaw_span_deg)}°)`, "warning")
+    : s.yaw_span_deg == null ? chip(`${val} · 확인 중`) : chip(`✓ ${val} · 멈춤`, "success");
+  const warn = !s.yaw_drifting ? "" : `<p class="to-warn">기체 기수 값이 땅에서 흐르고 있습니다. 이 상태에서는 드론이 이륙을 거절해 왔습니다 — `
+    + "지금은 시작을 눌러도 자율 비행이 받지 않습니다. 기체를 살짝 들었다 평평한 곳에 다시 내려놓고 값이 멈추면 시작하세요"
+    + "(그래도 띄워 보려면 30초 안에 시작을 한 번 더).</p>";
+  return `<div class="to-row"><span class="to-name">기수 값</span><span class="checks">${c}</span></div>${warn}`;
+}
+
+// 비상 정지(0.6초 길게). 자율 비행 보기에서도 같다(보기 노드가 자율 비행 웹처럼 emergency를 낸다). 보기 노드가 명령을 못 받으면 잠근다.
 function estopButton(st, wide = false) {
   const cls = `estop${wide ? " wide" : ""}`;
-  if (st.source === "ros") return `<button class="${cls} off" data-cmd="emergency" aria-disabled="true">비상 정지 <small>자율 비행 화면에서</small></button>`;
+  if (st.source === "ros" && !st.allowed.includes("emergency")) {
+    return `<button class="${cls} off" data-cmd="emergency" aria-disabled="true">비상 정지 <small>보기 노드 연결 전</small></button>`;
+  }
   return `<button class="${cls}" data-hold="emergency" aria-label="비상 정지, 길게 누르기"><span class="fill"></span>비상 정지 <small>${wide ? "0.6초 길게" : "길게"}</small></button>`;
 }
 
 function controlBar(st) {
-  const can = (n) => st.allowed.includes(n);
+  const can = (n) => (n === "takeoff" ? canOpenTakeoff(st) : st.allowed.includes(n));
   const btn = (n, extra = "", attrs = "") => `<button data-cmd="${n}" class="${can(n) ? "" : "off"} ${extra}" ${can(n) ? "" : 'aria-disabled="true"'} ${attrs}>${CMD_LABEL[n]}</button>`;
   const manualOn = st.mode === "manual", autoOn = st.mode === "auto";
   const autoCmd = st.mode === "paused" && can("resume") ? "resume" : "auto_start";
@@ -867,9 +1382,11 @@ function controlBar(st) {
     ${btn("return_home", "soon")}
     <span class="spacer"></span>
     ${ui.live && st.mapping_console_url ? `<button data-keyboard-focus aria-pressed="${keyboardEnabled}">${keyboardEnabled ? "키보드 조종 활성" : "키보드 조종 활성화"}</button>` : ""}
-    ${!ui.live ? "" : st.source === "ros" ? '<span class="muted keys-hint">자율 비행 보기: 조종·비상 정지는 자율 비행 화면에서</span>'
+    ${!ui.live ? "" : st.source === "ros" ? '<span class="muted keys-hint">자율 비행 보기: T 시작(두 번) · L 착륙 · Esc 비상 정지 · 2D 지도 클릭 뒤 G 보내기</span>'
       : '<span class="muted keys-hint">키보드: WASD 이동 · ↑↓ 높이 · ←→ 회전 · T 이륙 · L 착륙 · Esc 비상 정지</span>'}
-    <span class="safety">${grounded ? btn("takeoff", "", `aria-haspopup="dialog" aria-expanded="${ui.takeoff.open}"`) : btn("land")}
+    <span class="safety">${grounded && rosTakingOff(st) ? `<button data-cmd="land" class="${can("land") ? "" : "off"}" ${can("land") ? "" : 'aria-disabled="true"'}
+        title="자율 비행이 이륙을 그만둡니다(떠오르는 중이면 다 뜬 뒤 바로 내립니다)">이륙 취소</button>`
+      : grounded ? btn("takeoff", "", `aria-haspopup="dialog" aria-expanded="${ui.takeoff.open}"`) : btn("land")}
       ${estopButton(st)}</span>
   </section>`;
 }
@@ -882,8 +1399,9 @@ function detailItems(st) {
     ["온도", st.temp_high_c == null ? "없음" : `${st.temp_high_c}°C`],
     ["전방", st.front_tof.valid ? meters(st.front_tof.m) : "없음"],
     ["상태 수신", recv],
-    ["개입", `${st.operator_interventions ?? 0}회`],
-    ["임무", st.mission ? PHASE[st.mission.phase] || st.mission.phase || "없음" : "없음"],   // 자율 비행 내부 단계(state)는 코드라 적지 않는다
+    ["개입", st.operator_interventions == null ? "모름" : `${st.operator_interventions}회`],   // 자율 비행 보기는 개입 수를 받지 않는다
+    ["임무", rosTakeoffWords(st) || missionWords(st.mission)],   // 알려진 단계 이름은 쉬운 말로, 모르는 코드는 진행 상태(phase)로
+    ...(st.mission?.goal?.text ? [["목적지", st.mission.goal.text]] : []),   // 자율 비행 쪽에서 찍은 자리(그쪽 말 그대로)
   ];
 }
 
@@ -996,13 +1514,13 @@ function renderReview() {
   const { st, events, track } = current();
   const all = events;
   const count = (r) => all.filter((e) => e.review === r).length;
-  const autonomyOk = st.autonomy_used && st.operator_interventions === 0;
+  const n = st.operator_interventions;   // 자율 비행 보기는 개입 수를 받지 않는다(null: 지어내지 않고 모름)
   const cards = [
-    [ui.live ? "모터 동작 시간" : "비행 시간", clock(st.flight_time_s)],
+    [timeLabel(true), clock(st.flight_time_s)],
     ["탐색 진행", st.mission ? pct(st.mission.progress) : "없음"],
     ["발견", `${all.length}건`, `확인 ${count("confirmed")} · 오탐 ${count("false_positive")} · 미확인 ${count("unreviewed")}`],
-    ["자율 판정", !st.autonomy_used ? "자율 안 씀" : autonomyOk ? "개입 없음" : `개입 ${st.operator_interventions}회`,
-      st.autonomy_used && !autonomyOk ? "자율 성공으로 세지 않음" : ""],
+    ["자율 판정", !st.autonomy_used ? "자율 안 씀" : n == null ? "개입 모름" : n === 0 ? "개입 없음" : `개입 ${n}회`,
+      !st.autonomy_used ? "" : n == null ? "자율 비행 보기는 개입 수를 받지 않음" : n === 0 ? "" : "자율 성공으로 세지 않음"],
   ];
   return `<section class="summary" data-part="summary" aria-label="임무 요약">${cards.map(([k, v, sub]) => `<div class="metric"><span>${k}</span><b>${v}</b>${sub ? `<small>${sub}</small>` : ""}</div>`).join("")}</section>
     <p class="note">임무 후 보고용 화면입니다. 발견마다 확인·오탐을 정하면 요약에 바로 반영됩니다.</p>
@@ -1022,7 +1540,7 @@ function logLine(entry) {
 }
 
 const findingsText = (g) => (g.count === 1 ? `사람 발견 ${g.first}번 · 신뢰도 ${g.best.toFixed(2)}`
-  : `사람 발견 ${g.count}건 · ${g.first}~${g.last}번 · 가장 높은 신뢰도 ${g.best.toFixed(2)}`);
+  : `사람 발견 ${g.count}건 · ${g.first}~${g.last}번${spanText(g)} · 가장 높은 신뢰도 ${g.best.toFixed(2)}`);
 
 function timelinePanel(track) {
   const li = (kind, time, text) => `<li class="${kind}"><time>${esc(time)}</time><span>${esc(text)}</span></li>`;
@@ -1040,28 +1558,34 @@ function timelinePanel(track) {
 function renderControl() {
   const { sc, st, events } = current();
   const latest = events[0];
-  const can = (n) => st.allowed.includes(n);
+  const can = (n) => (n === "takeoff" ? canOpenTakeoff(st) : st.allowed.includes(n));
   const big = (n, label) => `<button class="big ${can(n) ? "" : "off"}" data-cmd="${n}">${label}</button>`;
   const grounded = onGround(st);
+  // 자율 비행 보기(실행기 autonomy·sim --phone, 11/17): 이륙 = 자율 비행 시작(PC와 같은 확인·두 번 누르기), 착륙·비상 정지.
+  // 손 조종(조이스틱·넘겨받기)과 일시정지·복귀는 자율 비행에 없는 명령이라 그리지 않는다. 조이스틱은 칸(data-part)으로 둬서
+  // 보기 모드가 바뀌면 화면 전체를 다시 그리고 조이스틱도 다시 묶는다
+  const ros = st.source === "ros";
   return `<div class="phone">
     ${statusStrip(st, events, true)}
     ${alertBox(sc, events, st)}
     <div data-part="latest">${latest ? `<div class="alert person slim"><b>최근 발견</b><span>사람 ${latest.confidence.toFixed(2)} · ${findingTime(latest)}</span></div>` : ""}</div>
-    <p class="note">현장에서 드론 옆에 두는 화면입니다. 자율 시작은 PC 감독 화면에서만 할 수 있습니다.</p>
+    <p class="note" data-part="note">${ros ? "자율 비행 보기 화면입니다. 이륙을 누르고 주변을 확인한 뒤 4초 안에 두 번 누르면 자율 비행이 시작합니다(PC 화면과 같음). "
+      + "손 조종은 없습니다(자율 비행이 조종). 지도는 실시간 감독 화면에서 봅니다."
+      : "현장에서 드론 옆에 두는 화면입니다. 자율 시작은 PC 감독 화면에서만 할 수 있습니다."}</p>
     ${takeoffPanel(st, true)}
-    <div class="big-grid" data-part="big">
-      ${st.mode === "paused" ? big("resume", "다시 시작") : big("pause", "일시정지")}
-      ${big("return_home", "복귀")}
-      ${grounded ? big("takeoff", "이륙") : big("land", "착륙")}
-      ${big("takeover", "넘겨받기")}
+    <div class="big-grid${ros ? " solo" : ""}" data-part="big">
+      ${ros ? "" : st.mode === "paused" ? big("resume", "다시 시작") : big("pause", "일시정지")}
+      ${ros ? "" : big("return_home", "복귀")}
+      ${grounded && !rosTakingOff(st) ? big("takeoff", "이륙") : big("land", grounded ? "이륙 취소" : "착륙")}
+      ${ros ? "" : big("takeover", "넘겨받기")}
     </div>
-    <div class="sticks" aria-label="조이스틱">
+    ${ros ? "" : `<div class="sticks" aria-label="조이스틱" data-part="sticks">
       <div class="stick" data-axes="ud,yaw"><span class="knob"></span><small>상하 · 회전</small></div>
       <div class="stick" data-axes="lr,fb"><span class="knob"></span><small>좌우 · 앞뒤</small></div>
     </div>
-    <p class="muted center" id="axes">입력 없음 · 자율 중에 움직이면 넘겨받기</p>
-    ${estopButton(st, true)}
-  </div>`;
+    <p class="muted center" id="axes" data-part="axes">입력 없음 · 자율 중에 움직이면 넘겨받기</p>`}
+    <div data-part="estop">${estopButton(st, true)}</div>
+  </div>`;   // 비상 정지도 칸으로: 자율 비행 보기에서는 허용(allowed)에 따라 바뀌는데, 칸 밖이면 처음 그린 "보기 노드 연결 전"에 멈췄다(11/17)
 }
 
 // ---------- 그리기: 바뀐 칸만 바꾼다 (영상·조이스틱·길게 누르기가 10Hz 갱신에 끊기지 않게) ----------
@@ -1084,7 +1608,7 @@ function syncHeader() {
 
 // 다시 그려도 초점을 지킬 버튼: 이륙 전 확인 칸(체크한 뒤 바로 이륙 버튼·T로), 영상·지도 보기 고르기.
 // 칸을 다시 그리면 버튼이 새로 만들어지므로, 같은 data 값을 가진 새 버튼(같은 값이 여럿이면 같은 순서, 없으면 마지막)으로 초점을 옮긴다.
-const KEEP_FOCUS = ["takeoff", "feed", "outline", "mapMode", "mapLayer", "mapBig"];
+const KEEP_FOCUS = ["takeoff", "feed", "outline", "mapMode", "mapLayer", "map3dOpt", "mapView", "mapHeights", "mapBig", "wbToggle", "wbTool"];
 
 function focusToKeep() {
   if (ui.takeoff.focus) return { sel: `[data-takeoff="${ui.takeoff.focus}"]`, i: 0 };
@@ -1092,6 +1616,32 @@ function focusToKeep() {
   if (!key) return null;
   const sel = `[data-${key.replace(/[A-Z]/g, (c) => `-${c.toLowerCase()}`)}="${el.dataset[key]}"]`;
   return { sel, i: Math.max(0, [...document.querySelectorAll(sel)].indexOf(el)) };
+}
+
+// 누르고 있는 칸(data-part)은 다시 그리지 않는다. 지도 칸은 위치가 올 때마다(초당 약 10번) 바뀌는데, 누르는 사이 칸이
+// 바뀌면 클릭이 사라지고(지도 찍기·여기로 보내기) 비상 정지를 0.6초 길게 눌러도 나가지 않았다(11/16 점검 A1).
+// 놓으면(클릭 처리가 끝난 뒤) 밀린 것을 그린다. 놓은 것을 못 받으면(창 밖에서 놓음 등) 10초 뒤 푼다.
+const pressing = new Map();   // 누른 것(포인터·키) → 그 칸과 바깥 칸 이름들
+let pressTimer = null;
+function pressParts(el, id) {
+  const keys = [];
+  for (let p = el?.closest?.("[data-part]"); p; p = p.parentElement?.closest("[data-part]")) keys.push(p.dataset.part);
+  if (!keys.length) return;
+  pressing.set(id, keys);
+  clearTimeout(pressTimer);
+  pressTimer = setTimeout(releaseAllParts, 10000);
+}
+function releaseParts(id) {
+  if (pressing.delete(id)) setTimeout(render, 0);
+}
+function releaseAllParts() {
+  if (!pressing.size) return;
+  pressing.clear();
+  render();
+}
+document.addEventListener("pointerdown", (ev) => pressParts(ev.target, `pointer${ev.pointerId}`), true);
+for (const event of ["pointerup", "pointercancel"]) {
+  document.addEventListener(event, (ev) => releaseParts(`pointer${ev.pointerId}`), true);
 }
 
 function render() {
@@ -1106,6 +1656,8 @@ function render() {
   const parts = [...tpl.content.querySelectorAll("[data-part]")];
   const layout = tpl.content.querySelector("[data-layout]")?.dataset.layout ?? "";
   const keys = `${parts.map((p) => p.dataset.part).join(",")}|${layout}`;
+  const pressed = new Set([...pressing.values()].flat());
+  if (pressed.size && ui.view === v && ui.cache.__keys !== keys) return;   // 칸 배치가 바뀌는 것은 놓은 뒤에 한꺼번에
   const keep = focusToKeep();
   ui.takeoff.focus = null;
   const refocus = () => {
@@ -1126,11 +1678,12 @@ function render() {
     bindSticks();
     attachMap3d();
     refocus();
+    refitMap();
     return placeConsole();
   }
   for (const p of parts) {
     const k = p.dataset.part, s = p.outerHTML;
-    if (ui.cache[k] === s) continue;
+    if (ui.cache[k] === s || pressed.has(k)) continue;   // 누르는 중인 칸은 놓은 뒤에 그린다(캐시를 안 바꿔 다음에 바뀐 것으로 본다)
     ui.cache[k] = s;
     const el = app.querySelector(`[data-part="${k}"]`);
     if (el) el.replaceWith(document.importNode(p, true));
@@ -1138,6 +1691,21 @@ function render() {
   refocus();
   attachMap3d();
   placeConsole();
+  refitMap();
+}
+
+// 2D 지도 그림 가로(fitWidth)가 지금 칸 비율과 다르면(처음 그림·창 크기·칸 배치가 바뀜) 한 번 더 그린다.
+// 새 상태가 안 와도(땅·기록 끝) 칸에 맞게. 칸 크기는 그림과 상관없이 정해지므로 한 번이면 맞고, 혹시 몰라 0.5초에 한 번만
+let refitAt = 0, refitTimer = 0;
+function refitMap() {
+  requestAnimationFrame(() => {
+    const vb = document.querySelector(".live-main svg[data-map2d]")?.viewBox?.baseVal;
+    if (!vb?.height || Math.abs(fitWidth(vb.height) - vb.width) <= vb.width * 0.03) return;
+    const wait = refitAt + 500 - performance.now();
+    if (wait > 0) { clearTimeout(refitTimer); refitTimer = setTimeout(refitMap, wait); return; }   // 창을 끄는 중이면 끝난 뒤 한 번
+    refitAt = performance.now();
+    render();
+  });
 }
 
 // ---------- 게이트웨이 연결 ----------
@@ -1160,11 +1728,31 @@ function sendCmd(name, args = {}) {
   send({ type: "cmd", id: `c-${++ui.seq}`, name, args });
 }
 
+// 화면을 연 채 게이트웨이만 새 회차로 다시 켰다: 앞 회차 발견·지나온 길·찍은 자리를 화면에서 지운다(발견 번호가 섞이지 않게).
+// 앞 회차 것은 그 회차 폴더에 남아 있다. 비행 기록은 시각이 있어 두고 "새 회차" 줄을 넣는다. 새 회차 발견·기록은 다시 읽는다.
+function newRun(msg) {
+  ui.findings.clear();
+  ui.reviewPending = {}; ui.alertFirst = 0; ui.newFindingAt = 0; ui.lastDet = null; ui.selFinding = null;
+  Object.assign(ui.autonomy, { track: [], path: null, people: null, pathRev: undefined, peopleRev: undefined });
+  ui.goto.pick = null;
+  ui.fell = null;
+  ui.mapView = { zoom: 1, px: 0, py: 0, rot: 0 };   // 새 회차는 다 보이게
+  logLine({ time: hhmmss(msg.at), kind: "mode", text: "게이트웨이 새 회차 · 앞 회차 발견·지나온 길은 화면에서 지움(회차 폴더에 남음)" });
+  loadFindings().then(render);
+  mapBoard?.reset();   // 지도 그림도 새 회차 것으로
+  mapBoard?.load().then(render);
+}
+
 function onMessage(msg) {
   if (msg.type === "drone_state") {
-    if (!msg.connected || (ui.state?.mode === "manual" && msg.mode !== "manual") ||
+    if (ui.state?.run_id && msg.run_id && msg.run_id !== ui.state.run_id) newRun(msg);
+    // 끊길 때 한 번만 조종 입력을 푼다. 끊긴 동안 상태마다 풀면 비상 정지 길게 누르기도 계속 취소됐다(11/16 점검 A2)
+    if ((ui.state?.connected && !msg.connected) || (ui.state?.mode === "manual" && msg.mode !== "manual") ||
         (msg.mapping_console_url && ui.state?.video?.available && !msg.video?.available)) resetOperator();
-    if (ui.takeoff.open && !onGround(msg)) closeTakeoff(true);   // 이륙했거나(확인은 게이트웨이가 이미 씀) 땅이 아니다
+    if (msg.mode !== "disconnected") ui.lastAir = AIR_MODES.includes(msg.mode) || msg.flight_busy === "takeoff";
+    noteFell(msg);
+    // 이륙했거나(확인은 게이트웨이가 이미 씀) 땅이 아니다. 자율 비행 보기는 시작을 받으면 닫는다(다시 요청에 확인이 남아야 한다)
+    if (ui.takeoff.open && (!onGround(msg) || rosTakingOff(msg))) closeTakeoff(true);
     ui.state = msg;
     syncAutonomy(msg);
   } else if (msg.type === "result" && !msg.ok) {
@@ -1174,23 +1762,74 @@ function onMessage(msg) {
     onDetection(msg);
   } else if (msg.type === "detection_review") {
     onReview(msg);
+  } else if (msg.type === "board") {   // 지도 그림(진입로·동선): 그림을 바꾸고, 비행 기록 줄이 되는 것이면 적는다
+    const text = mapBoard?.onMessage(msg);
+    if (text) logLine({ time: hhmmss(msg.at), kind: "board", text });
   } else if (msg.type === "event") {
-    const d = msg.detail || {};
-    if (msg.kind === "cmd_ignored") return render();   // 자율이 auto가 아닐 때 보낸 이동 명령(1초에 한 번까지). 기록에는 남기지 않는다
-    const text = msg.kind === "mode_changed" ? `${(MODE[d.from] || [d.from])[0]} → ${(MODE[d.to] || [d.to])[0]} · ${reasonText(d.reason)}`
-      : msg.kind === "safety_landing" ? `안전 착륙: ${reasonText(d.reason)}`
-      : msg.kind === "video_changed" ? `영상 ${d.on ? "켜짐" : "꺼짐"} (${VIDEO_REASON[d.reason] || d.reason})`
-      : msg.kind === "autonomy_connected" ? `자율 연결 (${d.ground_origin ? "지상에서" : "공중에서 붙어 자율 시작 불가"})`
-      : msg.kind === "autonomy_disconnected" ? "자율 연결 끊김"
-      : msg.kind === "mission_finished" ? `임무 끝: ${d.phase === "arrived" ? "도착" : "실패"}${d.reason ? ` · ${reasonText(d.reason)}` : ""}`
-      : msg.kind === "command_rejected" ? `${CMD_LABEL[d.name] || d.name} 거절: ${REASON[d.reason] || d.reason}${d.detail ? ` · ${reasonText(d.detail)}` : ""}` : msg.kind;
-    const kind = msg.kind === "mode_changed" || msg.kind.startsWith("autonomy") || msg.kind === "mission_finished" ? "mode"
-      : msg.kind === "video_changed" ? "video" : "intervention";
-    logLine({ time: hhmmss(msg.at), kind, text });
+    const d = msg.detail || {}, line = eventLine(msg);
+    if (!line) return render();
+    logLine(line);
     if (msg.kind === "safety_landing") toast(`안전 착륙: ${reasonText(d.reason)}`);
     if (msg.kind === "video_changed" && d.reason === "ground_timeout") toast("지상에서 영상이 오래 켜져 있어 껐습니다 (기체 발열)");
+    if (msg.kind === "command_rejected" && d.by === "autonomy_driver") {
+      // 알림이 임무 단계(TAKEOFF)보다 먼저 올 수 있어 단계는 보지 않는다. 비행 노드(11/17): 드론이 바로 거절하면(error)
+      // 다시 보내지 않고 시작 대기로 돌아간다. 답이 없거나 점검을 못 넘으면 20초 뒤 다시 요청한다(3번까지)
+      toast(driverFailText(d) + (d.name !== "takeoff" ? "" : d.reason === "error_response"
+        ? " · 자율 비행은 다시 보내지 않고 시작 대기로 돌아갑니다" : " · 자율 비행이 20초 뒤 다시 요청합니다(3번까지)"));
+    }
   }
   render();
+}
+
+// 자율 비행 노드 이름(/rosout) → 쉬운 말(비행 기록의 경고·오류 줄). 모르는 이름은 그대로 적는다
+const NODE_NAME = { tt_mission: "비행 노드", tt_tello_driver: "자율 비행 드라이버", tt_pose: "위치 추정", tt_depth: "깊이 추정",
+  tt_detector: "자율 비행 사람 탐지", tt_autonomy_web: "자율 비행 웹" };
+
+// 게이트웨이 높이 지켜보기의 켜짐·풀림(비행 기록 한 줄). 땅·착륙 단계로 끝난 것(end)은 null(적지 않음)
+function heightWatchText(d) {
+  if (!d.on && d.end) return null;
+  if (d.what === "low") {
+    return d.on ? `주의: 드론 아래가 가깝습니다(하방 ${d.tof_m == null ? "0.1 m 아래" : meters(d.tof_m)})`
+      : `드론 아래 거리가 다시 넉넉합니다(하방 ${meters(d.tof_m)})`;
+  }
+  return d.on ? `주의: 자율 비행이 높이를 실제보다 ${Math.abs(d.gap_m).toFixed(1)} m ${d.gap_m > 0 ? "높게" : "낮게"} 봄`
+    + `(추정 ${meters(d.est_m)} · 기압 ${meters(d.baro_m)} · 하방 ${meters(d.tof_m)})` : "자율 비행 높이 추정이 다시 맞습니다";
+}
+
+// 자율 비행 드라이버가 이륙·착륙을 하지 못했다(게이트웨이 ros_view가 드라이버 last_result로 알린다, by: autonomy_driver).
+// 드론 응답은 그대로 보인다(Tello는 거절 까닭을 말하지 않고 error만 답한다).
+function driverFailText(d) {
+  const what = CMD_LABEL[d.name] || d.name;
+  if (d.reason === "error_response") return `드론이 ${what}을 거절했습니다(응답 ${d.response || "없음"})`;
+  if (d.reason === "timeout") return `드론이 ${what} 명령에 답하지 않았습니다`;
+  if (d.reason === "preflight_failed") return `${what} 전 점검을 통과하지 못했습니다${d.failed?.length ? `: ${d.failed.map((k) => CHECK[k] || k).join(", ")}` : ""}`;
+  return `${what} 실패: ${REASON[d.reason] || reasonText(d.reason)}`;
+}
+
+// 게이트웨이 알림 한 줄(비행 기록). 처음 연 화면이 이번 회차 기록(GET /api/events)을 채울 때도 같은 글을 쓴다.
+function eventLine(msg) {
+  const d = msg.detail || {};
+  if (msg.kind === "cmd_ignored") return null;   // 자율이 auto가 아닐 때 보낸 이동 명령(1초에 한 번까지). 기록에는 남기지 않는다
+  const text = msg.kind === "mode_changed" ? `${(MODE[d.from] || [d.from])[0]} → ${(MODE[d.to] || [d.to])[0]} · ${reasonText(d.reason)}`
+    : msg.kind === "safety_landing" ? `안전 착륙: ${reasonText(d.reason)}`
+    : msg.kind === "video_changed" ? `영상 ${d.on ? "켜짐" : "꺼짐"} (${VIDEO_REASON[d.reason] || d.reason})`
+    : msg.kind === "autonomy_connected" ? `자율 연결 (${d.ground_origin ? "지상에서" : "공중에서 붙어 자율 시작 불가"})`
+    : msg.kind === "autonomy_disconnected" ? "자율 연결 끊김"
+    : msg.kind === "mission_finished" ? `임무 끝: ${d.phase === "arrived" ? "도착" : "실패"}${d.reason ? ` · ${reasonText(d.reason)}` : ""}`
+    : msg.kind === "command_rejected" && d.by === "autonomy_driver" ? driverFailText(d)
+    : msg.kind === "mission_note" ? missionNoteText(d)
+    : msg.kind === "goal_note" ? `자율 비행: ${d.text}`   // 찍은 자리에 대한 비행 노드의 답(받음·거절·그만둠·도착)
+    : msg.kind === "height_watch" ? heightWatchText(d)
+    : msg.kind === "autonomy_log" ? `${NODE_NAME[d.node] || d.node} ${d.level === "error" ? "오류" : "경고"}: ${d.text}`
+    : msg.kind === "command_rejected" ? `${CMD_LABEL[d.name] || d.name} 거절:${REASON[d.reason] || d.reason}${d.detail ? ` · ${reasonText(d.detail)}` : ""}` : msg.kind;
+  if (text == null) return null;   // 땅·착륙으로 끝난 높이 알림(end)은 적지 않는다(다시 정상이 된 것이 아니다)
+  const kind = msg.kind === "goal_note" ? (d.warn ? "intervention" : "mode")
+    : msg.kind === "height_watch" ? (d.on ? "intervention" : "mode")
+    : msg.kind === "autonomy_log" ? (d.level === "error" ? "link" : "intervention")   // 오류는 빨강 줄, 경고는 주의 줄
+    : msg.kind === "mode_changed" || msg.kind.startsWith("autonomy") || msg.kind === "mission_finished"
+    || msg.kind === "mission_note" ? "mode"
+    : msg.kind === "video_changed" ? "video" : "intervention";
+  return { time: hhmmss(msg.at), kind, text };
 }
 
 function onDetection(msg) {
@@ -1198,19 +1837,50 @@ function onDetection(msg) {
   const f = msg.finding, isNew = !ui.findings.has(f.finding_id);
   ui.findings.set(f.finding_id, f);
   if (isNew) {
-    const n = findingNumberOf(f.finding_id), top = ui.timeline[0], conf = f.best.confidence;
+    const n = findingNumberOf(f.finding_id);
     if (Date.now() - ui.newFindingAt >= PERSON_ALERT_MS) ui.alertFirst = n;   // 알림이 떠 있지 않았으면 새 묶음의 첫 번호
     ui.newFindingAt = Date.now();
     flashPerson();
     beep();
-    if (top?.group) {   // 바로 앞 줄도 사람 발견이면 그 줄에 묶는다(시각은 마지막 발견)
-      Object.assign(top.group, { last: n, count: top.group.count + 1, best: Math.max(top.group.best, conf) });
-      top.time = hhmmss(f.first_seen);
-    } else {
-      logLine({ time: hhmmss(f.first_seen), kind: "detection", group: { first: n, last: n, count: 1, best: conf } });
-    }
+    logFinding(f);
   }
 }
+
+function logFinding(f) {   // 바로 앞 줄도 사람 발견이면 그 줄에 묶는다(시각은 마지막 발견, 묶인 동안 시간도 적는다)
+  const n = findingNumberOf(f.finding_id), top = ui.timeline[0], conf = f.best.confidence, at = Date.parse(f.first_seen);
+  if (top?.group) {
+    Object.assign(top.group, { last: n, count: top.group.count + 1, best: Math.max(top.group.best, conf), to: at });
+    top.time = hhmmss(f.first_seen);
+  } else {
+    logLine({ time: hhmmss(f.first_seen), kind: "detection", group: { first: n, last: n, count: 1, best: conf, from: at, to: at } });
+  }
+}
+// 묶인 발견이 걸친 시간(11/17: "사람 발견 8건"이 2분에 걸친 것인데 한 줄이라 순간처럼 보였다)
+function spanText(g) {
+  const s = Math.round((g.to - g.from) / 1000);
+  return !Number.isFinite(s) || s < 5 ? "" : ` · ${s >= 60 ? `${Math.floor(s / 60)}분 ${s % 60}초` : `${s}초`} 동안`;
+}
+
+// 화면을 처음 열면 이번 회차 비행 기록을 채운다: 게이트웨이가 모아 둔 알림(GET /api/events)과 받아 둔 발견(처음 본 시각)을
+// 시각 순으로 적는다(알림 소리·깜빡임 없이). 그동안 WS로 온 메시지는 잡아 두었다가 뒤에 처리하고, 기록에 이미 있는 알림은 건너뛴다.
+async function loadHistory() {
+  let events = [];
+  try {
+    const r = await fetch("/api/events", { cache: "no-store" });
+    if (r.ok) events = (await r.json()).events || [];
+  } catch (e) { /* 기록을 내주지 않는 게이트웨이: 지금처럼 연 뒤부터 쌓는다 */ }
+  const when = (iso) => { const t = Date.parse(iso); return Number.isFinite(t) ? t : 0; };
+  const items = [...events.map((m) => ({ t: when(m.at), m })), ...[...ui.findings.values()].map((f) => ({ t: when(f.first_seen), f }))];
+  ui.timeline = [];
+  for (const x of items.sort((a, b) => a.t - b.t)) {
+    if (x.f) logFinding(x.f);
+    else if (x.m.type === "detection_review") onReview(x.m);
+    else if (x.m.type === "board") { const text = mapBoard?.lineText(x.m); if (text) logLine({ time: hhmmss(x.m.at), kind: "board", text }); }
+    else { const line = eventLine(x.m); if (line) logLine(line); }
+  }
+  return new Set(events.map(historyKey));
+}
+const historyKey = (m) => `${m.type}|${m.at}|${m.kind || m.finding_id || m.item?.id || ""}|${m.review || m.op || ""}`;
 
 // 확인·오탐은 게이트웨이가 발견마다 저장하고 모든 화면에 알린다(이 화면에서 누른 것도 이 메시지로 기록에 남는다).
 const REVIEW_WORD = { confirmed: "확인", false_positive: "오탐으로 표시", unreviewed: "미확인으로 되돌림" };
@@ -1314,10 +1984,28 @@ function connect() {
   ui.ws = ws;
   const now = () => hhmmss(new Date().toISOString());
   ws.onopen = async () => {
+    const first = !ui.everOpen;
     if (ui.everOpen && !ui.wsOpen) logLine({ time: now(), kind: "link", text: "게이트웨이 다시 연결" });   // 끊긴 사이는 기록이 비어 있다
-    ui.wsOpen = ui.everOpen = true; await loadFindings(); render();
+    ui.wsOpen = ui.everOpen = true;
+    if (first) ui.hold = [];   // 처음 열 때: 이번 회차 기록을 채우는 동안 온 메시지는 잡아 두었다가 뒤에 처리한다
+    let had = new Set();
+    try {
+      await loadFindings();
+      if (first) had = await loadHistory();
+      await mapBoard?.load();   // 지도 그림: 기록을 채운 뒤에 받아야 그사이 바뀐 것을 놓치지 않는다
+    } finally {
+      const held = ui.hold || [];
+      ui.hold = null;
+      for (const m of held) if (!had.has(historyKey(m))) onMessage(m);
+    }
+    render();
   };
-  ws.onmessage = (ev) => { try { onMessage(JSON.parse(ev.data)); } catch (e) { /* 잘못된 메시지는 무시 */ } };
+  ws.onmessage = (ev) => {
+    try {
+      const m = JSON.parse(ev.data);
+      if (ui.hold) ui.hold.push(m); else onMessage(m);
+    } catch (e) { /* 잘못된 메시지는 무시 */ }
+  };
   ws.onclose = () => {
     if (ui.wsOpen) logLine({ time: now(), kind: "link", text: "게이트웨이 끊김 · 다시 연결하는 중" });   // 다시 붙기를 시도할 때마다 적지 않는다
     ui.wsOpen = false; resetOperator(); render(); setTimeout(connect, 1000);
@@ -1358,6 +2046,27 @@ document.addEventListener("click", (ev) => {
     savePref("map-big", ui.mapBig ? "1" : "0");
     return render();
   }
+  const o3 = ev.target.closest("[data-map3d-opt]");   // 3D 보기: 사진 색·천장
+  if (o3) {
+    const k = o3.dataset.map3dOpt;
+    ui.map3d[k] = !ui.map3d[k];
+    savePref(`map3d-${k}`, ui.map3d[k] ? "1" : "0");
+    return render();
+  }
+  if (ev.target.closest("[data-map-heights]")) {   // 막힌 칸 높이로 나눠 칠하기(우리 것, 기본 꺼짐). 칸 그림을 다시 칠한다
+    ui.mapHeights = !ui.mapHeights;
+    savePref("controller.map.heights", ui.mapHeights ? "1" : "0");
+    return paintGrid().then(render);
+  }
+  const mv = ev.target.closest("[data-map-view]");   // 2D 지도 돌리기·처음대로 버튼
+  if (mv) {
+    if (mv.dataset.mapView === "reset") return resetMapView();
+    const step = mv.dataset.mapView === "cw" ? 15 : -15, f = ui.mapFrame;
+    // 처음 보기(확대·이동 없음)면 돌린 채로 다시 다 보이게, 확대·이동한 보기면 지금 가운데를 축으로 돌린다
+    if (MapView.isDefault(ui.mapView) || !f?.fitFor) ui.mapView = { ...ui.mapView, rot: MapView.rotateBy({ rot: ui.mapView.rot }, step).rot };
+    else { const turned = MapView.rotateBy(f, step); ui.mapView = MapView.relative(turned, f.fitFor(turned.rot)); }
+    return render();
+  }
   const ly = ev.target.closest("[data-map-layer]");
   if (ly) {
     const key = ly.dataset.mapLayer;
@@ -1372,15 +2081,20 @@ document.addEventListener("click", (ev) => {
     ui.reviews[id] = ui.reviews[id] === rv.dataset.review ? "unreviewed" : rv.dataset.review;   // 샘플: 이 브라우저 안에서만
     return render();
   }
-  const pick = ev.target.closest(".det[data-event], .find[data-event]");
-  if (pick) {   // 발견 카드 ↔ 지도의 발견 지점: 같이 강조하고, 지도에서 고르면 그 카드가 보이게 스크롤한다
+  const pick = ev.target.closest(".det[data-event]");
+  if (pick) {   // 발견 카드 고르기: 누른 카드를 강조한다(한 번 더 누르면 풂)
     const id = pick.dataset.event;
     ui.selFinding = ui.selFinding === id ? null : id;
-    render();
-    if (ui.selFinding && pick.classList.contains("find")) {
-      const still = matchMedia("(prefers-reduced-motion: reduce)").matches;
-      $(`#app .det[data-event="${CSS.escape(id)}"]`)?.scrollIntoView({ block: "nearest", behavior: still ? "auto" : "smooth" });
-    }
+    return render();
+  }
+  const gb = ev.target.closest("[data-goto]");
+  if (gb) return gb.dataset.goto === "send" ? sendGoto() : clearGoto();
+  const gm = ev.target.closest("svg[data-goto-map]");
+  if (gm) {   // 자율 비행 보기: 2D 지도를 한 번 클릭하면 보낼 자리를 찍는다(아직 보내지 않는다, 자율 비행 웹과 같음).
+    // 두 번 클릭(처음대로)과 겹치지 않게 조금 기다렸다 찍는다(자율 비행 웹과 같은 0.28초)
+    const p = mapPoint(gm, ev);
+    clearTimeout(ui.goto.tapTimer);
+    if (p) ui.goto.tapTimer = setTimeout(() => { ui.goto.pick = p; render(); }, 280);
     return;
   }
   const ol = ev.target.closest("[data-outline]");
@@ -1411,7 +2125,7 @@ document.addEventListener("click", (ev) => {
   if (name === "return_home") return toast("복귀는 자율 비행 쪽과 맞춘 뒤 연결합니다 (화면 자리만)");
   if (b.classList.contains("off")) {
     const why = ui.live && !ui.wsOpen ? "게이트웨이에 연결되지 않았습니다"
-      : ui.state?.source === "ros" ? REASON.ros_view_read_only
+      : ui.state?.source === "ros" ? (ROS_CMDS.includes(name) ? "지금 상태에서는 할 수 없습니다" : REASON.ros_view_not_available)
       : name === "auto_start" && ui.live ? "자율 비행이 연결되지 않았습니다"
       : name.startsWith("video_") ? REASON.video_disabled : "지금 상태에서는 할 수 없습니다";
     return toast(`${CMD_LABEL[name]}: ${why}`);
@@ -1439,14 +2153,27 @@ function openTakeoff() {
 function closeTakeoff(keepConfirm = false) {   // keepConfirm: 이륙해서 닫을 때(게이트웨이가 확인을 이미 썼다)
   if (!ui.takeoff.open) return;
   ui.takeoff.open = false;
+  ui.takeoff.armedUntil = 0;
   if (!keepConfirm && areaChecked(current().st)) setArea(false);
   ui.takeoff.confirmedAt = null;
   ui.takeoff.sampleChecked = false;
 }
 function requestTakeoff() {   // 이륙 버튼·T 키: 칸이 닫혀 있으면 열고, 열려 있으면 준비됐을 때만 이륙(아니면 까닭을 알림)
-  if (!ui.takeoff.open) return openTakeoff();
-  const why = takeoffBlocker(current().st);
+  if (!ui.takeoff.open) {
+    if (rosTakingOff(current().st)) return toast("자율 비행이 이륙하는 중입니다 · 그만두려면 이륙 취소(L)");
+    return openTakeoff();
+  }
+  const st = current().st;
+  const why = takeoffBlocker(st);
   if (why) return toast(why);
+  if (ui.live && st.source === "ros") {   // 자율 비행 웹과 같은 두 번 누르기: 첫 번째는 4초 동안 "한 번 더"
+    if (!rosArmed()) {
+      ui.takeoff.armedUntil = Date.now() + 4000;
+      setTimeout(() => { if (ui.takeoff.armedUntil && !rosArmed()) { ui.takeoff.armedUntil = 0; render(); } }, 4100);
+      return render();
+    }
+    ui.takeoff.armedUntil = 0;
+  }
   sendCmd("takeoff");
 }
 // 지도 콘솔 수동 조종 모드: 주변 확인 뒤 30초 안에 이륙해야 한다(게이트웨이 규칙). 남은 시간을 보이고, 지나면 확인을 푼다.
@@ -1527,15 +2254,14 @@ document.addEventListener("keydown", (ev) => {
   const hold = ev.target.closest?.("[data-hold]");
   if (hold && (k === "Space" || k === "Enter")) {
     ev.preventDefault();
+    pressParts(hold, `key${k}`);   // 키로 길게 누르는 동안에도 버튼 칸을 다시 그리지 않는다
     return startHold(hold, k);
   }
   if (!controlPageFocused()) return;
   if (k === "Escape") {
     ev.preventDefault();
     resetOperator();
-    if (ui.state?.flight_busy === "takeoff" || ["manual", "auto", "paused", "landing"].includes(ui.state?.mode)) {
-      sendCmd("emergency");
-    }
+    if (maybeAirborne(ui.state)) sendCmd("emergency");
     render();
   } else if (k === "KeyT" && keysActive()) {
     ev.preventDefault();
@@ -1545,6 +2271,9 @@ document.addEventListener("keydown", (ev) => {
     resetOperator();
     sendCmd("land");
     render();
+  } else if (k === "KeyG" && ui.state?.source === "ros" && ui.goto.pick) {   // 자율 비행 보기: 찍은 자리 보내기(자율 비행 웹 G)
+    ev.preventDefault();
+    sendGoto();
   } else if (AXES[k] && keysActive() && ui.state?.connected && ui.state.mode === "manual") {
     ev.preventDefault();
     held.add(k);
@@ -1553,10 +2282,11 @@ document.addEventListener("keydown", (ev) => {
 });
 document.addEventListener("keyup", (ev) => {
   const k = ev.code;
+  releaseParts(`key${k}`);
   if (emergencyHold?.release === k) cancelEmergencyHold();
   if (AXES[k] && held.delete(k)) send({ type: "rc", axes: keyAxes() });
 });
-const leaveControls = () => { resetOperator(); render(); };
+const leaveControls = () => { resetOperator(); pressing.clear(); render(); };
 window.addEventListener("blur", leaveControls);
 window.addEventListener("pagehide", resetOperator);
 window.addEventListener('pagehide', () => liveSave?.dispose());
@@ -1810,7 +2540,7 @@ document.addEventListener("click", (ev) => {
     $("#scenario-wrap").hidden = true;
     badge.classList.replace("sample", ui.state.source === "fake" || ui.state.source === "replay" ? "live" : "real");
     badge.title = ui.state.source === "replay" ? "지난 회차 기록을 재생하는 화면입니다. 명령은 보내지 않습니다."
-      : ui.state.source === "ros" ? "자율 비행 프로그램이 드론에 붙어 날고, 이 화면은 보기만 합니다. 조종은 자율 비행 화면에서 합니다."
+      : ui.state.source === "ros" ? "자율 비행 프로그램이 드론에 붙어 납니다. 이 화면의 시작·착륙·비상 정지·지도 찍은 자리는 자율 비행 화면과 같은 명령을 보냅니다."
       : "게이트웨이에 연결된 화면입니다. 버튼이 실제로 명령을 보냅니다.";
     connect();
   } else {
@@ -1821,9 +2551,16 @@ document.addEventListener("click", (ev) => {
   // 프리셋 고르기. 고른 뒤 선택 상자에서 포커스를 빼야 WASD 조종 키가 다시 먹는다(선택 상자에 포커스가 가면 조종 입력은 멈춘다).
   const pick = $("#preset");
   fillPresetPicker();
+  // 주소에 ?preset=을 붙여 열면(실행기가 여는 화면) 그 프리셋을 고른 것과 같다: 프리셋이 정한 지도 보기(2D/3D)로 시작한다.
+  // 이 브라우저에 기억한 보기는 그대로 둔다(주소 없이 열면 기억한 보기).
+  if (new URLSearchParams(location.search).get("preset")) {
+    const mode = livePreset().panels.find((c) => c.id === "map")?.mode;
+    if (MAP_MODES[mode]) ui.map3d.mode = mode;
+  }
   pick.onchange = () => { choosePreset(pick.value); pick.blur(); };
   window.addEventListener("resize", () => { if (ui.edit && editLocked()) render(); });
   window.addEventListener("hashchange", leaveControls);
   window.addEventListener("resize", placeConsole);
+  window.addEventListener("resize", refitMap);   // 2D 지도 그림 비율을 새 칸에(fitWidth)
   render();
 })();

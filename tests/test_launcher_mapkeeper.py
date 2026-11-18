@@ -191,6 +191,21 @@ class MapKeeperTests(unittest.TestCase):
         self.assertEqual(self.servers.posts[-1][:2], ('/api/live/stop', {'session_id': 'live_1', 'reason': 'user_stop'}))
         self.assertIsNone(self.keeper.session)
 
+    def test_stop_during_a_check_is_not_taken_for_the_user_finishing(self):
+        # 11/15 sim에서 끌 때 "지도 콘솔에서 지도를 마무리했어요(세션 None…)"가 나왔다: 지도 상태를 읽는 사이 실행기가 끝낸 세션
+        self.step()
+        real = self.servers.get_json
+
+        def stop_meanwhile(url, timeout=2.0):
+            if '/api/live/state' in url:
+                self.keeper.stop()
+                self.servers.live = {'session_status': 'stopping', 'stop_reason': 'user_stop'}
+            return real(url, timeout)
+        with patch.object(mapkeeper.winproc, 'get_json', side_effect=stop_meanwhile):
+            self.step()
+        self.assertEqual(self.said[-1], '  지도 세션 live_1 끝냄(저장).')
+        self.assertIsNone(self.keeper.held)
+
 
 if __name__ == '__main__':
     unittest.main()

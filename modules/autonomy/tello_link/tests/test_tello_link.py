@@ -8,13 +8,14 @@ import math
 import os
 import sys
 import tempfile
+import threading
 import time
 import unittest
 
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
 from fake_tello import FakeTello  # noqa: E402
-from tello_link import TelloLink, classify, parse_ext_tof, parse_state  # noqa: E402
+from tello_link import TelloLink, classify, parse_ext_tof, parse_state, stray_tof_reply  # noqa: E402
 
 PACKET = ("mid:-1;x:-100;y:-100;z:-100;mpry:0,0,0;pitch:2;roll:-3;yaw:90;vgx:0;vgy:0;vgz:0;"
           "templ:60;temph:63;tof:120;h:35;bat:87;baro:12.34;time:5;agx:-2.00;agy:1.00;agz:-998.00;\r\n")
@@ -80,6 +81,8 @@ class ClassifyTest(unittest.TestCase):
         self.assertEqual(parse_ext_tof("error")["reason"], "error_response")
         self.assertEqual(parse_ext_tof(None)["reason"], "no_response")
         self.assertEqual(parse_ext_tof("ok")["reason"], "bad_format")
+        self.assertEqual(parse_ext_tof("tof 0")["reason"], "below_min")   # 10/30 실기체 오류값
+        self.assertFalse(parse_ext_tof("tof 0")["valid"])
         self.assertEqual(parse_ext_tof("tof inf")["reason"], "bad_format")
 
 
@@ -124,6 +127,42 @@ class LinkWithFakeTest(unittest.TestCase):
         self.assertTrue(self.link.rc(0, 0, 0, 0).blocked)
         time.sleep(0.2)
         self.assertEqual(self.fake.received, ["command"])
+
+    def test_rc_does_not_wait_for_pending_query(self):
+        # 11/04 외부 리뷰: 전방 ToF 조회가 응답을 기다리는 동안 rc(멈춤 포함)가 같은 잠금을 기다려 최대 약 0.5초 늦었다
+        self.link.close()
+        self.link = TelloLink(host="127.0.0.1", cmd_port=28889, local_cmd_port=0, state_port=28890, bind_ip="127.0.0.1",
+                              default_timeout=1.0, allow_flight=True, source="fake").start()
+        self.link.send("command")
+        self.fake.ext_kit, self.fake.ext_delay = True, 0.4
+        out = {}
+        query = threading.Thread(target=lambda: out.update(r=self.link.send("EXT tof?", timeout=0.6)))
+        query.start()
+        time.sleep(0.05)
+        t0 = time.perf_counter()
+        self.link.rc(0, 0, 0, 0)
+        waited = time.perf_counter() - t0
+        query.join()
+        self.assertLess(waited, 0.05, "rc가 ToF 응답을 기다렸다")
+        self.assertEqual(out["r"].response, "tof 481", "응답 짝이 맞는다 (rc에는 응답이 없다)")
+        self.assertEqual(self.fake.received[-2:], ["EXT tof?", "rc 0 0 0 0"])
+
+    def test_late_tof_reply_is_not_the_takeoff_reply(self):
+        # 11/16 점검 A4: 제 시간을 넘긴 EXT tof? 답(`tof 481`)이 이륙 답 자리에 오면 "안 뜸"으로 읽혀 떠 있는데 지상으로 보였다
+        self.link.close()
+        self.link = TelloLink(host="127.0.0.1", cmd_port=28889, local_cmd_port=0, state_port=28890, bind_ip="127.0.0.1",
+                              default_timeout=1.0, allow_flight=True, log_root=self.tmp.name, run_id="late_tof",
+                              source="fake").start()
+        self.link.send("command")
+        self.fake.ext_kit, self.fake.ext_delay = True, 0.3
+        q = self.link.send("EXT tof?", timeout=0.1)
+        self.assertEqual((q.response, q.reason), (None, "timeout"))
+        r = self.link.send("takeoff", timeout=3.0)
+        self.assertEqual((r.response, r.ok), ("ok", True))
+        self.assertTrue(self.fake.flying)
+        self.assertFalse(stray_tof_reply("EXT tof?", "tof 481"))   # ToF를 물은 명령에는 제 답이다
+        self.assertTrue(stray_tof_reply("land", "tof 8191"))
+        self.assertFalse(stray_tof_reply("battery?", "87"))
 
     def test_timeout_is_invalid(self):
         self.fake.close()

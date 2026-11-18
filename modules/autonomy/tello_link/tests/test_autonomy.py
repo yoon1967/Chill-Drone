@@ -64,6 +64,16 @@ class AutonomyLinkTest(unittest.TestCase):
         snap = a.snapshot()["people"]["people"][0]
         self.assertEqual((snap["x_m"], snap["y_m"], snap["top_m"], snap["gone"]), (1.0, 2.0, 1.6, True))
 
+    def test_trail_for_a_newly_opened_screen(self):   # 11/17: 비행 중에 새로 연 화면에는 처음 지나온 길이 없었다
+        a = AutonomyLink()
+        a.open("au-1")
+        for x in (0.0, 0.01, 0.05, 0.2, 0.21):                     # 3 cm 넘게 움직일 때만 한 점(화면과 같은 규칙)
+            a.receive(msg("pose", x_m=x, y_m=0.5, yaw_rad=0.0, frame="map"))
+        self.assertEqual(a.trail()["points"], [[0.0, 0.5], [0.05, 0.5], [0.2, 0.5]])
+        a.close("au-1")
+        a.open("au-2")
+        self.assertEqual(a.trail()["points"], [])                    # 새 연결은 새 지도
+
     def test_new_connection_starts_empty(self):   # 새 자율은 새 지도. 지난 연결의 경로·찾은 사람을 화면에 남기지 않는다
         a = AutonomyLink()
         a.open("au-1")

@@ -21,8 +21,17 @@ def gateway_reasons() -> set[str]:
     found |= set(re.findall(r'on_landed\("(\w+)"\)', gateway))                # 착륙 끝·비상 정지 뒤
     if '"mission_" + msg["phase"]' in arbiter:                                  # 임무 끝(자율이 도착·실패를 알림)
         found |= {"mission_arrived", "mission_failed"}
-    safety = flight.split("def _safety_reason", 1)[1].split("\n    def ", 1)[0]   # 자동 착륙 까닭
-    found |= set(re.findall(r'return "(\w+)"', safety))
+    for fn in ("_safety_reason", "_crash_check"):   # 자동 착륙 까닭(충돌·뒤집힘·스스로 내려앉음 포함)
+        body = flight.split(f"def {fn}", 1)[1].split("\n    def ", 1)[0]
+        found |= set(re.findall(r'return "(\w+)"', body))
+    ros_view = (LINK / "ros_view.py").read_text(encoding="utf-8")                # 자율 비행 보기: 드라이버 상태로 정한 모드
+    for fn in ("_derive_mode", "_landing_reason"):
+        body = ros_view.split(f"def {fn}", 1)[1].split("\n    def ", 1)[0]
+        found |= set(re.findall(r'return "\w+", "(\w+)"', body)) | set(re.findall(r'return "(\w+)"\n', body))
+    # 보기 모드는 자율 비행 드라이버가 스스로 내린 까닭도 그대로 싣는다(드라이버 landing_reason)
+    driver = (ROOT / "modules" / "autonomy" / "tello_driver" / "driver_core.py")
+    if driver.exists():
+        found |= set(re.findall(r'self\.landing_reason = "(\w+)"', driver.read_text(encoding="utf-8")))
     return found
 
 
