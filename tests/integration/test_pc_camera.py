@@ -1,0 +1,190 @@
+"""Real camera configuration boundary; no physical camera or Docker required."""
+from copy import deepcopy
+import io
+import subprocess
+from pathlib import Path
+import tempfile
+import threading
+import unittest
+from unittest.mock import Mock, patch
+
+from modules.mapping.localization.orbslam3_live import LiveManager, LiveSession, live_camera, require_slam_image
+
+
+class SLAMImagePreflightTests(unittest.TestCase):
+    def setUp(self):
+        wait = patch('modules.mapping.localization.orbslam3_live.time.sleep')
+        wait.start(); self.addCleanup(wait.stop)
+
+    def test_first_engine_timeout_is_retried_within_the_same_start(self):
+        with patch('modules.mapping.localization.orbslam3_live.subprocess.check_output',
+                   side_effect=[subprocess.TimeoutExpired('docker', 4), 'sha256:ready\n']) as docker:
+            self.assertEqual(require_slam_image(), 'sha256:ready')
+            self.assertEqual(docker.call_count, 2)
+
+    def test_starting_engine_recovers_after_both_inspect_and_list_fail(self):
+        with patch('modules.mapping.localization.orbslam3_live.subprocess.check_output', side_effect=[
+                subprocess.CalledProcessError(1, 'inspect'), subprocess.CalledProcessError(1, 'ls'), 'sha256:ready']):
+            self.assertEqual(require_slam_image(), 'sha256:ready')
+
+    def test_failed_inspect_is_retried_only_when_local_image_is_listed(self):
+        with patch('modules.mapping.localization.orbslam3_live.subprocess.check_output',
+                   side_effect=[subprocess.CalledProcessError(1, 'inspect'), 'sha256:local\n', 'sha256:local\n']) as docker:
+            self.assertEqual(require_slam_image(), 'sha256:local')
+            self.assertEqual(docker.call_args_list[0], docker.call_args_list[2])
+            self.assertEqual(docker.call_args_list[1].args[0][1:3], ['image', 'ls'])
+            self.assertTrue(all(call.kwargs['timeout'] == 4 for call in docker.call_args_list))
+
+    def test_missing_image_preserves_the_current_session(self):
+        manager = LiveManager('.')
+        previous = manager.current = Mock(done=True)
+        with patch('modules.mapping.localization.orbslam3_live.subprocess.check_output',
+                   side_effect=[subprocess.CalledProcessError(1, 'inspect'), '']):
+            with self.assertRaisesRegex(RuntimeError, '^slam_image_missing$'):
+                manager.start(dict(width=640, height=480, fov=60))
+        self.assertIs(manager.current, previous)
+
+    def test_unavailable_engine_and_timeout_are_distinguished_from_missing_image(self):
+        for failure, error in [(FileNotFoundError(), 'slam_docker_unavailable'),
+                               (subprocess.TimeoutExpired('docker', 4), 'slam_docker_timeout')]:
+            with self.subTest(failure=failure), patch(
+                    'modules.mapping.localization.orbslam3_live.subprocess.check_output', side_effect=failure):
+                with self.assertRaisesRegex(RuntimeError, '^' + error + '$'):
+                    require_slam_image()
+        with patch('modules.mapping.localization.orbslam3_live.subprocess.check_output',
+                   side_effect=subprocess.CalledProcessError(1, 'docker')) as docker:
+            with self.assertRaisesRegex(RuntimeError, '^slam_docker_unavailable$'):
+                require_slam_image()
+            self.assertEqual(docker.call_count, 6)
+
+
+class PCCameraConfigurationTests(unittest.TestCase):
+    def setUp(self):
+        self.camera = dict(width=1920, height=1080, fx=1200., fy=1190.,
+                           cx=960., cy=540., distortion=[.01, -.02, 0., 0.])
+        self.config = dict(width=960, height=540, fps=29.97, camera=self.camera)
+
+    def test_intrinsics_scale_without_mutating_the_uploaded_calibration(self):
+        original = deepcopy(self.camera)
+        value = live_camera(self.config)
+        self.assertEqual((value["width"], value["height"]), (960, 540))
+        self.assertEqual((value["fx"], value["fy"], value["cx"], value["cy"]), (600., 595., 480., 270.))
+        self.assertEqual(value["distortion"], self.camera["distortion"])
+        self.assertIn("not_independently_verified", value["calibration_status"])
+        self.assertEqual(self.camera, original)
+
+    def test_missing_calibration_is_explicitly_an_estimate(self):
+        value = live_camera(dict(width=640, height=480, fps=30, fov=60))
+        self.assertEqual(value["calibration_status"], "fov_estimated; not_calibrated")
+        self.assertEqual(value["distortion"], [0.] * 4)
+
+    def test_invalid_calibration_never_starts_docker_or_replaces_current_session(self):
+        invalid = [dict(self.config, width=960.5), dict(self.config, fps=float("nan")),
+                   dict(self.config, width=True), dict(self.config, camera=[]),
+                   dict(self.config, camera={}), dict(self.config, camera="camera.json"),
+                   dict(width=640, height=480, fov=float("inf"))]
+        for change in [dict(width=1080, height=1920), dict(fx="1200"), dict(cy=2000),
+                       dict(distortion={}), dict(distortion=[0, 0, 0, False]),
+                       dict(distortion=[0, 0, 0, float("inf")]), dict(calibration_status={})]:
+            invalid.append(dict(self.config, camera={**self.camera, **change}))
+        manager = LiveManager(".")
+        sentinel = manager.current = object()
+        with patch("modules.mapping.localization.orbslam3_live.subprocess.check_output") as docker:
+            for config in invalid:
+                with self.subTest(config=config), self.assertRaises((ValueError, KeyError)):
+                    manager.start(config)
+                self.assertIs(manager.current, sentinel)
+            docker.assert_not_called()
+
+    def test_requested_empty_stop_is_complete_but_unexpected_or_tracker_errors_fail(self):
+        # Execute the real worker's ready/exit/final-state path; replace only Docker
+        # and map publication. The real stream tracker uses exit 3 for no map.
+        for code, closing, revision, expected in [(3, True, 0, "complete"),
+                (3, False, 0, "failed"), (3, True, 1, "failed"), (2, True, 0, "failed")]:
+            with self.subTest(code=code, closing=closing, revision=revision), tempfile.TemporaryDirectory() as directory:
+                session = object.__new__(LiveSession)
+                session.path = Path(directory)
+                (session.path / "ready.json").write_text("{}", encoding="utf-8")
+                session.id, session.image = "synthetic", "synthetic-image"
+                session.condition = threading.Condition()
+                session.pending, session.closing = None, closing
+                session.done = session.ready = False
+                session.error, session.reason = None, "user_stop"
+                session.received = session.dropped = session.submitted = 0
+                session.last_sequence = session.last_pts = -1
+                session.publisher = Mock(revision=revision, state={"revision": revision, "map_available": bool(revision)})
+                process = Mock(stdin=io.BytesIO(), stdout=io.BytesIO(), returncode=code)
+                process.poll.return_value = code
+                with patch("modules.mapping.localization.orbslam3_live.subprocess.Popen", return_value=process):
+                    session._run()
+                self.assertTrue(session.done)
+                self.assertEqual(session.publisher.state["status"], expected)
+                self.assertEqual(session.publisher.state["session_status"], expected)
+                self.assertEqual(session.publisher.state["map_available"], bool(revision))
+                self.assertEqual(session.error is None, expected == "complete")
+
+    def test_exception_stop_keeps_log_open_for_trailing_tracker_output(self):
+        with tempfile.TemporaryDirectory() as directory:
+            session = object.__new__(LiveSession)
+            session.path = Path(directory)
+            (session.path / 'ready.json').write_text('{}')
+            session.id, session.image = 'synthetic', 'synthetic'
+            session.condition = threading.Condition()
+            session.pending = None
+            session.closing = session.done = session.ready = False
+            session.error, session.reason = None, 'user_stop'
+            session.received = session.dropped = session.submitted = 0
+            session.last_sequence = session.last_pts = session.ack = -1
+            session.publisher = Mock(revision=0, state={})
+            session.publisher.update.side_effect = RuntimeError('synthetic input failure')
+            exiting = threading.Event()
+            process = Mock(stdin=io.BytesIO(), returncode=0)
+            process.poll.side_effect = lambda: 0 if exiting.is_set() else None
+            def lines():
+                exiting.wait(2)
+                yield b'tracker shutdown tail\n'
+                yield b''
+            process.stdout.readline.side_effect = lines()
+            with patch('modules.mapping.localization.orbslam3_live.subprocess.Popen', return_value=process), \
+                    patch('modules.mapping.localization.orbslam3_live.subprocess.run', side_effect=lambda *a, **k: exiting.set()), \
+                    patch('threading.excepthook') as thread_error:
+                session._run()
+            thread_error.assert_not_called()
+            self.assertEqual((session.path / 'orb.log').read_bytes(), b'tracker shutdown tail\n')
+            self.assertEqual(session.publisher.state['status'], 'failed')
+
+
+class RecordingFinalizationTests(unittest.TestCase):
+    def test_mapping_metadata_write_failure_still_finishes_recording(self):
+        import modules.mapping.localization.orbslam3_live as live
+        with tempfile.TemporaryDirectory() as directory:
+            session = object.__new__(LiveSession)
+            session.path = Path(directory)
+            (session.path / 'ready.json').write_text('{}')
+            session.id, session.image = 'synthetic', 'synthetic-image'
+            session.condition = threading.Condition()
+            session.pending = session.inflight = None
+            session.closing = session.done = session.ready = False
+            session.error, session.reason = None, 'user_stop'
+            session.received = session.dropped = session.submitted = 0
+            session.last_sequence = session.last_pts = session.ack = -1
+            session.publisher = Mock(revision=1, state={})
+            session.recording = Mock()
+            session.recording.stats.return_value = {}
+            process = Mock(stdin=io.BytesIO(), stdout=io.BytesIO(), returncode=0)
+            process.poll.return_value = 0
+            original = live.atomic_json
+            def save(path, value):
+                if path.name == 'state.json':
+                    raise OSError('synthetic full disk')
+                original(path, value)
+            with patch.object(live.subprocess, 'Popen', return_value=process), patch.object(live, 'atomic_json', save):
+                session._run()
+            self.assertTrue(session.done)
+            self.assertEqual(session.error, 'session_metadata_write_OSError')
+            session.recording.finish_mapping.assert_called_once()
+            self.assertEqual(session.recording.finish_mapping.call_args.args[0]['status'], 'failed')
+
+
+if __name__ == "__main__":
+    unittest.main()

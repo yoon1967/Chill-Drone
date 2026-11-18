@@ -1,0 +1,177 @@
+"""3D 지도 받기: 지도 연결기(gateway_map_bridge.py)가 보낸 최신 점군·카메라 경로를 들고 있다가 화면에 내준다 (표준 라이브러리만).
+
+지도 파트 계약: contracts/mapping/ONLINE_SPATIAL_V1.md·PHONE_SFM_RESULT_V1.md(지도 서버 `/api/live/run`).
+연결기가 점을 줄이고 필요한 칸만 골라 `gateway-map/0.1` 형식으로 보낸다. 게이트웨이는 좌표를 바꾸지 않는다
+(지도 표시 좌표 그대로, 단위는 `scale.unit`. 온라인 지도는 보통 `arbitrary` = m가 아님).
+- kind `snapshot`: 새 지도 버전. 최신 하나만 메모리에 든다. 화면에는 WS로 알림(`map`)만 보내고 점군은 GET /api/map으로 읽게 한다.
+- kind `status`: 연결기가 본 지도 서버 상태(꺼짐·지도 없음·동작 중). 버전이 안 바뀌어도 연결기가 살아 있다는 근거.
+  응답에 받은 지도가 있는지(`has_map`)를 싣는다. 게이트웨이만 다시 켜 지도가 비면 연결기가 이걸 보고 지금 지도를 다시 보낸다.
+- 두 kind 모두 지도 서버의 영상 입력 상태(`input_state`·`input_age_s`, 없어도 됨)를 실을 수 있다. 화면의 "영상 기다리는 중" 표시용.
+  모르는 값은 버리고(None) 지도는 그대로 받는다.
+회차 폴더: map/latest.json(덮어씀), map_updates.jsonl(버전마다 한 줄: 시각·버전·점 수·출처·저장 파일),
+map/snapshots/NNNN_rev<버전>.json.gz(지도가 자라는 과정. 5초에 한 번 + 형식·세션·구간이 바뀔 때. 기록 재생용).
+"""
+
+from __future__ import annotations
+
+import gzip
+import json
+import math
+import os
+import threading
+import time
+
+from mode_arbiter import SCHEMA_VERSION
+from tello_link import now_iso
+
+SCHEMA = "gateway-map/0.1"
+MAX_POINTS = 60_000          # 연결기 기본은 34,000(지도 쪽 실시간 최대 3만 2천 + 사람 2천). 그보다 넉넉히
+MAX_CAMERAS = 20_000
+ALIVE_S = 5.0                # 연결기 소식이 이 시간 안에 왔으면 동작 중
+SNAPSHOT_S = 5.0             # 지도 버전은 이 간격마다 하나씩 남긴다(점 2만 개면 gzip 약 0.3 MB)
+UPSTREAM = ("ok", "no_map", "unreachable", "error")
+
+
+class MapInbox:
+    def __init__(self, *, run_dir: str | None = None, emit=None, clock=time.monotonic):
+        self.run_dir = run_dir
+        self.emit = emit or (lambda msg: None)
+        self.clock = clock
+        self._lock = threading.Lock()
+        self._latest: dict | None = None
+        self._key = None                     # (session, segment, revision): 같은 버전은 다시 저장하지 않는다
+        self._last_mono: float | None = None
+        self._upstream: dict | None = None
+        self.updates = 0
+        self.rejected = 0
+        self._saved_mono: float | None = None
+        self._saved_kind = None              # (형식, 세션, 구간): 바뀌면 간격과 상관없이 남긴다(미리보기 → 최종 지도 등)
+        self.snapshots = 0
+        if run_dir:
+            os.makedirs(os.path.join(run_dir, "map", "snapshots"), exist_ok=True)
+
+    def receive(self, msg) -> tuple[int, dict]:
+        """(HTTP 상태, 응답). 201 새 버전, 200 상태·같은 버전, 400 형식 오류, 500 저장 실패. 상태 응답에는 has_map."""
+        try:
+            kind = _check(msg)
+        except (ValueError, TypeError, KeyError) as e:
+            with self._lock:
+                self.rejected += 1
+            return 400, {"ok": False, "reason": "invalid_map", "detail": str(e)}
+        now = self.clock()
+        with self._lock:
+            self._last_mono = now
+            self._upstream = {**{k: msg.get(k) for k in ("upstream", "source_url", "mapping_state", "detail")},
+                              **_input(msg)}
+            if kind == "status":
+                return 200, {"ok": True, "has_map": self._latest is not None}   # 다시 켜 빈 게이트웨이를 연결기가 알아채게
+            src = msg["source"]
+            key = (src.get("schema_version"), src.get("session_id"), src.get("segment_id"), src.get("revision"))   # 진행 중 미리보기와 최종 결과는 버전이 같아도 다르다
+            if key == self._key:
+                return 200, {"ok": True, "duplicate": True}
+            self._key = key
+            self.updates += 1
+            snap = {**msg, "received_at": _iso(time.time())}
+            self._latest = snap
+            line = {"received_at": snap["received_at"], "revision": src.get("revision"),
+                    "session_id": src.get("session_id"), "segment_id": src.get("segment_id"),
+                    "points": len(msg["points"]), "points_total": msg.get("points_total"),
+                    "cameras": len(msg["cameras"]), "unit": msg["scale"].get("unit"), "source_url": msg.get("source_url")}
+        try:
+            self._write(snap, line)
+        except OSError as e:
+            return 500, {"ok": False, "reason": "store_failed", "detail": str(e)}
+        self.emit({"schema_version": SCHEMA_VERSION, "type": "map", "at": snap["received_at"], "revision": src.get("revision"),
+                   "session_id": src.get("session_id"), "segment_id": src.get("segment_id"), "points": len(msg["points"])})
+        return 201, {"ok": True, "duplicate": False, "revision": src.get("revision")}
+
+    def latest(self) -> dict | None:
+        with self._lock:
+            return self._latest
+
+    def status(self) -> dict:
+        now = self.clock()
+        with self._lock:
+            last, up, snap = self._last_mono, self._upstream or {}, self._latest
+            src = (snap or {}).get("source") or {}
+            return {
+                "alive": last is not None and now - last <= ALIVE_S,
+                "last_message_age_s": None if last is None else round(now - last, 2),
+                "upstream": up.get("upstream"),
+                "mapping_state": up.get("mapping_state"),
+                "input_state": up.get("input_state"),     # 지도 서버의 영상 입력: receiving·reconnecting·failed 등(모르면 None)
+                "input_age_s": up.get("input_age_s"),     # 마지막 영상 뒤 지난 초(연결기가 읽은 때 기준)
+                "source_url": up.get("source_url"),
+                "revision": src.get("revision"),
+                "segment_id": src.get("segment_id"),
+                "points": len(snap["points"]) if snap else 0,
+                "points_total": snap.get("points_total") if snap else None,
+                "unit": snap["scale"].get("unit") if snap else None,
+                "updates": self.updates,
+                "rejected": self.rejected,
+            }
+
+    def _write(self, snap: dict, line: dict) -> None:
+        if not self.run_dir:
+            return
+        path = os.path.join(self.run_dir, "map", "latest.json")
+        with open(path + ".tmp", "w", encoding="utf-8") as f:
+            json.dump(snap, f, ensure_ascii=False, separators=(",", ":"))
+        os.replace(path + ".tmp", path)
+        src = snap.get("source") or {}
+        kind = (src.get("schema_version"), src.get("session_id"), src.get("segment_id"))
+        now = self.clock()
+        name = None
+        if kind != self._saved_kind or self._saved_mono is None or now - self._saved_mono >= SNAPSHOT_S:
+            name = f"{self.snapshots:04d}_rev{src.get('revision')}.json.gz"
+            with gzip.open(os.path.join(self.run_dir, "map", "snapshots", name), "wt", encoding="utf-8") as f:
+                json.dump(snap, f, ensure_ascii=False, separators=(",", ":"))
+            self.snapshots += 1
+            self._saved_mono, self._saved_kind = now, kind
+        with open(os.path.join(self.run_dir, "map_updates.jsonl"), "a", encoding="utf-8") as f:
+            f.write(json.dumps({**line, "saved": f"map/snapshots/{name}" if name else None}, ensure_ascii=False) + "\n")
+
+
+def _check(msg) -> str:
+    if not isinstance(msg, dict) or msg.get("schema_version") != SCHEMA:
+        raise ValueError("unsupported_schema_version")
+    kind = msg.get("kind")
+    if kind not in ("snapshot", "status"):
+        raise ValueError("invalid_kind")
+    if msg.get("upstream") not in UPSTREAM:
+        raise ValueError("invalid_upstream")
+    if kind == "status":
+        return kind
+    if not isinstance(msg.get("source"), dict) or not isinstance(msg.get("scale"), dict):
+        raise ValueError("missing_source_or_scale")
+    points, cameras = msg.get("points"), msg.get("cameras")
+    if not isinstance(points, list) or len(points) > MAX_POINTS:
+        raise ValueError("invalid_points")
+    for p in points:   # [x, y, z, r, g, b]
+        if (not isinstance(p, list) or len(p) != 6 or not all(_num(v) for v in p[:3])
+                or not all(isinstance(c, int) and 0 <= c <= 255 for c in p[3:])):
+            raise ValueError("invalid_point")
+    if not isinstance(cameras, list) or len(cameras) > MAX_CAMERAS:
+        raise ValueError("invalid_cameras")
+    for c in cameras:  # [x, y, z] 카메라 중심(표시 좌표), 시간 순
+        if not isinstance(c, list) or len(c) != 3 or not all(_num(v) for v in c):
+            raise ValueError("invalid_camera")
+    up = msg.get("up")
+    if up is not None and (not isinstance(up, list) or len(up) != 3 or not all(_num(v) for v in up)):
+        raise ValueError("invalid_up")
+    return kind
+
+
+def _input(msg: dict) -> dict:
+    """영상 입력 상태는 표시용이라 이상한 값은 버린다(지도는 그대로 받음)."""
+    kind, age = msg.get("input_state"), msg.get("input_age_s")
+    return {"input_state": kind if isinstance(kind, str) and 0 < len(kind) <= 32 else None,
+            "input_age_s": round(age, 1) if _num(age) and age >= 0 else None}
+
+
+def _num(v) -> bool:
+    return isinstance(v, (int, float)) and not isinstance(v, bool) and math.isfinite(v)
+
+
+def _iso(wall: float) -> str:
+    return now_iso(wall)

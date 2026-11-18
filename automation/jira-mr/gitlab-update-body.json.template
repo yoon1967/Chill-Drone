@@ -1,0 +1,5 @@
+{
+  "title": "{{updatedMrTitle.jsonEncode}}",
+  "description": "{{updatedMrDescription.jsonEncode}}",
+  "squash": true
+}

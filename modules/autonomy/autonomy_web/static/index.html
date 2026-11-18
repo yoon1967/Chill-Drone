@@ -1,0 +1,656 @@
+<!doctype html>
+<html lang="ko">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>자율비행</title>
+<!-- 색·패널·버튼·계기판·점검 신호등 모양은 tello_link/static/index.html(Tello 연결 점검·조작)에서 가져왔다 -->
+<style>
+  :root {
+    --bg: #f5f6f8; --panel: #ffffff; --text: #1d2330; --muted: #677085; --line: #e1e4ea;
+    --ok: #1f9d55; --ok-bg: #e5f6ec; --warn: #b7791f; --warn-bg: #fdf3dc;
+    --fail: #d64545; --fail-bg: #fde8e8; --idle: #8a93a6; --idle-bg: #eef0f4;
+    --accent: #2f6fdd; --accent-text: #ffffff; --code: #f0f2f6;
+    --map-floor: #fbfbfc; --map-wall: #39404f; --map-obst: #c9ced8; --map-grid: #eceef2;
+    --map-path: #2f6fdd; --map-trail: #e07b24; --map-drone: #d64545; --map-goal: #1f9d55; --map-truth: #677085;
+    --map-found: rgba(214, 69, 69, .35);
+    --map-cam: #5b4bb7; --map-cam-sus: rgba(124, 107, 214, .35); --map-seen: #eef3ea; --map-person: #e8890c;
+    --map-pick: #0b8f8f;
+  }
+  @media (prefers-color-scheme: dark) {
+    :root:not([data-theme="light"]) {
+      --bg: #12151b; --panel: #1b1f27; --text: #e6e9ef; --muted: #98a1b3; --line: #2c323e;
+      --ok: #4cc47f; --ok-bg: #173323; --warn: #e2b04f; --warn-bg: #3a2f17;
+      --fail: #f07373; --fail-bg: #3d1d1f; --idle: #8a93a6; --idle-bg: #252a34;
+      --accent: #5b8ff0; --accent-text: #0e1116; --code: #242a35;
+      --map-floor: #161a21; --map-wall: #c3c9d4; --map-obst: #3a414e; --map-grid: #222833;
+      --map-path: #5b8ff0; --map-trail: #e89a4f; --map-drone: #f07373; --map-goal: #4cc47f; --map-truth: #98a1b3;
+      --map-found: rgba(240, 115, 115, .35);
+      --map-cam: #a99cf0; --map-cam-sus: rgba(169, 156, 240, .3); --map-seen: #1c2420; --map-person: #f2a23c;
+      --map-pick: #35c9c9;
+    }
+  }
+  * { box-sizing: border-box; }
+  body { margin: 0; background: var(--bg); color: var(--text);
+    font: 14px/1.5 system-ui, "Malgun Gothic", "Apple SD Gothic Neo", sans-serif; }
+  header { display: flex; flex-wrap: wrap; gap: 8px 16px; align-items: center;
+    padding: 14px 20px; border-bottom: 1px solid var(--line); background: var(--panel); }
+  header h1 { margin: 0; font-size: 18px; }
+  .badge { padding: 2px 10px; border-radius: 999px; font-size: 12px; font-weight: 600; }
+  .badge.safe { background: var(--ok-bg); color: var(--ok); }
+  .badge.fake { background: var(--warn-bg); color: var(--warn); }
+  .badge.real { background: var(--idle-bg); color: var(--text); }
+  .badge.danger { background: var(--fail-bg); color: var(--fail); }
+  .meta { color: var(--muted); font-size: 12px; margin-left: auto; word-break: break-all; }
+  /* 지금 하는 일과 이유 (남은 탐색 시간·돌아가는 이유·내린 이유): 머리글 바로 밑 띠 */
+  .doing { padding: 8px 20px; font-size: 15px; font-weight: 600; background: var(--idle-bg); border-bottom: 1px solid var(--line); }
+  .doing:empty { display: none; }
+  .doing.warn { background: var(--warn-bg); color: var(--warn); }
+  .doing.end { background: var(--ok-bg); color: var(--ok); }
+  .doing.bad { background: var(--fail-bg); color: var(--fail); }
+  main { display: grid; gap: 16px; padding: 16px 20px; grid-template-columns: minmax(320px, 1.3fr) minmax(300px, 1fr); }
+  @media (max-width: 900px) { main { grid-template-columns: 1fr; padding: 16px; } }
+  section { background: var(--panel); border: 1px solid var(--line); border-radius: 10px; padding: 14px 16px; }
+  section h2 { margin: 0 0 10px; font-size: 15px; display: flex; flex-wrap: wrap; align-items: center; gap: 8px; }
+  .col { display: flex; flex-direction: column; gap: 16px; min-width: 0; }
+  button { font: inherit; border: 1px solid var(--line); background: var(--panel); color: var(--text);
+    padding: 6px 12px; border-radius: 6px; cursor: pointer; }
+  button.primary { background: var(--accent); color: var(--accent-text); border-color: var(--accent); font-weight: 600; }
+  button.danger { background: var(--fail); color: #fff; border-color: var(--fail); font-weight: 700; }
+  button.primary.armed { background: var(--warn); border-color: var(--warn); color: #fff; }
+  button.big { font-size: 16px; padding: 10px 18px; }
+  button:disabled { opacity: .45; cursor: not-allowed; }
+  .tabs { display: inline-flex; border: 1px solid var(--line); border-radius: 6px; overflow: hidden; margin-left: auto; }
+  .tabs button { border: 0; border-radius: 0; padding: 3px 10px; font-size: 12px; }
+  .tabs button.on { background: var(--accent); color: var(--accent-text); }
+  .video { aspect-ratio: 4 / 3; background: #000; border-radius: 8px; display: grid; place-items: center;
+    color: #9aa3b5; overflow: hidden; position: relative; }
+  .video img { width: 100%; height: 100%; object-fit: contain; }
+  .video .empty { position: absolute; inset: 0; display: grid; place-items: center; text-align: center; padding: 16px; }
+  .warnings div { padding: 8px 10px; border-radius: 6px; background: var(--fail-bg); color: var(--fail); margin-bottom: 8px; font-weight: 600; }
+  .control { border: 2px solid var(--fail); }
+  .flight-top { display: flex; flex-wrap: wrap; gap: 8px; align-items: center; margin-bottom: 12px; }
+  .flight-state { font-weight: 700; font-size: 15px; padding: 4px 10px; border-radius: 6px; background: var(--idle-bg); }
+  .flight-state.flying { background: var(--warn-bg); color: var(--warn); }
+  .flight-state.done { background: var(--ok-bg); color: var(--ok); }
+  .flight-state.abort { background: var(--fail-bg); color: var(--fail); }
+  .gauges { display: grid; grid-template-columns: repeat(auto-fit, minmax(100px, 1fr)); gap: 8px; margin: 10px 0; }
+  .gauge { background: var(--code); border-radius: 8px; padding: 8px 10px; }
+  .gauge b { display: block; font-size: 19px; font-variant-numeric: tabular-nums; }
+  .gauge span { font-size: 12px; color: var(--muted); }
+  .checks div { font-size: 13px; padding: 2px 0; }
+  .checks .ok { color: var(--ok); }
+  .checks .no { color: var(--fail); }
+  .small { font-size: 12px; color: var(--muted); }
+  .autoland { color: var(--fail); font-weight: 600; font-size: 13px; }
+  .why { font-size: 13px; color: var(--warn); margin-top: 6px; }
+  canvas#map { width: 100%; aspect-ratio: 6 / 5; display: block; border-radius: 8px; background: var(--map-floor);
+    cursor: grab; touch-action: none; }
+  canvas#map.dragging { cursor: grabbing; }
+  .goto { display: flex; flex-wrap: wrap; gap: 6px 10px; align-items: center; margin-top: 8px; padding: 8px 10px;
+    border-radius: 8px; background: var(--code); font-size: 13px; }
+  .goto .dot { width: 10px; height: 10px; border-radius: 50%; border: 2px solid var(--map-pick); flex: none; }
+  .goto .dot.on { background: var(--map-pick); }
+  .goto span.text { flex: 1 1 200px; min-width: 0; }
+  .goto span.text.warn { color: var(--warn); font-weight: 600; }
+  .legend { display: flex; flex-wrap: wrap; gap: 4px 14px; font-size: 12px; color: var(--muted); margin-top: 8px; }
+  .legend i { display: inline-block; width: 14px; height: 4px; border-radius: 2px; vertical-align: middle; margin-right: 4px; }
+  table { width: 100%; border-collapse: collapse; font-size: 13px; }
+  th, td { text-align: left; padding: 4px 6px; border-bottom: 1px solid var(--line); vertical-align: top; }
+  th { color: var(--muted); font-weight: 500; }
+  td.num { font-variant-numeric: tabular-nums; }
+  .log { max-height: 240px; overflow: auto; font: 12px/1.6 ui-monospace, Consolas, monospace; }
+  .log .row { display: grid; grid-template-columns: 64px 1fr; gap: 8px; border-bottom: 1px solid var(--line); padding: 2px 0; }
+  kbd { font: 12px ui-monospace, Consolas, monospace; padding: 1px 6px; border: 1px solid var(--line); border-radius: 4px; background: var(--code); }
+</style>
+</head>
+<body>
+<header>
+  <h1>자율비행</h1>
+  <span id="mode" class="badge real">연결 중…</span>
+  <span id="phase" class="badge real">단계 -</span>
+  <span class="meta" id="meta"></span>
+</header>
+<div class="doing" id="doing"></div>
+<main>
+  <div class="col">
+    <section>
+      <h2>카메라 <span class="small" id="videoStats"></span> <span class="badge real" id="yoloBadge">YOLO 확인 중…</span>
+        <span class="tabs"><button id="srcCam" class="on">원본</button><button id="srcDet">YOLO 탐지</button></span></h2>
+      <div class="video"><img id="videoImg" alt="드론 카메라"><div class="empty" id="videoEmpty">영상 대기 중…</div></div>
+    </section>
+    <section class="control">
+      <h2>조작 <span class="small">자율비행 중에는 손대지 않아도 됩니다. 이상하면 착륙, 부딪힐 것 같으면 비상 정지</span></h2>
+      <div class="warnings" id="warnings"></div>
+      <div class="flight-top">
+        <button class="danger big" id="btnEmergency">비상 정지 (Esc)</button>
+        <button class="primary big" id="btnStart">자율비행 시작 (T)</button>
+        <button class="big" id="btnLand">착륙 (L)</button>
+        <span class="flight-state" id="flightState">-</span>
+      </div>
+      <div class="autoland" id="autoLand"></div>
+      <div class="gauges">
+        <div class="gauge"><span>높이 (하방 ToF)</span><b id="gTof">-</b></div>
+        <div class="gauge"><span>Tello h (참고)</span><b id="gH">-</b></div>
+        <div class="gauge"><span>배터리</span><b id="gBat">-</b></div>
+        <div class="gauge"><span>온도</span><b id="gTemp">-</b></div>
+        <div class="gauge"><span>기수 값 (Tello)</span><b id="gYaw">-</b></div>
+        <div class="gauge"><span>보내는 rc</span><b id="gRc">-</b></div>
+        <div class="gauge"><span>위치 불확실성 σ</span><b id="gSigma">-</b></div>
+      </div>
+      <div class="checks" id="preflight"></div>
+      <label class="small"><input type="checkbox" id="confirmBox"> 주변 3m 비움 · 프로펠러 가드 장착 · 안전 담당 옆에 있음</label>
+      <div class="why" id="why"></div>
+      <p class="small"><kbd>Esc</kbd> 비상 정지(모터 즉시 정지, 공중이면 떨어짐) · <kbd>L</kbd> 그 자리에 착륙 · <kbd>T</kbd> 시작(점검을 모두 통과해야 켜지고, 4초 안에 두 번 눌러야 이륙).
+        드라이버는 속도 명령이 2초 끊기거나, <span id="autoLandRule">상태 1초 끊김·배터리 10% 이하·온도 85°C 이상</span>이면 스스로 착륙합니다.</p>
+    </section>
+  </div>
+  <div class="col">
+    <section>
+      <h2>지도 <span class="small" id="mapMeta"></span>
+        <span class="small">휠·두 손가락: 확대 · 끌기: 이동 · 두 번 클릭: 처음대로 · 한 번 클릭: 보낼 자리 찍기</span> <button id="mapReset">처음대로</button></h2>
+      <canvas id="map" width="720" height="600"></canvas>
+      <!-- 자율 탐색 중에 지도에서 찍은 자리를 다음 볼 자리로 보낸다 (11/11). 찍기만으로는 안 가고 [여기로 보내기]를 눌러야 간다 -->
+      <div class="goto">
+        <span class="dot" id="gotoDot"></span>
+        <span class="text" id="gotoText">탐색 중에 지도를 한 번 클릭하면 보낼 자리가 찍힙니다.</span>
+        <button class="primary" id="btnGoto" disabled>여기로 보내기 (G)</button>
+        <button id="btnGotoClear" disabled>지우기</button>
+      </div>
+      <div class="legend">
+        <span><i style="background:var(--map-wall)"></i>벽</span>
+        <span><i style="background:var(--map-obst)"></i>가구·장애물</span>
+        <span><i style="background:var(--map-found)"></i>찾은 장애물(지도에 없던 것)</span>
+        <span id="legendGrid" hidden><i style="background:var(--map-cam)"></i>카메라 지도 막힘 <i style="background:var(--map-cam-sus)"></i>의심(경로는 피함) <i style="background:var(--map-seen);border:1px solid var(--line)"></i>본 곳</span>
+        <span id="legendPeople" hidden><i style="background:var(--map-person)"></i>찾은 사람(길 막음) <i style="border:2px dashed var(--map-person)"></i>지나간 사람(다시 봤는데 없음)</span>
+        <span><i style="background:var(--map-path)"></i>계획 경로</span>
+        <span><i style="background:var(--map-trail)"></i>지나온 길(추정)</span>
+        <span><i style="background:var(--map-drone)"></i>드론(추정)</span>
+        <span><i style="background:var(--map-goal)"></i>목적지</span>
+        <span><i style="background:var(--map-pick)"></i>찍은 자리(운용자)</span>
+        <span id="legendTruth" hidden><i style="background:var(--map-truth)"></i>정답 위치(시뮬레이션)</span>
+      </div>
+    </section>
+    <section>
+      <h2>위치</h2>
+      <table id="poseTable"><tbody><tr><td class="small">위치 추정을 기다리는 중입니다.</td></tr></tbody></table>
+    </section>
+    <section>
+      <h2>기록</h2>
+      <div class="log" id="log"></div>
+    </section>
+  </div>
+</main>
+<script>
+const $ = (id) => document.getElementById(id);
+const AIRBORNE = ["TAKEOFF", "PLAN", "FOLLOW", "REPLAN", "BACKOFF", "HOLD", "UNSTICK", "EXIT", "LOOK", "RELOC", "HOMESPIN", "DOOR", "WANDER", "TURN", "GAP", "LAND"];
+const PHASE_KO = { WAIT_POSE: "위치 대기", READY: "시작 대기", TAKEOFF: "이륙", PLAN: "경로 계획", FOLLOW: "경로 비행",
+  REPLAN: "다시 계획", BACKOFF: "들어온 길로 물러남", HOLD: "닿아서 멈춤", UNSTICK: "닿은 곳에서 떼어 냄", EXIT: "후진 (들어온 자취로)", LOOK: "둘러보기",
+  RELOC: "위치 다시 잡기", HOMESPIN: "출발점 한 바퀴", DOOR: "문 지나기",
+  WANDER: "둘러보기 비행", TURN: "방향 바꾸기", GAP: "틈(문) 지나기", LAND: "착륙", DONE: "완료", ABORT: "중단" };
+// 지도에서 찍은 자리를 비행 노드가 받는 단계 (mission_node.py GOTO_STATES와 같다)
+const GOTO_STATES = ["PLAN", "FOLLOW", "REPLAN", "BACKOFF", "HOLD", "EXIT", "LOOK", "RELOC", "DOOR"];
+// 이륙 전 기수 값 확인 (11/16 실기체: 땅에서 Tello yaw 값이 흐르는 동안은 takeoff를 거절해 왔다 — 지난 요청 52번 중 거절 23번 모두.
+// 비행 노드 start_blocked·autonomy/tello_state.py yaw_span과 같은 잣대: 최근 10초에 2° 이상 바뀌면 흐르는 중, 3초 미만이면 모름)
+let yawHist = [];      // 땅에 있을 때 본 Tello 기수 값 [받은 때 ms, °]
+function yawSpan(now) {
+  const rec = yawHist.filter((p) => now - p[0] <= 10000);
+  if (rec.length < 2 || rec[rec.length - 1][0] - rec[0][0] < 3000) return null;
+  let acc = 0, lo = 0, hi = 0;
+  for (let i = 1; i < rec.length; i++) {
+    acc += ((rec[i][1] - rec[i - 1][1] + 540) % 360) - 180;
+    lo = Math.min(lo, acc); hi = Math.max(hi, acc);
+  }
+  return hi - lo;
+}
+let pick = null;       // 지도에서 찍었지만 아직 보내지 않은 자리 {x, y} (m)
+let mapT = null;       // 마지막으로 그린 지도의 좌표 변환 (화면 → 지도)
+let mapData = null, last = null, src = "cam", userPicked = false;
+let grid = null, gridCanvas = null, gridVer = 0, gridExt = null, gridLoading = false;
+const view = { zoom: 1, px: 0, py: 0 };   // 지도 확대·이동 (11/02: 고정 지도라 넓은 곳에서 드론 둘레가 너무 작게 보였다)
+
+function esc(s) {
+  return String(s ?? "").replace(/[&<>"]/g, (c) => ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;" }[c]));
+}
+const num = (v, d = 2, unit = "") => (typeof v === "number" ? v.toFixed(d) + unit : "없음");
+async function post(url, body) {
+  const res = await fetch(url, { method: "POST", headers: { "Content-Type": "application/json" },
+    body: JSON.stringify(body || {}) });
+  return res.json().catch(() => ({}));
+}
+
+// ---------- 카메라 ----------
+function setSource(s) {
+  src = s;
+  $("srcCam").classList.toggle("on", s === "cam");
+  $("srcDet").classList.toggle("on", s === "det");
+  $("videoImg").src = `/video.mjpg?src=${s}&t=${Date.now()}`;
+}
+$("srcCam").onclick = () => { userPicked = true; setSource("cam"); };
+$("srcDet").onclick = () => { userPicked = true; setSource("det"); };
+// YOLO가 돌면 처음 한 번은 'YOLO 탐지' 영상으로 바꾼다 (2026-10-30: 기본이 '원본'이라 YOLO가 도는지 몰랐다)
+function renderYolo(y) {
+  const on = y && y.age_s !== null && y.age_s < 3;
+  $("yoloBadge").textContent = on ? `YOLO 켜짐 · 초당 ${y.hz}번 · 지금 사람 ${y.people}명` + (y.objects ? ` · 물체 ${y.objects}개` : "")
+    : y ? `YOLO 멈춤 (${y.age_s.toFixed(0)}초째 결과 없음)` : "YOLO 꺼짐 (탐지 노드 없음)";
+  $("yoloBadge").className = "badge " + (on ? "safe" : y ? "danger" : "real");
+  if (on && !userPicked && src === "cam") setSource("det");
+}
+function renderVideo(cam) {
+  const c = cam[src];
+  const live = c && c.age_s !== null && c.age_s < 3;
+  $("videoEmpty").style.display = live ? "none" : "grid";
+  $("videoEmpty").textContent = src === "det" ? "YOLO 탐지 영상이 없습니다 (탐지 노드를 켰을 때만 나옵니다)" : "영상 대기 중… (카메라 토픽이 오지 않습니다)";
+  $("videoStats").textContent = live ? `${c.fps} fps` : "";
+}
+
+// ---------- 조작 ----------
+function emergency() { post("/api/flight/emergency").then(refresh); }
+function land() { post("/api/mission/land").then(refresh); }
+// 시작 확인은 화면 안에서 한다: 한 번 누르면 4초 동안 "한 번 더"로 바뀌고, 그 안에 다시 눌러야 시작한다.
+// 브라우저 확인창(confirm)은 Claude 앱 안 브라우저 같은 곳에서 막혀 '취소'로 처리돼 시작이 안 됐다(2026-10-27).
+const START_TEXT = "자율비행 시작 (T)";
+let armedUntil = 0;
+function disarm() {
+  armedUntil = 0;
+  $("btnStart").textContent = START_TEXT;
+  $("btnStart").classList.remove("armed");
+}
+async function start() {
+  if ($("btnStart").disabled) return;   // T 키로도 점검 게이트를 건너뛰지 않는다
+  if (Date.now() > armedUntil) {
+    armedUntil = Date.now() + 4000;
+    $("btnStart").textContent = "주변 확인 후 한 번 더 누르면 이륙";
+    $("btnStart").classList.add("armed");
+    setTimeout(() => { if (armedUntil && Date.now() > armedUntil) disarm(); }, 4100);
+    return;
+  }
+  disarm();
+  $("btnStart").disabled = true;
+  await post("/api/mission/start");
+  refresh();
+}
+// 찍은 자리 보내기: 지도를 한 번 클릭해 자리를 찍고(아직 안 감), [여기로 보내기]나 G를 눌러야 비행 노드에 보낸다.
+// 가는 길·회피·문 지나기는 비행 노드가 평소 볼 자리처럼 하고, 도착하면 둘러본 뒤 자율 탐색을 잇는다
+function canGoto(s) { return !!(s && GOTO_STATES.includes(s.mission.state)); }
+async function sendGoto() {
+  if (!pick || !canGoto(last)) return;
+  const p = pick;
+  pick = null;
+  await post("/api/mission/goto", { x: p.x, y: p.y });
+  refresh();
+}
+function clearGoto() {
+  if (pick) { pick = null; if (last) { renderGoto(last); drawMap(last); } return; }
+  if (last && last.operator) post("/api/mission/goto_cancel").then(refresh);
+}
+// 탐색 시간이 다 됐는가 (비행 노드가 알린 지금 하는 일, /tt/mission_note): 다 된 뒤에 찍은 자리는 다녀와서 다시 돌아간다
+function searchOver(s) { const n = s.note; return !!(n && n.search && n.search.elapsed >= n.search.limit); }
+function renderGoto(s) {
+  const op = s.operator, ok = canGoto(s);
+  const xy = (p) => `(${p[0].toFixed(1)}, ${p[1].toFixed(1)})`;
+  const after = !searchOver(s) ? "자율 탐색을 잇습니다" : s.note.return_home === false ? "그 자리에 내립니다 (탐색 시간이 다 됨)" : "출발점으로 돌아갑니다 (탐색 시간이 다 됨)";
+  // 비행 노드의 마지막 답(거절·그만둠·둘러봄)은 20초 동안 버튼 옆에 보인다 (11/16 15:33: 거절 세 번이 맨 아래 기록에만 한 줄씩 나왔다)
+  const reply = !op && s.operator_note && s.operator_note.age_s < 20 ? s.operator_note : null;
+  let text, warn = false;
+  if (pick) text = `보낼 자리 (${pick.x.toFixed(1)}, ${pick.y.toFixed(1)})` + (ok ? ` — [여기로 보내기]를 누르면 그리로 갑니다. 둘러본 뒤 ${after}.` : " — 지금 단계에서는 보낼 수 없습니다 (탐색 비행 중에만).");
+  else if (op && op.state === "pending") text = `찍은 자리 ${xy(op.click)}를 비행 노드가 받았습니다. 하던 동작을 마치면 갑니다.`;
+  else if (op && op.state === "going") text = `찍은 자리 ${xy(op.goal || op.click)}로 가는 중입니다.` + (op.goal && Math.hypot(op.goal[0] - op.click[0], op.goal[1] - op.click[1]) > 0.3 ? ` (찍은 곳 ${xy(op.click)}까지는 바로 갈 수 없어, 그쪽으로 가장 가까운 빈 자리로 가서 그쪽을 봅니다)` : "");
+  else if (op && op.state === "arrived") text = `찍은 자리에 도착해 둘러보는 중입니다. 마치면 ${after}.`;
+  else if (reply) { text = "비행 노드: " + reply.text; warn = reply.warn; }
+  else text = ok ? "지도를 한 번 클릭하면 보낼 자리가 찍힙니다 (본 곳 밖을 찍으면 그쪽으로 갈 수 있는 데까지 갑니다)." : "탐색 비행 중에 지도를 한 번 클릭하면 보낼 자리가 찍힙니다.";
+  $("gotoText").textContent = text;
+  $("gotoText").className = "text" + (warn ? " warn" : "");
+  $("gotoDot").className = "dot" + (!pick && op ? " on" : "");
+  $("btnGoto").disabled = !(pick && ok);
+  $("btnGotoClear").disabled = !(pick || op);
+  $("btnGotoClear").textContent = !pick && op ? "가기 취소" : "지우기";
+}
+$("btnGoto").onclick = sendGoto;
+$("btnGotoClear").onclick = clearGoto;
+$("btnEmergency").onclick = emergency;
+$("btnLand").onclick = land;
+$("btnStart").onclick = start;
+$("confirmBox").onchange = (e) => post("/api/flight/confirm", { confirmed: e.target.checked }).then(refresh);
+document.addEventListener("keydown", (e) => {
+  if (e.target.tagName === "INPUT" && e.target.type !== "checkbox") return;
+  const k = e.key.toLowerCase();
+  if (k === "escape") { e.preventDefault(); emergency(); return; }
+  if (e.repeat) return;
+  if (k === "l") land();
+  else if (k === "t") start();
+  else if (k === "g") sendGoto();
+});
+
+// 지금 하는 일과 이유를 머리글 밑 띠에 보인다 (비행 노드 /tt/mission_note).
+// 11/16 15:33 실기체: 탐색 시간 120초가 다 돼 출발점으로 돌아와 내렸는데, 화면에는 '경로 비행 → 착륙 → 완료'만 나와 왜 내렸는지 몰랐다
+function doingText(s) {
+  const n = s.note, m = s.mission.state;
+  if (!n) return ["", ""];
+  const mmss = (v) => `${Math.floor(v / 60)}:${String(Math.floor(v % 60)).padStart(2, "0")}`;
+  const home = n.return_home === false ? "그 자리에 내립니다" : "출발점으로 돌아와 내립니다";
+  if (m === "DONE") return ["비행 끝 · 내린 이유: " + (n.why_end || "기록 없음"), "end"];
+  if (m === "ABORT") return ["중단 · 이유: " + (n.why_end || "기록 없음"), "bad"];
+  if (n.stale) return ["", ""];
+  if (m === "LAND") return ["내리는 중 · 이유: " + (n.why_end || "기록 없음"), "warn"];
+  if (n.returning) return [`출발점으로 돌아가는 중 · 이유: ${n.why_return || "기록 없음"} — 더 보내려면 지도를 찍고 [여기로 보내기] (다녀온 뒤 다시 돌아옵니다)`, "warn"];
+  if (!n.search || !AIRBORNE.includes(m)) return ["", ""];
+  const left = n.search.limit - n.search.elapsed;
+  if (left > 0) return [`자율 탐색 중 · 남은 탐색 시간 ${mmss(left)} (전체 ${mmss(n.search.limit)}) — 다 되면 ${home}`, left <= 30 ? "warn" : ""];
+  return [`탐색 시간(${n.search.limit.toFixed(0)}초)이 다 됐습니다 · ` + (s.operator ? "찍은 자리를 다녀온 뒤 " : "하던 동작을 마치면 ") + home, "warn"];
+}
+function renderDoing(s) {
+  const [text, cls] = doingText(s);
+  $("doing").textContent = text;
+  $("doing").className = "doing" + (cls ? " " + cls : "");
+}
+
+function renderControl(s) {
+  const f = s.flight, m = s.mission.state, t = s.tello || {};
+  const driver = f && s.flight_age_s !== null && s.flight_age_s < 2;
+  $("mode").textContent = !driver ? "드라이버 연결 안 됨" : f.source === "gazebo" ? "Gazebo 시뮬레이션" : "실제 Tello";
+  $("mode").className = "badge " + (!driver ? "danger" : f.source === "gazebo" ? "fake" : "real");
+  $("phase").textContent = "단계 " + (m ? `${PHASE_KO[m] || m} (${m})` : "-");
+  $("phase").className = "badge " + (m === "DONE" ? "safe" : m === "ABORT" ? "danger" : AIRBORNE.includes(m) ? "fake" : "real");
+  const busy = f && f.busy;
+  const st = !driver ? "드라이버 없음" : busy === "takeoff" ? "이륙 중…" : busy === "land" ? "착륙 중…" : f.flying ? "비행 중" : "지상";
+  $("flightState").textContent = st;
+  $("flightState").className = "flight-state" + (f && (f.flying || busy) ? " flying" : m === "DONE" ? " done" : m === "ABORT" ? " abort" : "");
+  // YOLO가 준비돼야 시작 (11/03 14:32: launch 3.8초 뒤 시작해 YOLO가 뜨기 전 18초를 사람 탐지 없이 날았다)
+  const yoloOk = !s.need_yolo || (s.yolo && s.yolo.age_s !== null && s.yolo.age_s < 3);
+  const canStart = m === "READY" && (!f || f.can_takeoff) && yoloOk;
+  $("btnStart").disabled = !canStart;
+  if (!canStart && armedUntil) disarm();
+  $("btnLand").disabled = !(f && (f.flying || busy)) && !AIRBORNE.includes(m);
+  const why = [];
+  if (m !== "READY") why.push(m === "WAIT_POSE" || !m ? "비행 노드가 위치를 기다리는 중" : `지금 단계(${PHASE_KO[m] || m})에서는 시작할 수 없음`);
+  if (f && !f.can_takeoff && !f.flying) why.push("이륙 전 점검 미통과: " + f.preflight.filter((c) => !c.ok).map((c) => c.title).join(", "));
+  if (!yoloOk) why.push("YOLO 준비 전 (사람 탐지 모델을 올리는 데 launch 뒤 20초쯤 걸립니다)");
+  // 땅에서 기수 값이 흐르면 알린다. 버튼은 그대로 두지만 비행 노드가 시작을 받지 않는다 (30초 안에 한 번 더 누르면 그대로 요청)
+  const nowMs = Date.now();
+  const onGround = driver && !f.flying && !busy;
+  if (onGround && typeof t.yaw === "number" && s.tello_age_s !== null && s.tello_age_s < 1) {
+    yawHist.push([nowMs, t.yaw]);
+    while (yawHist.length && nowMs - yawHist[0][0] > 12000) yawHist.shift();
+  } else if (!onGround) yawHist = [];
+  const span = onGround ? yawSpan(nowMs) : null;
+  const drifting = span !== null && span >= 2;
+  const notes = drifting ? [`기체 기수 값이 땅에서 흐르고 있습니다 (10초에 ${span.toFixed(0)}°). 이 상태에서는 Tello가 이륙을 거절해 왔습니다 — ` +
+    "지금은 시작을 눌러도 받지 않습니다. 기체를 살짝 들었다 평평한 곳에 다시 내려놓고 값이 멈추면 시작하세요 (그래도 띄워 보려면 30초 안에 시작을 한 번 더)"] : [];
+  $("why").textContent = (canStart ? [] : why).concat(notes).join(" · ");
+  $("gYaw").textContent = typeof t.yaw === "number" ? t.yaw.toFixed(0) + "°" + (drifting ? " (흐름)" : "") : "없음";
+  if (f && typeof f.battery_land_pct === "number" && typeof f.temp_land_c === "number") {
+    $("autoLandRule").textContent = `상태 1초 끊김·배터리 ${f.battery_land_pct}% 이하·온도 ${f.temp_land_c}°C 이상`;
+  }
+  // 드라이버가 스스로 내린 이유를 말로 (11/02: 'grounded'만 보여 왜 내렸는지 몰랐다)
+  const WHY = { crash: "충돌로 보임 (크게 기운 뒤 바닥)", flipped: "뒤집힘 — 모터를 껐습니다", grounded: "스스로 내려앉음 — 충돌 아님, 배터리 약함 의심 (완충 배터리로 바꾸세요)",
+    battery_low: "배터리 10% 이하", overheat: "과열", state_lost: "Tello 상태값 끊김", cmd_timeout: "비행 노드 속도 명령 끊김" };
+  // 이름이 위의 시작 불가 이유 목록(why)과 겹치면 스크립트 전체가 안 돌아 화면이 '연결 중…'에 멈춘다 (11/02 실기체)
+  const reasonText = (r) => WHY[r] ? `${WHY[r]} (${r})` : r;
+  const warn = f && f.last_warning && f.last_warning.type === "sink_against_climb"
+    ? ` · 경고 ${String(f.last_warning.at).slice(11, 19)}: 올리라는데 기체가 내려감 — 배터리 약함 의심` : "";
+  $("autoLand").textContent = (f && f.last_auto_land ? `자동 착륙 ${String(f.last_auto_land.at).slice(11, 19)} · 사유: ${reasonText(f.last_auto_land.reason)}` :
+    f && f.landing_reason ? `드라이버가 착륙시킴 · 사유: ${reasonText(f.landing_reason)}` : "") + warn;
+  $("preflight").innerHTML = f ? f.preflight.map((c) =>
+    `<div class="${c.ok ? "ok" : "no"}">${c.ok ? "✓" : "✕"} ${esc(c.title)} <span class="small">${esc(c.detail)}</span></div>`).join("") : "";
+  const op = f && f.preflight.find((c) => c.key === "operator");
+  if (op) $("confirmBox").checked = op.ok;
+  $("confirmBox").disabled = !driver || !!(f.flying || busy);
+  $("gH").textContent = typeof t.h === "number" ? (t.h / 100).toFixed(2) + " m" : "없음";
+  $("gTof").textContent = typeof t.tof === "number" ? (t.tof <= 10 || t.tof >= 6553 ? "무효" : (t.tof / 100).toFixed(2) + " m") : "없음";
+  $("gBat").textContent = typeof t.bat === "number" ? t.bat.toFixed(0) + " %" : "없음";
+  $("gTemp").textContent = typeof t.temph === "number" ? t.temph.toFixed(0) + " °C" : "없음";
+  $("gRc").textContent = f ? f.last_rc.join(" ") : "-";
+  $("gSigma").textContent = !s.pose ? "없음" : s.pose.sigma == null ? "모름 (속도 적분)" : s.pose.sigma.toFixed(2) + " m";
+  $("warnings").innerHTML = s.warnings.map((w) => `<div>${esc(w)}</div>`).join("");
+}
+
+function renderPose(s) {
+  const p = s.pose, tr = s.truth;
+  if (!p) return;
+  const deg = (r) => (r * 180 / Math.PI).toFixed(0) + "°";
+  const rows = [["추정 위치", `${num(p.x)}, ${num(p.y)}, ${num(p.z)} m`, deg(p.yaw)]];
+  if (tr) {
+    rows.push(["정답 위치 (시뮬레이션)", `${num(tr.x)}, ${num(tr.y)}, ${num(tr.z)} m`, deg(tr.yaw)]);
+    rows.push(["추정 오차", `${Math.hypot(p.x - tr.x, p.y - tr.y).toFixed(2)} m`, ""]);
+  }
+  const g = mapData && mapData.goal;
+  if (g) rows.push(["목적지까지", `${Math.hypot(g.x - p.x, g.y - p.y).toFixed(2)} m`, `(${g.x.toFixed(2)}, ${g.y.toFixed(2)})`]);
+  $("poseTable").innerHTML = `<thead><tr><th>항목</th><th>x, y, z</th><th>방향</th></tr></thead><tbody>` +
+    rows.map(([k, v, y]) => `<tr><td>${k}</td><td class="num">${v}</td><td class="num">${y}</td></tr>`).join("") + "</tbody>";
+}
+
+function renderLog(events) {
+  $("log").innerHTML = events.slice().reverse().map((e) =>
+    `<div class="row"><span>${esc(e.t)}</span><span>${esc(e.text)}</span></div>`).join("") || `<span class="small">기록이 없습니다.</span>`;
+}
+
+// ---------- 지도 ----------
+function css(name) { return getComputedStyle(document.documentElement).getPropertyValue(name).trim(); }
+function drawMap(s) {
+  const cv = $("map"), ctx = cv.getContext("2d");
+  const W = cv.width, H = cv.height;
+  ctx.clearRect(0, 0, W, H);
+  ctx.fillStyle = css("--map-floor"); ctx.fillRect(0, 0, W, H);
+  let b = mapData && mapData.bounds;
+  if (!b || mapData.open) {   // 지도가 없거나 빈 지도(map:= 없이 띄움, 20 m)면 지나온 길·본 곳·사람 둘레로 확대
+    const pts = (s.trail || []).concat(s.pose ? [[s.pose.x, s.pose.y]] : [], (s.people || []).map((p) => [p.x, p.y]),
+      mapData && mapData.spawn ? [[mapData.spawn.x, mapData.spawn.y]] : [], gridExt || []);
+    if (!pts.length) return;
+    const xs = pts.map((p) => p[0]), ys = pts.map((p) => p[1]);
+    const cx = (Math.min(...xs) + Math.max(...xs)) / 2, cy = (Math.min(...ys) + Math.max(...ys)) / 2;
+    const hx = Math.max(3, (Math.max(...xs) - Math.min(...xs)) / 2 + 1), hy = Math.max(3, (Math.max(...ys) - Math.min(...ys)) / 2 + 1);
+    b = { xmin: cx - hx, xmax: cx + hx, ymin: cy - hy, ymax: cy + hy };
+  }
+  const pad = 16, sc0 = Math.min((W - 2 * pad) / (b.xmax - b.xmin), (H - 2 * pad) / (b.ymax - b.ymin));
+  const ox0 = (W - sc0 * (b.xmax - b.xmin)) / 2, oy0 = (H - sc0 * (b.ymax - b.ymin)) / 2;
+  // 확대·이동: 화면 가운데를 기준으로 view.zoom배 한 뒤 view.px·py만큼 옮긴다
+  const sc = sc0 * view.zoom, ox = W / 2 + (ox0 - W / 2) * view.zoom + view.px, oy = H / 2 - (H / 2 - oy0) * view.zoom - view.py;
+  const X = (x) => ox + (x - b.xmin) * sc, Y = (y) => H - oy - (y - b.ymin) * sc;   // 지도 y는 위가 +
+  mapT = { sc, ox, oy, xmin: b.xmin, ymin: b.ymin, H };   // 클릭한 화소를 지도 좌표로 되돌릴 때 쓴다
+  // 1 m 격자
+  ctx.strokeStyle = css("--map-grid"); ctx.lineWidth = 1; ctx.beginPath();
+  for (let x = Math.ceil(b.xmin); x <= b.xmax; x++) { ctx.moveTo(X(x), Y(b.ymin)); ctx.lineTo(X(x), Y(b.ymax)); }
+  for (let y = Math.ceil(b.ymin); y <= b.ymax; y++) { ctx.moveTo(X(b.xmin), Y(y)); ctx.lineTo(X(b.xmax), Y(y)); }
+  ctx.stroke();
+  const box = (o, color) => {
+    ctx.save(); ctx.translate(X(o.x), Y(o.y)); ctx.rotate(-(o.yaw || 0));
+    ctx.fillStyle = color; ctx.fillRect(-o.sx * sc / 2, -o.sy * sc / 2, o.sx * sc, o.sy * sc); ctx.restore();
+  };
+  if (gridCanvas && grid) {   // 카메라 지도 단면 (한 칸 = 한 화소, 확대해 그린다)
+    ctx.save(); ctx.imageSmoothingEnabled = false;
+    ctx.drawImage(gridCanvas, X(grid.x0), Y(grid.y0 + grid.h * grid.res), grid.w * grid.res * sc, grid.h * grid.res * sc);
+    ctx.restore();
+  }
+  if (mapData) {
+    (mapData.obstacles || []).forEach((o) => box(o, css("--map-obst")));
+    (mapData.walls || []).forEach((o) => box(o, css("--map-wall")));
+    const sp = mapData.spawn;
+    if (sp) { ctx.strokeStyle = css("--muted"); ctx.lineWidth = 2; ctx.strokeRect(X(sp.x) - 7, Y(sp.y) - 7, 14, 14); }
+    const g = mapData.goal;
+    if (g) {
+      ctx.fillStyle = css("--map-goal"); ctx.beginPath(); ctx.arc(X(g.x), Y(g.y), 8, 0, 2 * Math.PI); ctx.fill();
+      ctx.font = "12px system-ui"; ctx.fillText("목적지", X(g.x) + 11, Y(g.y) + 4);
+    }
+  }
+  const line = (pts, color, width, dash) => {
+    if (!pts || pts.length < 2) return;
+    ctx.strokeStyle = color; ctx.lineWidth = width; ctx.setLineDash(dash || []);
+    ctx.beginPath(); pts.forEach((p, i) => (i ? ctx.lineTo(X(p[0]), Y(p[1])) : ctx.moveTo(X(p[0]), Y(p[1])))); ctx.stroke();
+    ctx.setLineDash([]);
+  };
+  (s.found || []).forEach((o) => {
+    box(o, css("--map-found"));
+    ctx.strokeStyle = css("--map-drone"); ctx.lineWidth = 1;
+    ctx.strokeRect(X(o.x) - o.sx * sc / 2, Y(o.y) - o.sy * sc / 2, o.sx * sc, o.sy * sc);
+  });
+  (s.people || []).forEach((p) => {   // 찾은 사람: 칠한 원은 길을 막는 사람, 점선 원은 다시 봤는데 없던 사람
+    const r = Math.max(5, 0.25 * sc);
+    ctx.beginPath(); ctx.arc(X(p.x), Y(p.y), r, 0, 2 * Math.PI);
+    if (p.gone) { ctx.strokeStyle = css("--map-person"); ctx.lineWidth = 2; ctx.setLineDash([3, 3]); ctx.stroke(); ctx.setLineDash([]); }
+    else { ctx.fillStyle = css("--map-person"); ctx.fill(); }
+  });
+  line(s.trail, css("--map-trail"), 2);
+  line(s.path, css("--map-path"), 2, [6, 4]);
+  (s.path || []).forEach((p) => { ctx.fillStyle = css("--map-path"); ctx.beginPath(); ctx.arc(X(p[0]), Y(p[1]), 3, 0, 2 * Math.PI); ctx.fill(); });
+  // 운용자가 찍은 자리: 비행 노드가 받은 것은 칠한 점(갈 자리)과 빈 원(찍은 곳), 아직 안 보낸 것은 점선 십자
+  const pin = (x, y, filled, label) => {
+    ctx.strokeStyle = css("--map-pick"); ctx.fillStyle = css("--map-pick"); ctx.lineWidth = 2;
+    ctx.beginPath(); ctx.arc(X(x), Y(y), 7, 0, 2 * Math.PI);
+    if (filled) ctx.fill(); else ctx.stroke();
+    if (label) { ctx.font = "12px system-ui"; ctx.fillText(label, X(x) + 11, Y(y) + 4); }
+  };
+  const op = s.operator;
+  if (op && op.click) {
+    const g = op.goal || op.click;
+    if (Math.hypot(g[0] - op.click[0], g[1] - op.click[1]) > 0.15) {
+      line([op.click, g], css("--map-pick"), 1, [3, 3]);
+      pin(op.click[0], op.click[1], false, "");
+    }
+    pin(g[0], g[1], op.state !== "pending", op.state === "pending" ? "받음" : op.state === "arrived" ? "둘러보는 중" : "가는 중");
+  }
+  if (pick) {
+    const px = X(pick.x), py = Y(pick.y);
+    ctx.strokeStyle = css("--map-pick"); ctx.lineWidth = 2; ctx.setLineDash([4, 3]);
+    ctx.beginPath(); ctx.arc(px, py, 9, 0, 2 * Math.PI); ctx.stroke(); ctx.setLineDash([]);
+    ctx.beginPath(); ctx.moveTo(px - 14, py); ctx.lineTo(px + 14, py); ctx.moveTo(px, py - 14); ctx.lineTo(px, py + 14); ctx.stroke();
+    ctx.fillStyle = css("--map-pick"); ctx.font = "12px system-ui"; ctx.fillText("보낼 자리", px + 13, py - 8);
+  }
+  if (s.truth) {
+    ctx.strokeStyle = css("--map-truth"); ctx.lineWidth = 2; ctx.beginPath();
+    ctx.arc(X(s.truth.x), Y(s.truth.y), 7, 0, 2 * Math.PI); ctx.stroke();
+  }
+  if (s.pose) {
+    const p = s.pose, r = Math.max(9, 0.25 * sc);
+    if (p.sigma > 0.02) {
+      ctx.strokeStyle = css("--map-drone"); ctx.setLineDash([3, 3]); ctx.lineWidth = 1; ctx.beginPath();
+      ctx.arc(X(p.x), Y(p.y), p.sigma * sc, 0, 2 * Math.PI); ctx.stroke(); ctx.setLineDash([]);
+    }
+    ctx.save(); ctx.translate(X(p.x), Y(p.y)); ctx.rotate(-p.yaw);
+    ctx.fillStyle = css("--map-drone"); ctx.beginPath();
+    ctx.moveTo(r, 0); ctx.lineTo(-r * 0.7, r * 0.6); ctx.lineTo(-r * 0.4, 0); ctx.lineTo(-r * 0.7, -r * 0.6); ctx.closePath(); ctx.fill();
+    ctx.restore();
+  }
+  // 축척
+  ctx.strokeStyle = css("--text"); ctx.fillStyle = css("--text"); ctx.lineWidth = 2; ctx.beginPath();
+  ctx.moveTo(pad, H - pad); ctx.lineTo(pad + sc, H - pad); ctx.stroke(); ctx.font = "11px system-ui"; ctx.fillText("1 m", pad, H - pad - 5);
+}
+
+// ---------- 지도 확대·이동 ----------
+(function () {
+  const cv = $("map");
+  const at = (e) => { const r = cv.getBoundingClientRect(); return [(e.clientX - r.left) * cv.width / r.width, (e.clientY - r.top) * cv.height / r.height]; };
+  const redraw = () => { if (last) drawMap(last); };
+  const zoomAt = (mx, my, f) => {
+    const z2 = Math.max(0.5, Math.min(30, view.zoom * f));
+    f = z2 / view.zoom;
+    view.px = (mx - cv.width / 2) - (mx - cv.width / 2 - view.px) * f;
+    view.py = (my - cv.height / 2) - (my - cv.height / 2 - view.py) * f;
+    view.zoom = z2;
+    redraw();
+  };
+  cv.addEventListener("wheel", (e) => { e.preventDefault(); const [mx, my] = at(e); zoomAt(mx, my, e.deltaY < 0 ? 1.2 : 1 / 1.2); }, { passive: false });
+  const pts = new Map();
+  let pinch = null;
+  // 한 번 클릭(끌지 않고 뗌) = 보낼 자리 찍기. 두 번 클릭(처음대로)과 겹치지 않게 조금 기다렸다 찍는다
+  let tap = null, tapTimer = 0;
+  const TAP_MOVE = 6, TAP_TIME = 600, TAP_WAIT = 280;
+  cv.addEventListener("pointerdown", (e) => {
+    cv.setPointerCapture(e.pointerId); pts.set(e.pointerId, at(e)); cv.classList.add("dragging");
+    clearTimeout(tapTimer);
+    tap = pts.size === 1 && e.button === 0 ? { at: at(e), t: Date.now(), moved: 0 } : null;
+  });
+  cv.addEventListener("pointermove", (e) => {
+    if (!pts.has(e.pointerId)) return;
+    const p = at(e), q = pts.get(e.pointerId);
+    pts.set(e.pointerId, p);
+    if (tap) tap.moved = Math.max(tap.moved, Math.hypot(p[0] - tap.at[0], p[1] - tap.at[1]));
+    if (pts.size === 1) { view.px += p[0] - q[0]; view.py += p[1] - q[1]; redraw(); return; }
+    const [a, c] = [...pts.values()];
+    const d = Math.hypot(a[0] - c[0], a[1] - c[1]);
+    if (pinch) zoomAt((a[0] + c[0]) / 2, (a[1] + c[1]) / 2, d / pinch);
+    pinch = d;
+  });
+  const up = (e) => {
+    const t = tap;
+    tap = null;
+    pts.delete(e.pointerId); pinch = null; if (!pts.size) cv.classList.remove("dragging");
+    if (e.type !== "pointerup" || !t || !mapT || t.moved > TAP_MOVE || Date.now() - t.t > TAP_TIME) return;
+    // 화면 화소 → 지도 좌표 (drawMap의 X·Y를 거꾸로). 뗀 자리와 지금 변환으로 계산한다: 몇 화소 끌려 지도가 따라 움직였어도
+    // 손가락 밑의 지도 자리는 누른 곳 그대로다
+    const q = at(e), m = mapT, x = (q[0] - m.ox) / m.sc + m.xmin, y = (m.H - m.oy - q[1]) / m.sc + m.ymin;
+    tapTimer = setTimeout(() => { pick = { x, y }; if (last) { renderGoto(last); drawMap(last); } }, TAP_WAIT);
+  };
+  cv.addEventListener("pointerup", up);
+  cv.addEventListener("pointercancel", up);
+  const reset = () => { clearTimeout(tapTimer); view.zoom = 1; view.px = 0; view.py = 0; redraw(); };
+  cv.addEventListener("dblclick", reset);
+  $("mapReset").onclick = reset;
+})();
+
+async function loadGrid(ver) {
+  let g;
+  try { g = await (await fetch("/api/grid", { cache: "no-store" })).json(); } catch { return; }
+  if (!g) return;
+  const bytes = Uint8Array.from(atob(g.cells), (c) => c.charCodeAt(0));
+  const cv = gridCanvas || document.createElement("canvas");
+  cv.width = g.w; cv.height = g.h;
+  const cx = cv.getContext("2d"), img = cx.createImageData(g.w, g.h);
+  const rgba = (name) => {   // CSS 색 → [r, g, b, a]
+    const t = document.createElement("canvas").getContext("2d"); t.fillStyle = css(name); t.fillRect(0, 0, 1, 1);
+    return t.getImageData(0, 0, 1, 1).data;
+  };
+  const colors = [null, rgba("--map-seen"), rgba("--map-cam-sus"), rgba("--map-cam")];
+  let x0 = Infinity, x1 = -Infinity, y0 = Infinity, y1 = -Infinity;
+  for (let j = 0; j < g.h; j++) for (let i = 0; i < g.w; i++) {   // 격자 칸 (i, j): y는 위가 +라 캔버스 줄은 뒤집는다
+    const v = bytes[j * g.w + i], c = colors[v];
+    if (!c) continue;
+    const k = ((g.h - 1 - j) * g.w + i) * 4;
+    img.data[k] = c[0]; img.data[k + 1] = c[1]; img.data[k + 2] = c[2]; img.data[k + 3] = c[3];
+    x0 = Math.min(x0, i); x1 = Math.max(x1, i); y0 = Math.min(y0, j); y1 = Math.max(y1, j);
+  }
+  cx.putImageData(img, 0, 0);
+  grid = g; gridCanvas = cv; gridVer = g.ver;
+  gridExt = x0 <= x1 ? [[g.x0 + x0 * g.res, g.y0 + y0 * g.res], [g.x0 + (x1 + 1) * g.res, g.y0 + (y1 + 1) * g.res]] : null;
+}
+
+async function loadMap() {
+  try { mapData = await (await fetch("/api/map", { cache: "no-store" })).json(); } catch { mapData = null; }
+  const m = mapData;
+  $("mapMeta").textContent = m ? `${m.description || ""} · ${(m.bounds.xmax - m.bounds.xmin).toFixed(1)}×${(m.bounds.ymax - m.bounds.ymin).toFixed(1)} m` +
+    (m.goal ? ` · 목적지 (${m.goal.x.toFixed(2)}, ${m.goal.y.toFixed(2)})` : " · 목적지 없음(탐색)") : "지도 파일 없음 (지나온 길만 그림)";
+}
+
+async function refresh() {
+  let s;
+  try {
+    s = await (await fetch("/api/status", { cache: "no-store" })).json();
+  } catch {
+    $("mode").textContent = "웹 서버 연결 끊김"; $("mode").className = "badge danger";
+    return;
+  }
+  if (!last && mapData === null) await loadMap();
+  last = s;
+  $("legendTruth").hidden = !s.sim;
+  $("meta").textContent = s.mission.since_s !== null ? `이 단계 ${s.mission.since_s.toFixed(0)}초째` : "";
+  renderVideo(s.camera);
+  renderYolo(s.yolo);
+  if (s.grid && s.grid.ver !== gridVer && !gridLoading) {
+    gridLoading = true;
+    loadGrid(s.grid.ver).finally(() => { gridLoading = false; });
+  }
+  $("legendGrid").hidden = !s.grid;
+  $("legendPeople").hidden = !(s.people && s.people.length);
+  renderControl(s);
+  renderDoing(s);
+  renderGoto(s);
+  renderPose(s);
+  renderLog(s.events);
+  drawMap(s);
+}
+
+loadMap().then(() => { setSource("cam"); refresh(); });
+setInterval(refresh, 300);
+</script>
+</body>
+</html>

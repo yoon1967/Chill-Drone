@@ -1,0 +1,216 @@
+{
+  "status": "local_file_checks_passed_floor_identity_pending",
+  "frames": 5,
+  "anchors": 3,
+  "observations": 15,
+  "observations_per_anchor": {
+    "A": 5,
+    "B": 5,
+    "C": 5
+  },
+  "observation_status_counts": {
+    "visually_reviewed": 10,
+    "provisional_structure_alignment": 4,
+    "user_marked_reference": 1
+  },
+  "nonprovisional_observations_per_anchor": {
+    "A": 5,
+    "B": 5,
+    "C": 1
+  },
+  "height_correspondence_ready": false,
+  "checks": [
+    "original frame / measurement reference SHA-256",
+    "run_id / feature_run_id",
+    "DB image IDs / PTS / original dimensions",
+    "in-frame coordinates and declared per-point status/uncertainty",
+    "provisional floor observations disabled for metric validation",
+    "segment lengths / units against source manifest",
+    "JSON / CSV consistency",
+    "feature DB unchanged SHA-256"
+  ],
+  "epipolar_diagnostic": {
+    "definition": "sqrt Sampson error against existing two-view F, original pixels; advisory only",
+    "tested_anchor_pair_observations": 21,
+    "max_sqrt_sampson_error_px": 2.327749137562608,
+    "flags_over_3px": 0,
+    "results": [
+      {
+        "frame_id_a": "frame_0030.jpg",
+        "frame_id_b": "frame_0034.jpg",
+        "anchor_id": "A",
+        "includes_provisional_observation": false,
+        "sqrt_sampson_error_px": 0.012617079751574304,
+        "review_flag_over_3px": false
+      },
+      {
+        "frame_id_a": "frame_0030.jpg",
+        "frame_id_b": "frame_0034.jpg",
+        "anchor_id": "B",
+        "includes_provisional_observation": false,
+        "sqrt_sampson_error_px": 2.1164853696855177,
+        "review_flag_over_3px": false
+      },
+      {
+        "frame_id_a": "frame_0030.jpg",
+        "frame_id_b": "frame_0034.jpg",
+        "anchor_id": "C",
+        "includes_provisional_observation": true,
+        "sqrt_sampson_error_px": 1.5082868172057642,
+        "review_flag_over_3px": false
+      },
+      {
+        "frame_id_a": "frame_0034.jpg",
+        "frame_id_b": "frame_0035.jpg",
+        "anchor_id": "A",
+        "includes_provisional_observation": false,
+        "sqrt_sampson_error_px": 0.27330493252131516,
+        "review_flag_over_3px": false
+      },
+      {
+        "frame_id_a": "frame_0034.jpg",
+        "frame_id_b": "frame_0035.jpg",
+        "anchor_id": "B",
+        "includes_provisional_observation": false,
+        "sqrt_sampson_error_px": 0.5092322974067176,
+        "review_flag_over_3px": false
+      },
+      {
+        "frame_id_a": "frame_0034.jpg",
+        "frame_id_b": "frame_0035.jpg",
+        "anchor_id": "C",
+        "includes_provisional_observation": true,
+        "sqrt_sampson_error_px": 0.8884869250909073,
+        "review_flag_over_3px": false
+      },
+      {
+        "frame_id_a": "frame_0034.jpg",
+        "frame_id_b": "frame_0036.jpg",
+        "anchor_id": "A",
+        "includes_provisional_observation": false,
+        "sqrt_sampson_error_px": 0.21363319988981277,
+        "review_flag_over_3px": false
+      },
+      {
+        "frame_id_a": "frame_0034.jpg",
+        "frame_id_b": "frame_0036.jpg",
+        "anchor_id": "B",
+        "includes_provisional_observation": false,
+        "sqrt_sampson_error_px": 0.7050513892738822,
+        "review_flag_over_3px": false
+      },
+      {
+        "frame_id_a": "frame_0034.jpg",
+        "frame_id_b": "frame_0036.jpg",
+        "anchor_id": "C",
+        "includes_provisional_observation": true,
+        "sqrt_sampson_error_px": 0.4615839672994829,
+        "review_flag_over_3px": false
+      },
+      {
+        "frame_id_a": "frame_0034.jpg",
+        "frame_id_b": "frame_0038.jpg",
+        "anchor_id": "A",
+        "includes_provisional_observation": false,
+        "sqrt_sampson_error_px": 0.05345958383239465,
+        "review_flag_over_3px": false
+      },
+      {
+        "frame_id_a": "frame_0034.jpg",
+        "frame_id_b": "frame_0038.jpg",
+        "anchor_id": "B",
+        "includes_provisional_observation": false,
+        "sqrt_sampson_error_px": 2.327749137562608,
+        "review_flag_over_3px": false
+      },
+      {
+        "frame_id_a": "frame_0034.jpg",
+        "frame_id_b": "frame_0038.jpg",
+        "anchor_id": "C",
+        "includes_provisional_observation": true,
+        "sqrt_sampson_error_px": 0.5624750787001811,
+        "review_flag_over_3px": false
+      },
+      {
+        "frame_id_a": "frame_0035.jpg",
+        "frame_id_b": "frame_0036.jpg",
+        "anchor_id": "A",
+        "includes_provisional_observation": false,
+        "sqrt_sampson_error_px": 0.22826154408497268,
+        "review_flag_over_3px": false
+      },
+      {
+        "frame_id_a": "frame_0035.jpg",
+        "frame_id_b": "frame_0036.jpg",
+        "anchor_id": "B",
+        "includes_provisional_observation": false,
+        "sqrt_sampson_error_px": 0.4535831840582465,
+        "review_flag_over_3px": false
+      },
+      {
+        "frame_id_a": "frame_0035.jpg",
+        "frame_id_b": "frame_0036.jpg",
+        "anchor_id": "C",
+        "includes_provisional_observation": true,
+        "sqrt_sampson_error_px": 0.0034158865405439225,
+        "review_flag_over_3px": false
+      },
+      {
+        "frame_id_a": "frame_0035.jpg",
+        "frame_id_b": "frame_0038.jpg",
+        "anchor_id": "A",
+        "includes_provisional_observation": false,
+        "sqrt_sampson_error_px": 0.32858626084348563,
+        "review_flag_over_3px": false
+      },
+      {
+        "frame_id_a": "frame_0035.jpg",
+        "frame_id_b": "frame_0038.jpg",
+        "anchor_id": "B",
+        "includes_provisional_observation": false,
+        "sqrt_sampson_error_px": 1.4615362037941704,
+        "review_flag_over_3px": false
+      },
+      {
+        "frame_id_a": "frame_0035.jpg",
+        "frame_id_b": "frame_0038.jpg",
+        "anchor_id": "C",
+        "includes_provisional_observation": true,
+        "sqrt_sampson_error_px": 0.030787006173824138,
+        "review_flag_over_3px": false
+      },
+      {
+        "frame_id_a": "frame_0036.jpg",
+        "frame_id_b": "frame_0038.jpg",
+        "anchor_id": "A",
+        "includes_provisional_observation": false,
+        "sqrt_sampson_error_px": 0.331780742559515,
+        "review_flag_over_3px": false
+      },
+      {
+        "frame_id_a": "frame_0036.jpg",
+        "frame_id_b": "frame_0038.jpg",
+        "anchor_id": "B",
+        "includes_provisional_observation": false,
+        "sqrt_sampson_error_px": 1.1973110171016044,
+        "review_flag_over_3px": false
+      },
+      {
+        "frame_id_a": "frame_0036.jpg",
+        "frame_id_b": "frame_0038.jpg",
+        "anchor_id": "C",
+        "includes_provisional_observation": true,
+        "sqrt_sampson_error_px": 0.11308772355570626,
+        "review_flag_over_3px": false
+      }
+    ]
+  },
+  "not_validated": [
+    "physical measurement uncertainty",
+    "exact physical identity by survey",
+    "3D camera / anchor reconstruction",
+    "metric length error",
+    "recipient environment"
+  ],
+  "manual_review_scope": "A/B unchanged. C reference follows corrected user mark; four other C locations are estimates on a smooth floor-contact edge. Cross-view C identity is not established and 136cm validation is pending."
+}

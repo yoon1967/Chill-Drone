@@ -1,0 +1,393 @@
+"""가짜 Tello로 게이트웨이를 시험한다: 화면 메시지 → 판정기 → FlightController → 가짜 기체 (표준 라이브러리만).
+
+    python -B -m unittest discover -s modules/autonomy/tello_link/tests -v
+"""
+
+import os
+import sys
+import tempfile
+import time
+import unittest
+
+sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
+
+from fake_tello import FakeTello  # noqa: E402
+import gateway  # noqa: E402
+from gateway import Gateway  # noqa: E402
+from tello_link import TelloLink  # noqa: E402
+
+
+def wait_until(pred, timeout=4.0):
+    deadline = time.monotonic() + timeout
+    while time.monotonic() < deadline:
+        if pred():
+            return True
+        time.sleep(0.05)
+    return False
+
+
+class GatewayCase(unittest.TestCase):
+    mapping_console_port = None
+
+    def make_video(self):
+        return None
+
+    def setUp(self):
+        self.fake = FakeTello(cmd_port=48889, state_port=48890, video_port=41111, send_video=False)
+        self.fake.motion_delay = 0.3
+        self.fake.temp_override = 50
+        self.fake.start()
+        self.tmp = tempfile.TemporaryDirectory()
+        self.link = TelloLink(host="127.0.0.1", cmd_port=48889, local_cmd_port=0, state_port=48890,
+                              bind_ip="127.0.0.1", default_timeout=1.0, allow_flight=True,
+                              log_root=self.tmp.name, run_id="gateway_test", source="fake").start()
+        self.gw = Gateway(self.link, source="fake", video=self.make_video(),
+                          mapping_console_port=self.mapping_console_port)
+        self.sent = []
+        self.gw.listeners.append(self.sent.append)
+        self.gw.start()
+        self.assertTrue(wait_until(lambda: self.gw.arbiter.mode == "grounded"), "SDK 진입 후 지상이어야 한다")
+
+    def tearDown(self):
+        self.gw._stop.set()
+        self.gw._thread.join(timeout=2)
+        self.gw.flight._stop.set()
+        self.gw.flight._thread.join(timeout=20)
+        if self.gw.recorder is not None:   # 영상 녹화 파일을 닫아야 Windows에서 임시 폴더를 지울 수 있다
+            self.gw.recorder.close()
+        self.link.close()
+        self.fake.close()
+        self.tmp.cleanup()
+
+    def cmd(self, name, client="monitor", **args):
+        return self.gw.handle_message({"type": "cmd", "id": f"t-{name}", "name": name, "args": args, "client": client}, "t")
+
+    def rc(self, axes, client="monitor"):
+        self.gw.handle_message({"type": "rc", "axes": axes, "client": client}, "t")
+
+    def hold_rc(self, axes, until, timeout=4.0, client="monitor"):
+        """관제 화면처럼 rc를 0.05초마다 다시 보내며 until()이 참이 되길 기다린다(app.js는 누르는 동안 50 ms마다 보낸다).
+
+        rc를 한 번만 보내면 가감속(0 → 30, 약 0.2초)이 사람 입력 데드맨(0.3초) 안에 끝나고 비행 제어 루프가 그 틈에 30을
+        보내야 했다. Windows에서 20Hz 루프가 62.5 ms로 돌아 30이 남는 틈이 한두 번(62~125 ms)뿐이라, 루프가 그만큼만
+        밀려도 30이 나가지 않고 실패했다(11/13 측정)."""
+        deadline = time.monotonic() + timeout
+        while time.monotonic() < deadline:
+            self.rc(axes, client)
+            if until():
+                return True
+            time.sleep(0.05)
+        return False
+
+    def rc_sent(self):
+        return [c for c in self.fake.received if c.startswith("rc ")]
+
+    def take_off(self):
+        self.assertTrue(self.cmd("confirm_area", confirmed=True)["ok"])
+        self.assertTrue(self.cmd("takeoff")["ok"])
+        self.assertTrue(wait_until(lambda: self.gw.arbiter.mode == "manual"), self.gw.arbiter.mode)
+
+
+class GatewayTest(GatewayCase):
+    def test_state_follows_contract(self):
+        st = self.gw.drone_state()
+        self.assertEqual(st['run_id'], self.link.run_id)
+        for key in ("schema_version", "type", "at", "time_source", "source", "connected", "mode", "authority",
+                    "allowed", "warnings", "battery_pct", "height_m", "temp_high_c", "front_tof", "down_tof",
+                    "mission", "video", "last_transition", "operator_interventions"):
+            self.assertIn(key, st)
+        self.assertEqual((st["type"], st["mode"], st["source"]), ("drone_state", "grounded", "fake"))
+        self.assertIsNone(st["height_m"])               # 지상: 하방 tof 무효 → 높이 없음(0이 아님)
+        self.assertFalse(st["front_tof"]["valid"])
+        self.assertIn("takeoff", st["allowed"])
+
+    def test_state_reports_ai_overlay(self):
+        self.assertFalse(self.gw.drone_state()["overlay"]["alive"])   # 탐지 프로그램 없음
+        self.gw.overlay.put(b"\xff\xd8\xff\xe0jpeg", "in-1", "f-7")
+        ov = self.gw.drone_state()["overlay"]
+        self.assertEqual((ov["alive"], ov["frame_id"]), (True, "f-7"))
+
+    def test_map_snapshot_reaches_state_and_screen(self):
+        self.assertEqual(self.gw.drone_state()["map"]["upstream"], None)   # 지도 연결기 없음
+        msg = {"schema_version": "gateway-map/0.1", "kind": "snapshot", "upstream": "ok", "source_url": "http://m",
+               "mapping_state": "mapping", "source": {"session_id": "s", "segment_id": 0, "revision": 3},
+               "scale": {"unit": "arbitrary"}, "points": [[0, 0, 1, 255, 0, 0]], "points_total": 1, "cameras": [[0, 0, 0]]}
+        self.assertEqual(self.gw.map.receive(msg)[0], 201)
+        m = self.gw.drone_state()["map"]
+        self.assertEqual((m["upstream"], m["revision"], m["points"], m["mapping_state"]), ("ok", 3, 1, "mapping"))
+        self.assertTrue(any(s.get("type") == "map" and s["revision"] == 3 for s in self.sent))   # 화면에 새 버전 알림
+        self.assertTrue(os.path.isfile(os.path.join(self.link.log.dir, "map", "latest.json")))
+
+    def test_takeoff_needs_area_confirm(self):
+        r = self.cmd("takeoff")
+        self.assertEqual((r["ok"], r["reason"]), (False, "preflight_failed"))
+        self.assertIn("operator", r["failed"])
+        self.assertNotIn("takeoff", self.fake.received)
+
+    def test_manual_flight_rc_and_land(self):
+        self.take_off()
+        self.assertTrue(self.hold_rc([0, 1, 0, 0], lambda: "rc 0 30 0 0" in self.rc_sent()), self.rc_sent()[-5:])  # 가감속 후 30
+        self.assertTrue(wait_until(lambda: self.rc_sent()[-1] == "rc 0 0 0 0"), self.rc_sent()[-5:])  # 입력이 끊기면(데드맨) 제자리
+        self.assertTrue(self.cmd("land")["ok"])
+        self.assertTrue(wait_until(lambda: self.gw.arbiter.mode == "grounded"), self.gw.arbiter.mode)
+        self.assertIn("land", self.fake.received)
+
+    def test_emergency_goes_out_and_settles(self):
+        self.take_off()
+        self.assertTrue(self.cmd("emergency", client="control")["ok"])
+        self.assertTrue(wait_until(lambda: "emergency" in self.fake.received), self.fake.received)  # 응답 없이 보내므로 도착을 기다린다
+        # 비상 정지 모드를 거쳤는지는 화면 알림으로 본다. 가짜 기체는 곧바로 땅에 있다고 알려 와 게이트웨이가 한 번 돌면(62 ms)
+        # grounded로 넘어가므로, 바로 지금 모드를 보면 시험 스레드가 조금만 늦게 깨도 이미 grounded였다(11/13 측정).
+        self.assertIn("emergency", [m["detail"]["to"] for m in list(self.sent) if m.get("kind") == "mode_changed"])
+        self.assertTrue(wait_until(lambda: self.gw.arbiter.mode == "grounded", timeout=5), self.gw.arbiter.mode)
+
+    def test_screen_disconnect_zeroes_rc(self):
+        self.take_off()
+        self.rc([0, 1, 0, 0])
+        self.gw.client_closed("t")
+        time.sleep(0.2)
+        self.assertEqual(self.rc_sent()[-1], "rc 0 0 0 0")
+
+    def test_events_reach_screens(self):
+        self.take_off()
+        kinds = [m["detail"]["to"] for m in self.sent if m.get("type") == "event" and m.get("kind") == "mode_changed"]
+        self.assertIn("manual", kinds)
+
+    def test_unknown_message(self):
+        r = self.gw.handle_message({"type": "nope"})
+        self.assertEqual(r["reason"], "unknown_message")
+
+    def test_not_allowed_command(self):
+        r = self.cmd("pause")
+        self.assertEqual((r["ok"], r["reason"]), (False, "not_allowed_in_mode"))
+
+    def test_video_command_without_receiver(self):
+        r = self.cmd("video_on")
+        self.assertEqual((r["ok"], r["reason"]), (False, "video_disabled"))   # --no-video
+        self.assertEqual(self.gw.video_frame(), (None, "video_disabled"))
+        self.assertNotIn("streamon", self.fake.received)
+
+
+class StubVideo:
+    """TelloVideo 대신. 수신 소켓·PyAV 없이 켜짐 여부만 흉내 낸다."""
+    def __init__(self):
+        self.running = False
+        self.size = (960, 720)
+        self.snap = None   # (jpeg, 디코딩 monotonic 시각, wall 시각)
+
+    def push(self, jpeg=b"jpg"):  # Windows monotonic은 약 15ms 단위라 연달아 넣어도 다른 프레임이 되게 한다
+        stamp = max(time.monotonic(), self.snap[1] + 0.001 if self.snap else 0.0)
+        self.snap = (jpeg, stamp, time.time())
+
+    def jpeg_snapshot(self):
+        return self.snap
+
+    def start(self):
+        self.running = True
+
+    def stop(self):
+        self.running = False
+
+    def stats(self):
+        return {"running": self.running, "fps": None,
+                "frame_age_s": time.monotonic() - self.snap[1] if self.snap else None}
+
+
+class MappingControlTest(GatewayCase):
+    mapping_console_port = 8798
+
+    def make_video(self):
+        self.video = StubVideo()
+        return self.video
+
+    def test_takeoff_needs_same_screen_confirmation_fresh_video_and_cool_aircraft(self):
+        self.assertEqual(self.gw.drone_state()["mapping_console_url"], "http://127.0.0.1:8798/")
+        self.assertEqual(self.cmd("confirm_area", confirmed="true")["reason"], "invalid_command_args")
+        self.assertTrue(self.cmd("confirm_area", confirmed=True)["ok"])
+        other = self.gw.handle_message({"type": "cmd", "name": "takeoff"}, "another-tab")
+        self.assertEqual(other["reason"], "confirm_area_required")
+        self.assertEqual(self.cmd("takeoff")["reason"], "takeoff_video_required")
+        self.assertTrue(self.cmd("video_on")["ok"])
+        self.fake.temp_override = 78
+        self.assertTrue(wait_until(lambda: self.gw.drone_state()["temp_high_c"] == 81))
+        self.video.push()
+        self.assertIn("temp", self.cmd("takeoff")["failed"])
+        self.gw.client_closed("t")
+        self.assertEqual(self.cmd("takeoff")["reason"], "confirm_area_required")
+        self.assertNotIn("takeoff", self.fake.received)
+
+    def test_video_loss_and_invalid_axes_stop_active_manual_input(self):
+        self.assertTrue(self.cmd("video_on")["ok"])
+        self.video.push()
+        self.take_off()
+        self.assertEqual(self.cmd("video_off")["reason"], "video_required_in_flight")
+        self.rc([0, 1, 0, 0])
+        self.assertTrue(wait_until(lambda: self.gw.flight.last_rc[1] > 0))
+        self.gw.handle_message({"type": "rc", "axes": [1, 0, 0, 0]}, "another-tab")
+        self.assertEqual(self.gw._rc_owner, "t")
+        self.rc([0, float("nan"), 0, 0])
+        self.assertTrue(wait_until(lambda: self.gw.flight.last_rc == (0, 0, 0, 0)))
+        self.video.push()
+        self.rc([0, 1, 0, 0])
+        self.assertTrue(wait_until(lambda: self.gw.flight.last_rc[1] > 0))
+        self.video.running = False
+        self.assertTrue(wait_until(lambda: self.gw.flight.last_rc == (0, 0, 0, 0)))
+        self.assertIsNone(self.gw._rc_owner)
+        self.assertTrue(self.cmd("land")["ok"])
+        self.assertTrue(wait_until(lambda: self.gw.arbiter.mode == "grounded"))
+
+    def test_landing_during_takeoff_is_executed_as_soon_as_takeoff_returns(self):
+        self.assertTrue(self.cmd("video_on")["ok"])
+        self.video.push()
+        self.assertTrue(self.cmd("confirm_area", confirmed=True)["ok"])
+        self.assertTrue(self.cmd("takeoff")["ok"])
+        self.assertTrue(wait_until(lambda: "takeoff" in self.fake.received))
+        self.assertTrue(self.cmd("land")["ok"])
+        self.assertTrue(wait_until(lambda: "land" in self.fake.received))
+        self.assertTrue(wait_until(lambda: self.gw.arbiter.mode == "grounded"))
+
+
+class GatewayVideoTest(GatewayCase):
+    """영상은 자동으로 켜지 않는다: 화면 요청·이륙 시 켜고, 지상에서 오래 켜져 있으면 경고한다(끄지는 않음)."""
+    def make_video(self):
+        self.video = StubVideo()
+        return self.video
+
+    def setUp(self):
+        self._saved = (gateway.VIDEO_GROUND_WARN_S, gateway.VIDEO_GROUND_OFF_S)
+        gateway.VIDEO_GROUND_WARN_S = 0.5   # 자동 끄기는 기본값(None, 끄지 않음) 그대로
+        super().setUp()
+
+    def tearDown(self):
+        super().tearDown()
+        gateway.VIDEO_GROUND_WARN_S, gateway.VIDEO_GROUND_OFF_S = self._saved
+
+    def video_cmds(self):
+        return [c for c in self.fake.received if c in ("streamon", "streamoff")]
+
+    def test_no_auto_start(self):
+        self.assertTrue(wait_until(lambda: "streamoff" in self.fake.received), self.fake.received)  # 시작 시 꺼진 상태로 맞춤
+        time.sleep(0.3)
+        self.assertNotIn("streamon", self.fake.received)
+        st = self.gw.drone_state()
+        self.assertEqual((st["video"]["enabled"], st["video"]["on"], st["video"]["available"]), (True, False, False))
+        self.assertNotIn("video_stale", st["warnings"])
+
+    def test_operator_on_off(self):
+        r = self.cmd("video_on")
+        self.assertTrue(r["ok"], r)
+        self.assertTrue(self.video.running)
+        st = self.gw.drone_state()
+        self.assertEqual((st["video"]["on"], st["video"]["reason"]), (True, "operator"))
+        self.assertTrue(self.cmd("video_off")["ok"])
+        self.assertEqual(self.video_cmds()[-2:], ["streamon", "streamoff"])
+        self.assertFalse(self.gw.drone_state()["video"]["on"])
+        changed = [m["detail"] for m in self.sent if m.get("kind") == "video_changed"]
+        self.assertEqual(changed, [{"on": True, "reason": "operator"}, {"on": False, "reason": "operator"}])
+
+    def test_takeoff_turns_video_on(self):
+        self.assertTrue(wait_until(lambda: "streamoff" in self.fake.received))
+        self.take_off()
+        self.assertTrue(wait_until(lambda: self.gw.drone_state()["video"]["on"]), self.fake.received)
+        self.assertEqual(self.gw.drone_state()["video"]["reason"], "takeoff")
+        received = self.fake.received
+        self.assertGreater(received.index("streamon"), received.index("takeoff"))  # 이륙 뒤에 켠다
+        time.sleep(1.3)  # 비행 중에는 지상 시간을 세지 않는다
+        st = self.gw.drone_state()
+        self.assertTrue(st["video"]["on"])
+        self.assertIsNone(st["video"]["ground_s"])
+
+    def test_ground_video_only_warns_and_stays_on(self):
+        self.assertTrue(self.cmd("video_on")["ok"])
+        self.assertTrue(wait_until(lambda: "video_on_ground" in self.gw.drone_state()["warnings"], timeout=2))
+        time.sleep(1.5)   # 예전 자동 끄기(시험에서 1초)보다 오래
+        st = self.gw.drone_state()
+        self.assertTrue(st["video"]["on"])
+        self.assertIsNone(st["video"]["ground_off_s"])
+        self.assertIn("video_on_ground", st["warnings"])
+        self.assertEqual(self.video_cmds()[-1], "streamon")
+        self.assertNotIn({"on": False, "reason": "ground_timeout"},
+                         [m["detail"] for m in self.sent if m.get("kind") == "video_changed"])
+
+    def test_ground_timeout_turns_video_off_when_configured(self):
+        gateway.VIDEO_GROUND_OFF_S = 1.0   # 값을 정하면 예전처럼 끈다(tearDown이 되돌림)
+        self.assertTrue(self.cmd("video_on")["ok"])
+        self.assertTrue(wait_until(lambda: "video_on_ground" in self.gw.drone_state()["warnings"], timeout=2))
+        self.assertTrue(self.gw.drone_state()["video"]["on"])
+        self.assertTrue(wait_until(lambda: not self.gw.drone_state()["video"]["on"], timeout=3))
+        st = self.gw.drone_state()
+        self.assertEqual(st["video"]["reason"], "ground_timeout")
+        self.assertNotIn("video_on_ground", st["warnings"])
+        self.assertEqual(self.video_cmds()[-1], "streamoff")
+        self.assertIn({"on": False, "reason": "ground_timeout"},
+                      [m["detail"] for m in self.sent if m.get("kind") == "video_changed"])
+
+    def test_frame_ids(self):
+        self.assertEqual(self.gw.video_frame(), (None, "video_off"))
+        self.video.push(b"before")              # 켜기 전 수신기에 남은 프레임은 내주지 않는다
+        self.assertTrue(self.cmd("video_on")["ok"])
+        self.assertEqual(self.gw.video_frame(), (None, "no_frame"))
+        self.video.push(b"a")
+        f1, _ = self.gw.video_frame()
+        self.assertEqual((f1["frame_id"], f1["jpeg"], f1["width"]), ("frame-000001", b"a", 960))
+        self.assertTrue(f1["input_id"].endswith("-video1"))
+        self.assertIs(self.gw.video_frame()[0], f1)   # 같은 프레임을 다시 가져가면 같은 번호
+        self.video.push(b"b")
+        f2, _ = self.gw.video_frame()
+        self.assertEqual(f2["frame_id"], "frame-000002")
+        self.assertIs(self.gw.frames.get(f1["input_id"], "frame-000001"), f1)
+        saved, gateway.VIDEO_STALE_S = gateway.VIDEO_STALE_S, 0.05
+        try:
+            time.sleep(0.1)                     # 새 프레임이 끊김
+            self.assertEqual(self.gw.video_frame(), (None, "video_stale"))
+        finally:
+            gateway.VIDEO_STALE_S = saved
+        self.assertTrue(self.cmd("video_off")["ok"])
+        self.assertEqual(self.gw.video_frame(), (None, "video_off"))
+        self.assertTrue(self.cmd("video_on")["ok"])   # 다시 켜면 새 세션, 이전 프레임은 찾을 수 없다
+        self.video.push(b"c")
+        f3, _ = self.gw.video_frame()
+        self.assertEqual((f3["frame_id"], f3["input_id"].endswith("-video2")), ("frame-000001", True))
+        self.assertIsNone(self.gw.frames.get(f1["input_id"], "frame-000001"))
+
+
+
+class GatewayReconnectTest(GatewayCase):
+    """드론을 껐다 켜면 SDK 모드가 풀려 상태가 끊긴다. 땅에서는 command를 다시 보내 다시 붙는다(11/05 실기체)."""
+    def make_video(self):
+        self.video = StubVideo()
+        return self.video
+
+    def setUp(self):
+        self._saved = gateway.SDK_RESYNC_S
+        gateway.SDK_RESYNC_S = 0.5
+        super().setUp()
+
+    def tearDown(self):
+        super().tearDown()
+        gateway.SDK_RESYNC_S = self._saved
+
+    def test_reconnects_after_drone_restart(self):
+        self.assertTrue(self.cmd("video_on")["ok"])
+        n = self.fake.received.count("command")
+        self.fake.restart()
+        self.assertTrue(wait_until(lambda: self.gw.arbiter.mode == "disconnected", timeout=3))
+        self.assertTrue(wait_until(lambda: self.gw.arbiter.mode == "grounded", timeout=8), self.fake.received[-6:])
+        self.assertGreater(self.fake.received.count("command"), n)
+        st = self.gw.drone_state()        # 기체 영상은 꺼졌으니 게이트웨이도 꺼진 것으로, 다시 붙은 뒤 streamoff로 맞춘다
+        self.assertEqual((st["video"]["on"], st["video"]["reason"]), (False, "link_lost"))
+        self.assertIn({"on": False, "reason": "link_lost"}, [m["detail"] for m in self.sent if m.get("kind") == "video_changed"])
+        self.assertTrue(wait_until(lambda: self.fake.received[-1:] == ["streamoff"] or
+                                   "streamoff" in self.fake.received[self.fake.received.index("command", n):]))
+
+    def test_no_command_while_flying(self):
+        self.take_off()
+        start = len(self.fake.received)
+        self.fake.send_state = False      # 비행 중 끊김: FlightController가 착륙시킨다. 그 전에 command로 잠금을 잡지 않는다
+        self.assertTrue(wait_until(lambda: "land" in self.fake.received[start:], timeout=5), self.fake.received[start:])
+        after = self.fake.received[start:]
+        self.assertNotIn("command", after[:after.index("land")])
+
+
+if __name__ == "__main__":
+    unittest.main()

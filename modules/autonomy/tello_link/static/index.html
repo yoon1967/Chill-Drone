@@ -1,0 +1,389 @@
+<!doctype html>
+<html lang="ko">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Tello 연결 점검·조작</title>
+<style>
+  :root {
+    --bg: #f5f6f8; --panel: #ffffff; --text: #1d2330; --muted: #677085; --line: #e1e4ea;
+    --ok: #1f9d55; --ok-bg: #e5f6ec; --warn: #b7791f; --warn-bg: #fdf3dc;
+    --fail: #d64545; --fail-bg: #fde8e8; --idle: #8a93a6; --idle-bg: #eef0f4;
+    --accent: #2f6fdd; --accent-text: #ffffff; --code: #f0f2f6;
+  }
+  @media (prefers-color-scheme: dark) {
+    :root:not([data-theme="light"]) {
+      --bg: #12151b; --panel: #1b1f27; --text: #e6e9ef; --muted: #98a1b3; --line: #2c323e;
+      --ok: #4cc47f; --ok-bg: #173323; --warn: #e2b04f; --warn-bg: #3a2f17;
+      --fail: #f07373; --fail-bg: #3d1d1f; --idle: #8a93a6; --idle-bg: #252a34;
+      --accent: #5b8ff0; --accent-text: #0e1116; --code: #242a35;
+    }
+  }
+  * { box-sizing: border-box; }
+  body { margin: 0; background: var(--bg); color: var(--text);
+    font: 14px/1.5 system-ui, "Malgun Gothic", "Apple SD Gothic Neo", sans-serif; }
+  header { display: flex; flex-wrap: wrap; gap: 8px 16px; align-items: center;
+    padding: 14px 20px; border-bottom: 1px solid var(--line); background: var(--panel); }
+  header h1 { margin: 0; font-size: 18px; }
+  .badge { padding: 2px 10px; border-radius: 999px; font-size: 12px; font-weight: 600; }
+  .badge.safe { background: var(--ok-bg); color: var(--ok); }
+  .badge.fake { background: var(--warn-bg); color: var(--warn); }
+  .badge.real { background: var(--idle-bg); color: var(--text); }
+  .meta { color: var(--muted); font-size: 12px; margin-left: auto; word-break: break-all; }
+  main { display: grid; gap: 16px; padding: 16px 20px; grid-template-columns: minmax(300px, 1fr) minmax(320px, 1.2fr); }
+  @media (max-width: 860px) { main { grid-template-columns: 1fr; padding: 16px; } }
+  section { background: var(--panel); border: 1px solid var(--line); border-radius: 10px; padding: 14px 16px; }
+  section h2 { margin: 0 0 10px; font-size: 15px; }
+  .col { display: flex; flex-direction: column; gap: 16px; min-width: 0; }
+  .buttons { display: flex; flex-wrap: wrap; gap: 8px; margin-bottom: 12px; }
+  button { font: inherit; border: 1px solid var(--line); background: var(--panel); color: var(--text);
+    padding: 6px 12px; border-radius: 6px; cursor: pointer; }
+  select { font: inherit; border: 1px solid var(--line); background: var(--panel); color: var(--text);
+    padding: 6px 10px; border-radius: 6px; }
+  button.primary { background: var(--accent); color: var(--accent-text); border-color: var(--accent); font-weight: 600; }
+  button:disabled { opacity: .5; cursor: progress; }
+  .step { display: grid; grid-template-columns: 28px 1fr; gap: 2px 10px; padding: 10px 0; border-top: 1px solid var(--line); }
+  .step:first-of-type { border-top: 0; }
+  .light { width: 22px; height: 22px; border-radius: 50%; display: grid; place-items: center;
+    font-size: 13px; font-weight: 700; grid-row: span 3; }
+  .light.ok { background: var(--ok-bg); color: var(--ok); }
+  .light.warn { background: var(--warn-bg); color: var(--warn); }
+  .light.fail { background: var(--fail-bg); color: var(--fail); }
+  .light.idle { background: var(--idle-bg); color: var(--idle); }
+  .step .title { font-weight: 600; }
+  .step .detail { color: var(--muted); font-size: 13px; }
+  .step .hint { font-size: 13px; padding: 6px 8px; border-radius: 6px; background: var(--code); }
+  .step.fail .hint { background: var(--fail-bg); }
+  .warnings div { padding: 8px 10px; border-radius: 6px; background: var(--fail-bg); color: var(--fail); margin-bottom: 8px; font-weight: 600; }
+  .video { aspect-ratio: 4 / 3; background: #000; border-radius: 8px; display: grid; place-items: center;
+    color: #9aa3b5; overflow: hidden; }
+  .video img { width: 100%; height: 100%; object-fit: contain; }
+  table { width: 100%; border-collapse: collapse; font-size: 13px; }
+  th, td { text-align: left; padding: 4px 6px; border-bottom: 1px solid var(--line); vertical-align: top; }
+  th { color: var(--muted); font-weight: 500; }
+  td.num { font-variant-numeric: tabular-nums; }
+  .invalid { color: var(--fail); }
+  .log { max-height: 260px; overflow: auto; font: 12px/1.6 ui-monospace, Consolas, monospace; }
+  .log .row { display: grid; grid-template-columns: 70px 1fr auto; gap: 8px; border-bottom: 1px solid var(--line); padding: 2px 0; }
+  .log .bad { color: var(--fail); }
+  .log .blocked { color: var(--warn); }
+  form.manual { display: flex; gap: 8px; margin-top: 10px; }
+  form.manual input { flex: 1; min-width: 0; font: inherit; padding: 6px 8px; border-radius: 6px;
+    border: 1px solid var(--line); background: var(--bg); color: var(--text); }
+  .small { font-size: 12px; color: var(--muted); }
+  .badge.danger { background: var(--fail-bg); color: var(--fail); }
+  #flightPanel { display: none; border: 2px solid var(--fail); }
+  #flightPanel.on { display: block; }
+  .flight-top { display: flex; flex-wrap: wrap; gap: 8px; align-items: center; margin-bottom: 12px; }
+  button.danger { background: var(--fail); color: #fff; border-color: var(--fail); font-weight: 700; }
+  button.big { font-size: 16px; padding: 10px 18px; }
+  .flight-state { font-weight: 700; font-size: 15px; padding: 4px 10px; border-radius: 6px; background: var(--idle-bg); }
+  .flight-state.flying { background: var(--warn-bg); color: var(--warn); }
+  .gauges { display: grid; grid-template-columns: repeat(auto-fit, minmax(110px, 1fr)); gap: 8px; margin: 10px 0; }
+  .gauge { background: var(--code); border-radius: 8px; padding: 8px 10px; }
+  .gauge b { display: block; font-size: 20px; font-variant-numeric: tabular-nums; }
+  .gauge span { font-size: 12px; color: var(--muted); }
+  .checks div { font-size: 13px; padding: 2px 0; }
+  .checks .ok { color: var(--ok); }
+  .checks .no { color: var(--fail); }
+  .keys { display: grid; grid-template-columns: repeat(auto-fit, minmax(150px, 1fr)); gap: 4px 12px; font-size: 13px; margin-top: 8px; }
+  kbd { font: 12px ui-monospace, Consolas, monospace; padding: 1px 6px; border: 1px solid var(--line); border-radius: 4px; background: var(--code); }
+  kbd.down { background: var(--accent); color: var(--accent-text); border-color: var(--accent); }
+  .autoland { color: var(--fail); font-weight: 600; font-size: 13px; }
+</style>
+</head>
+<body>
+<header>
+  <h1>Tello 연결 점검</h1>
+  <span id="mode" class="badge real">연결 중…</span>
+  <span class="badge safe" id="safeBadge">이륙·이동 명령 차단됨</span>
+  <span class="meta" id="meta"></span>
+</header>
+<main>
+  <div class="col">
+    <section id="flightPanel">
+      <h2>조작 <span class="small">제한 rc ±<span id="rcLimit">30</span>, 높이 <span id="hLimit">1.5</span>m · 이륙 버튼은 아래 조건을 모두 만족해야 켜짐</span></h2>
+      <div class="flight-top">
+        <button class="danger big" id="btnEmergency">비상 정지 (Esc)</button>
+        <button class="primary big" id="btnTakeoff">이륙 (T)</button>
+        <button class="big" id="btnLand">착륙 (L)</button>
+        <span class="flight-state" id="flightState">지상</span>
+      </div>
+      <div class="autoland" id="autoLand"></div>
+      <div class="gauges">
+        <div class="gauge"><span>높이 h</span><b id="gH">-</b></div>
+        <div class="gauge"><span>바닥 거리 ToF</span><b id="gTof">-</b></div>
+        <div class="gauge"><span>배터리</span><b id="gBat">-</b></div>
+        <div class="gauge"><span>온도</span><b id="gTemp">-</b></div>
+        <div class="gauge"><span>보내는 rc</span><b id="gRc">0 0 0 0</b></div>
+      </div>
+      <div class="checks" id="preflight"></div>
+      <label class="small"><input type="checkbox" id="confirmBox"> 주변 3m 비움 · 프로펠러 가드 장착 · 안전 담당 옆에 있음</label>
+      <div class="keys">
+        <div><kbd data-k="w">W</kbd>/<kbd data-k="s">S</kbd> 앞·뒤</div>
+        <div><kbd data-k="a">A</kbd>/<kbd data-k="d">D</kbd> 왼쪽·오른쪽</div>
+        <div><kbd data-k="arrowup">↑</kbd>/<kbd data-k="arrowdown">↓</kbd> 상승·하강</div>
+        <div><kbd data-k="arrowleft">←</kbd>/<kbd data-k="arrowright">→</kbd> 왼쪽·오른쪽 회전</div>
+      </div>
+      <p class="small">키를 누르고 있는 동안만 움직입니다. 떼거나 창을 벗어나면 0.3초 안에 제자리로 멈춥니다.
+        상태가 1초 끊기거나 배터리 15% 이하면 자동으로 착륙합니다. 온도는 경고만 하고, 뜨거우면 바로 띄우는 편이 식습니다.</p>
+    </section>
+    <section>
+      <h2>점검 단계</h2>
+      <div class="buttons">
+        <button class="primary" id="btnCheck">점검 시작</button>
+        <button id="btnVideo">영상 켜기</button>
+        <button data-cmd="battery?">battery?</button>
+        <button data-cmd="wifi?">wifi?</button>
+      </div>
+      <div class="warnings" id="warnings"></div>
+      <div id="steps"></div>
+    </section>
+    <section>
+      <h2>명령 기록</h2>
+      <div class="log" id="log"></div>
+      <form class="manual" id="manual">
+        <input id="manualCmd" placeholder="직접 입력 (예: sdk?, time?) · 비행·설정 명령은 차단" autocomplete="off">
+        <button>보내기</button>
+      </form>
+    </section>
+  </div>
+  <div class="col">
+    <section>
+      <h2>카메라 <select id="videoMode" hidden><option value="ai">AI 합성</option><option value="raw">원본</option></select></h2>
+      <div class="video" id="video"><span>영상 꺼짐</span></div>
+      <p class="small" id="videoStats"></p>
+    </section>
+    <section>
+      <h2>기체 상태 <span class="small" id="stateMeta"></span></h2>
+      <table id="state"><tbody><tr><td class="small">상태 패킷이 아직 없습니다.</td></tr></tbody></table>
+      <p class="small">SI 변환은 단위가 확실한 값만 합니다. 속도(vgx·vgy·vgz)·가속도·기압은 실측으로 단위를 확인하기 전까지 원시값만 보여 줍니다.</p>
+    </section>
+  </div>
+</main>
+<script>
+const $ = (id) => document.getElementById(id);
+const ICON = { ok: "✓", warn: "!", fail: "✕", idle: "·" };
+let streamShown = false;
+let aiEnabled = false;
+
+function esc(s) {
+  return String(s ?? "").replace(/[&<>"]/g, (c) => ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;" }[c]));
+}
+function fmt(v, d = 2) {
+  if (v === null || v === undefined) return "없음";
+  return typeof v === "number" ? (Number.isInteger(v) ? String(v) : v.toFixed(d)) : esc(v);
+}
+
+async function post(url, body) {
+  const res = await fetch(url, { method: "POST", headers: { "Content-Type": "application/json" },
+    body: body ? JSON.stringify(body) : undefined });
+  return res.json().catch(() => ({}));
+}
+async function withBusy(btn, fn) {
+  btn.disabled = true;
+  try { await fn(); } finally { btn.disabled = false; refresh(); }
+}
+
+$("btnCheck").onclick = (e) => withBusy(e.target, () => post("/api/check"));
+$("btnVideo").onclick = (e) => withBusy(e.target, async () => {
+  const on = e.target.dataset.on === "1";
+  await post(on ? "/api/video/off" : "/api/video/on");
+});
+document.querySelectorAll("button[data-cmd]").forEach((b) => {
+  b.onclick = () => withBusy(b, () => post("/api/command", { cmd: b.dataset.cmd }));
+});
+$("manual").onsubmit = (e) => {
+  e.preventDefault();
+  const cmd = $("manualCmd").value.trim();
+  if (!cmd) return;
+  $("manualCmd").value = "";
+  post("/api/command", { cmd }).then(refresh);
+};
+
+function renderSteps(steps) {
+  $("steps").innerHTML = steps.map((s) => `
+    <div class="step ${s.status}">
+      <div class="light ${s.status}">${ICON[s.status]}</div>
+      <div class="title">${esc(s.title)}</div>
+      <div class="detail">${esc(s.detail)}</div>
+      ${s.hint ? `<div class="hint">${esc(s.hint)}</div>` : ""}
+    </div>`).join("");
+}
+
+function renderState(st, rate, count) {
+  if (!st) return;
+  const r = st.raw, si = st.si;
+  const deg = (k) => (typeof r[k] === "number" ? `${r[k]}°` : "없음");
+  const tof = si.tof_valid ? `${fmt(si.tof_m)} m` : `<span class="invalid">무효 (${esc(si.tof_reason)})</span>`;
+  const rows = [
+    ["배터리", `${fmt(si.battery_pct)} %`, `bat ${fmt(r.bat)}`],
+    ["온도 (낮음~높음)", `${fmt(si.temp_low_c)} ~ ${fmt(si.temp_high_c)} °C`, `templ/temph`],
+    ["높이 (이륙점 기준)", `${fmt(si.height_m)} m`, `h ${fmt(r.h)} cm`],
+    ["바닥 거리 (ToF)", tof, `tof ${fmt(r.tof)} cm`],
+    ["자세 roll · pitch · yaw", `${fmt(si.roll_rad, 3)} · ${fmt(si.pitch_rad, 3)} · ${fmt(si.yaw_rad, 3)} rad`,
+      `${deg("roll")} · ${deg("pitch")} · ${deg("yaw")}`],
+    ["속도 vgx · vgy · vgz", "단위 확인 전", `${fmt(r.vgx)} · ${fmt(r.vgy)} · ${fmt(r.vgz)}`],
+    ["가속도 agx · agy · agz", "단위 확인 전", `${fmt(r.agx)} · ${fmt(r.agy)} · ${fmt(r.agz)}`],
+    ["기압 고도", "단위 확인 전", `baro ${fmt(r.baro)}`],
+    ["모터 동작 시간", `${fmt(si.motor_time_s)} s`, `time ${fmt(r.time)}`],
+    ["Mission Pad", r.mid === -1 ? "인식 안 됨" : `mid ${fmt(r.mid)}`, `mid ${fmt(r.mid)}`],
+  ];
+  $("state").innerHTML = `<thead><tr><th>항목</th><th>값</th><th>원시값</th></tr></thead><tbody>` +
+    rows.map(([k, v, raw]) => `<tr><td>${k}</td><td class="num">${v}</td><td class="num small">${raw}</td></tr>`).join("") +
+    `</tbody>`;
+  $("stateMeta").textContent = `· ${rate ?? "-"} Hz · ${st.age_s?.toFixed(1) ?? "-"}초 전 · 누적 ${count}개 · 시각 출처 ${st.time_source}` +
+    (st.valid ? "" : ` · 불량: ${st.reasons.join(", ")}`);
+}
+
+function videoUrl() {
+  const mode = aiEnabled ? $("videoMode").value : "raw";
+  return `/video.mjpg?mode=${mode}&t=${Date.now()}`;
+}
+
+$("videoMode").onchange = () => {
+  const img = $("video").querySelector("img");
+  if (img) img.src = videoUrl();
+};
+
+function renderVideo(on, v, ai) {
+  const box = $("video");
+  aiEnabled = !!ai;
+  $("videoMode").hidden = !aiEnabled;
+  if (on && !streamShown) {
+    box.innerHTML = `<img alt="Tello 카메라" src="${videoUrl()}">`;
+    streamShown = true;
+  } else if (!on && streamShown) {
+    box.innerHTML = "<span>영상 꺼짐</span>";
+    streamShown = false;
+  } else if (on && v.frames === 0) {
+    box.querySelector("img")?.setAttribute("alt", "프레임 대기 중");
+  }
+  $("btnVideo").textContent = on ? "영상 끄기" : "영상 켜기";
+  $("btnVideo").dataset.on = on ? "1" : "0";
+  $("videoStats").textContent = on
+    ? `${v.fps ?? "-"} fps · ${v.width ? v.width + "×" + v.height : "해상도 미확인"} · 프레임 ${v.frames}개 · 패킷 ${v.packets}개 · 디코딩 실패 ${v.decode_errors}회`
+    : "";
+}
+
+function renderLog(history) {
+  $("log").innerHTML = history.slice().reverse().map((h) => {
+    const t = (h.sent_at || h.recorded_at || "").slice(11, 19);
+    const cls = h.blocked ? "blocked" : h.ok ? "" : "bad";
+    const res = h.blocked ? `차단 (${h.reason})` : h.response ?? h.reason ?? "";
+    const rtt = h.rtt_ms != null ? `${h.rtt_ms} ms` : "";
+    return `<div class="row ${cls}"><span>${t}</span><span>${esc(h.cmd)} → ${esc(res)}</span><span>${rtt}</span></div>`;
+  }).join("") || `<span class="small">아직 보낸 명령이 없습니다.</span>`;
+}
+
+async function refresh() {
+  let s;
+  try {
+    s = await (await fetch("/api/status", { cache: "no-store" })).json();
+  } catch {
+    $("mode").textContent = "점검 서버 연결 끊김";
+    return;
+  }
+  $("mode").textContent = s.mode === "fake" ? "가짜 Tello (값은 지어낸 것)" : "실제 Tello";
+  $("mode").className = "badge " + (s.mode === "fake" ? "fake" : "real");
+  $("meta").textContent = `회차 ${s.run_id} · 로그 ${s.log_dir ?? "없음"}`;
+  $("warnings").innerHTML = s.warnings.map((w) => `<div>${esc(w)}</div>`).join("");
+  renderSteps(s.steps);
+  renderState(s.state, s.state_rate_hz, s.state_count);
+  renderVideo(s.stream_on, s.video, s.ai_enabled);
+  renderLog(s.history);
+  renderFlight(s);
+}
+
+// ---------- 조작 (--flight로 실행했을 때만 보임) ----------
+let flightOn = false;
+let ws = null;
+const held = new Set();
+// 키 → [축, 부호]. 축 순서는 rc와 같다: 좌우, 앞뒤, 상하, 회전
+const AXES = { a: [0, -1], d: [0, 1], s: [1, -1], w: [1, 1], arrowdown: [2, -1], arrowup: [2, 1], arrowleft: [3, -1], arrowright: [3, 1] };
+
+function openWs() {
+  if (ws && ws.readyState <= 1) return;
+  ws = new WebSocket(`ws://${location.host}/ws/control`);
+  ws.onclose = () => { ws = null; };
+}
+function vector() {
+  const v = [0, 0, 0, 0];
+  for (const k of held) { const a = AXES[k]; if (a) v[a[0]] += a[1]; }
+  return v.map((x) => Math.max(-1, Math.min(1, x)));
+}
+function sendRc() {
+  if (ws && ws.readyState === 1) ws.send(JSON.stringify({ rc: vector() }));
+}
+setInterval(() => { if (flightOn && held.size) sendRc(); }, 50);  // 누르고 있는 동안 20Hz
+
+function emergency() {
+  if (ws && ws.readyState === 1) ws.send(JSON.stringify({ emergency: true }));
+  fetch("/api/flight/emergency", { method: "POST" }).then(refresh);
+}
+async function takeoff() {
+  if ($("btnTakeoff").disabled) return;  // T 키로도 점검 게이트를 건너뛰지 않는다
+  if (!confirm("이륙할까요? 주변을 다시 확인하세요.")) return;
+  $("btnTakeoff").disabled = true;
+  const r = await post("/api/flight/takeoff");
+  if (!r.ok) alert("이륙하지 않았습니다: " + (r.failed ? r.failed.join(", ") : (r.result && (r.result.reason || r.result.response)) || "알 수 없음"));
+  refresh();
+}
+function land() { post("/api/flight/land").then(refresh); }
+
+$("btnEmergency").onclick = emergency;
+$("btnTakeoff").onclick = takeoff;
+$("btnLand").onclick = land;
+$("confirmBox").onchange = (e) => post("/api/flight/confirm", { confirmed: e.target.checked }).then(refresh);
+
+function markKeys() {
+  document.querySelectorAll("kbd[data-k]").forEach((el) => el.classList.toggle("down", held.has(el.dataset.k)));
+}
+document.addEventListener("keydown", (e) => {
+  if (!flightOn || e.target.tagName === "INPUT") return;
+  const k = e.key.toLowerCase();
+  if (k === "escape") { e.preventDefault(); emergency(); return; }
+  if (AXES[k]) { e.preventDefault(); held.add(k); markKeys(); sendRc(); return; }
+  if (e.repeat) return;
+  if (k === "t") takeoff();
+  else if (k === "l") land();
+});
+document.addEventListener("keyup", (e) => {
+  const k = e.key.toLowerCase();
+  if (AXES[k]) { held.delete(k); markKeys(); sendRc(); }
+});
+window.addEventListener("blur", () => { held.clear(); markKeys(); sendRc(); });
+
+function renderFlight(s) {
+  const f = s.flight;
+  flightOn = !!f;
+  $("flightPanel").classList.toggle("on", flightOn);
+  $("safeBadge").textContent = flightOn ? "조작 모드 · 이륙 가능" : "이륙·이동 명령 차단됨";
+  $("safeBadge").className = "badge " + (flightOn ? "danger" : "safe");
+  if (!flightOn) return;
+  openWs();
+  $("rcLimit").textContent = f.rc_limit;
+  $("hLimit").textContent = f.height_limit_m;
+  const st = f.busy === "takeoff" ? "이륙 중…" : f.busy === "land" ? "착륙 중…" : f.flying ? "비행 중" : "지상";
+  $("flightState").textContent = st;
+  $("flightState").className = "flight-state" + (f.flying || f.busy ? " flying" : "");
+  $("btnTakeoff").disabled = !f.can_takeoff;
+  $("btnLand").disabled = !f.flying && !f.busy;
+  $("gRc").textContent = f.last_rc.join(" ");
+  $("autoLand").textContent = f.last_auto_land ? `자동 착륙 ${f.last_auto_land.at.slice(11, 19)} · 사유: ${f.last_auto_land.reason}` : "";
+  $("preflight").innerHTML = f.preflight.map((c) =>
+    `<div class="${c.ok ? "ok" : "no"}">${c.ok ? "✓" : "✕"} ${esc(c.title)} <span class="small">${esc(c.detail)}</span></div>`).join("");
+  const op = f.preflight.find((c) => c.key === "operator");
+  if (op) $("confirmBox").checked = op.ok;
+  const si = s.state && s.state.si;
+  $("gH").textContent = si && si.height_m != null ? si.height_m.toFixed(2) + " m" : "없음";
+  $("gTof").textContent = si ? (si.tof_valid ? si.tof_m.toFixed(2) + " m" : "무효") : "없음";
+  $("gBat").textContent = si && si.battery_pct != null ? si.battery_pct + " %" : "없음";
+  $("gTemp").textContent = si && si.temp_high_c != null ? si.temp_high_c + " °C" : "없음";
+}
+
+refresh();
+setInterval(refresh, 500);
+</script>
+</body>
+</html>

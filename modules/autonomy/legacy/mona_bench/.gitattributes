@@ -1,0 +1,3 @@
+# Everything here is copied into the Linux ROS container. Scripts are executed
+# directly by roslaunch/bash, so a Windows CRLF checkout breaks their shebangs.
+* text=auto eol=lf

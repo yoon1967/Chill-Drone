@@ -1,0 +1,58 @@
+<!doctype html>
+<html lang="ko">
+<head>
+  <meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1">
+  <meta name="description" content="실내 탐색 드론의 실시간 감독, 탐색 결과 확인, 현장 조작 화면입니다.">
+  <title>실내 탐색 관제</title>
+  <link rel="icon" href="data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 40 40'%3E%3Crect width='40' height='40' rx='9' fill='%23244d3b'/%3E%3Ccircle cx='20' cy='20' r='8' fill='none' stroke='%23c7e3b8' stroke-width='2.5'/%3E%3Ccircle cx='20' cy='20' r='2.5' fill='%23c7e3b8'/%3E%3C/svg%3E">
+  <script src="theme.js"></script>
+  <link rel="stylesheet" href="style.css">
+</head>
+<body>
+  <header class="top">
+    <a class="brand" href="#/live"><span class="brand-icon" aria-hidden="true">◎</span> Chill-Drone</a>
+    <nav class="views" aria-label="화면 선택">
+      <a href="#/live" data-view="live">실시간 감독</a>
+      <a href="#/map" data-view="map">지도 콘솔</a>
+      <a href="#/review" data-view="review">탐색 결과</a>
+      <a href="#/control" data-view="control">현장 조작</a>
+    </nav>
+    <span class="spacer"></span>
+    <span class="scenario" id="preset-wrap" hidden>
+      <label for="preset">화면</label> <select id="preset" aria-label="화면 프리셋 선택"></select>
+      <button type="button" id="edit-layout" title="칸을 옮기고 크기를 바꿔 내 프리셋으로 저장합니다(땅에 있을 때만)">편집</button>
+    </span>
+    <label class="scenario" id="scenario-wrap">상황
+      <select id="scenario" aria-label="샘플 상황 선택"></select>
+    </label>
+    <label class="scenario" id="theme-wrap" title="화면 색입니다. 자동은 이 기기의 밝게/어둡게 설정을 따릅니다">테마
+      <select id="theme" aria-label="화면 테마 선택">
+        <option value="auto">자동</option><option value="light">밝게</option><option value="dark">어둡게</option>
+      </select>
+    </label>
+    <button type="button" class="toggle" id="sound" aria-pressed="false" title="새 사람 발견 때 짧은 소리를 냅니다(이 브라우저에 기억)">소리 꺼짐</button>
+    <span class="badge sample" id="conn" title="서버에 연결하지 않고 계약 형식의 샘플 데이터로 그린 화면입니다">샘플 데이터</span>
+  </header>
+  <div class="editbar" id="editbar" role="toolbar" aria-label="화면 편집" hidden>
+    <b>화면 편집</b>
+    <span class="muted">칸</span><span class="edit-panels" id="edit-panels"></span>
+    <span class="spacer"></span>
+    <label>이름 <input id="edit-name" maxlength="40" autocomplete="off"></label>
+    <button type="button" data-edit="save">저장</button>
+    <button type="button" data-edit="saveas" hidden>새 프리셋으로 저장</button>
+    <button type="button" data-edit="delete" hidden>삭제</button>
+    <button type="button" data-edit="cancel">취소</button>
+  </div>
+  <main id="app"></main>
+  <div id="toast" role="status" aria-live="polite"></div>
+  <div id="flash" aria-hidden="true"></div>
+  <script src="sample.js"></script>
+  <script src="map3d.js"></script>
+  <script src="floorplan.js"></script>
+  <script src="presets.js"></script>
+  <script src="live-save.js"></script>
+  <script src="board.js"></script>
+  <script src="mapview.js"></script>
+  <script src="app.js"></script>
+</body>
+</html>

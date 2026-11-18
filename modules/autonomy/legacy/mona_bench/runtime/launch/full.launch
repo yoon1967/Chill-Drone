@@ -1,0 +1,63 @@
+<?xml version="1.0"?>
+<launch>
+  <!-- numpy/OpenBLAS busy-waits on every core by default; at 1x replay the floor filter alone used
+       128% CPU and the depth node dropped half the frames. Each Python node needs one BLAS thread. -->
+  <env name="OPENBLAS_NUM_THREADS" value="1"/>
+  <!-- Build/replay defaults never start the hardware driver or command a drone. -->
+  <arg name="hardware" default="false"/>
+  <arg name="backend" default="onnx"/>
+  <!-- da_v2_metric_indoor_small (metric) tracks approaching obstacles; sc_depth_v2_nyu (relative) did not. -->
+  <arg name="depth_model" default="da_v2_metric_indoor_small"/>
+  <!-- Empty uses the verified path of depth_model. -->
+  <arg name="onnx_model" default=""/>
+  <!-- Ground RANSAC inlier band in depth units: 0.001 relative SC units is about 6 mm; metric DA-V2 uses 1 cm. -->
+  <arg name="ground_distance_threshold" default="$(eval 0.001 if arg('depth_model') == 'sc_depth_v2_nyu' else 0.01)"/>
+  <arg name="checkpoint" default="/models/sc_depth_v2_nyu.ckpt"/>
+  <arg name="device" default="cuda"/>
+  <!-- ONNX depth device; cuda fails loudly instead of silently using CPU. -->
+  <arg name="depth_device" default="cuda"/>
+  <arg name="camera_info" default="$(find scale_recovery)/config/camera_info.yaml"/>
+  <!-- ORB-SLAM2 RGB-D uses bf = virtual baseline x fx; close/far depth threshold = ThDepth x baseline.
+       0.075 m follows ORB-SLAM2's RGB-D examples (bf 40 at fx 535); 0 disables depth in tracking. -->
+  <arg name="orb_virtual_baseline_m" default="0.075"/>
+  <node pkg="mona_integration" type="calibration_publisher.py" name="camera_calibration" required="true" output="screen">
+    <param name="camera_info" value="$(arg camera_info)"/>
+    <param name="orb_virtual_baseline_m" value="$(arg orb_virtual_baseline_m)"/>
+  </node>
+  <include if="$(arg hardware)" file="$(find rmtt_driver)/launch/rmtt_bringup.launch"/>
+  <node if="$(eval arg('backend') == 'onnx')" pkg="mona_integration" type="onnx_depth.py" name="sc_depth_pl" output="screen" required="true">
+    <param name="model" value="$(arg onnx_model)"/>
+    <param name="model_kind" value="$(arg depth_model)"/>
+    <param name="device" value="$(arg depth_device)"/>
+  </node>
+  <node if="$(eval arg('backend') == 'pytorch')" pkg="sc_depth_pl_ros" type="sc_depth_node.py" name="sc_depth_pl" output="screen" required="true">
+    <param name="checkpoint" value="$(arg checkpoint)"/>
+    <param name="device" value="$(arg device)"/>
+    <param name="sub_color_img" value="/tello/image_raw"/>
+    <param name="pub_color_img" value="/sc_depth_pl/color/image_raw"/>
+    <param name="pub_depth_img" value="/sc_depth_pl/depth/image_raw"/>
+  </node>
+  <node pkg="scale_recovery" type="info_pub_planner.py" name="info_pub" output="screen">
+    <param name="camera_info_path" value="$(arg camera_info)"/>
+    <param name="algorithm_name" value="SC-Depth"/>
+  </node>
+  <node pkg="nodelet" type="nodelet" name="nodelet_manager" args="manager"/>
+  <node pkg="nodelet" type="nodelet" name="depth2pcl" args="load depth_image_proc/point_cloud_xyz nodelet_manager">
+    <remap from="camera_info" to="/sync/camera_info"/>
+    <remap from="image_rect" to="/sync/depth"/>
+    <remap from="points" to="/sync/pcl_cam"/>
+  </node>
+  <node pkg="scale_recovery" type="ground_seg_planner" name="ground_seg_planner">
+    <param name="algorithm_name" value="SC-Depth"/>
+    <param name="distance_threshold" value="$(arg ground_distance_threshold)"/>
+  </node>
+  <!-- Depth scale: metric DA-V2 is used as is (1.0); relative SC-Depth needs the ToF/ground scale (0 = ToF).
+       Replays 11/08 with taped distances: ToF scale -16/+1/-37 %, fixed 1.0 +6/+17/-9 %; the ToF scale also kept
+       changing, which RGB-D SLAM reads as motion. -->
+  <arg name="fixed_depth_scale" default="$(eval 0.0 if arg('depth_model') == 'sc_depth_v2_nyu' else 1.0)"/>
+  <node pkg="scale_recovery" type="scale_recovery_planner.py" name="scale_recovery">
+    <param name="fixed_scale" value="$(arg fixed_depth_scale)"/>
+  </node>
+  <include file="$(find mona_integration)/launch/orb_rgbd.launch"/>
+  <include file="$(find mona_integration)/launch/planner.launch"/>
+</launch>

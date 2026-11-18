@@ -1,0 +1,32 @@
+{
+  "width": 960,
+  "height": 720,
+  "fx": 927.5521214084725,
+  "fy": 934.4160701521716,
+  "cx": 481.5274275756799,
+  "cy": 377.51194068362855,
+  "distortion": [
+    -0.0037495100650737994,
+    -0.0587041157930048,
+    0.0009328256922746279,
+    0.0029800920344079285
+  ],
+  "calibration_status": "checkerboard_measured; held_out_reprojection_checked; independent_capture_not_verified",
+  "camera_identity": "Tello TELLO-59FA6D; 960x720 direct stream",
+  "square_mm": 22.0,
+  "calibration_summary": {
+    "views": 126,
+    "train_views": 100,
+    "validation_views": 26,
+    "fit_rms_px": 0.6321464743353029,
+    "validation_rms_px": 0.5860937387260641,
+    "validation_median_px": 0.5253726541996002,
+    "validation_max_px": 1.4446659088134766,
+    "horizontal_fov_deg": 54.722328360655865,
+    "validation_scope": "held-out views from the same capture; not independent recapture or SLAM accuracy",
+    "quality_notes": [
+      "Some motion-blurred frames remain; preserve all raw evidence.",
+      "Measured for TELLO-59FA6D only; do not reuse for another drone or image crop."
+    ]
+  }
+}

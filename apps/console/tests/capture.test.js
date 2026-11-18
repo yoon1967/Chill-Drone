@@ -1,0 +1,555 @@
+import test from 'node:test';
+import assert from 'node:assert/strict';
+import { connectCapture, captureConfiguration } from '../capture.js';
+import { FrameLatency } from '../frame-latency.js';
+
+const deferred = () => { let resolve; const promise = new Promise((r) => { resolve = r; }); return {promise, resolve}; };
+const reply = (value, ok = true) => ({ok, json: async () => value});
+function stream(label = 'Test camera') {
+  const track = {handlers: {}, label, readyState: 'live', stops: 0,
+    addEventListener(name, handler) { this.handlers[name] = handler; },
+    stop() { this.stops++; this.readyState = 'ended'; },
+    getSettings() { return {frameRate: 30}; }};
+  return {track, getVideoTracks: () => [track], getTracks: () => [track]};
+}
+
+// Synthetic media adapter: these tests never request a physical camera or Docker.
+function fixture(t, {denied = false, enabled = true, devices = [], getMedia, fetcher, encode} = {}) {
+  const originals = new Map(['document', 'navigator', 'window', 'fetch'].map((key) => [key, Object.getOwnPropertyDescriptor(globalThis, key)]));
+  t.after(() => { for (const [key, descriptor] of originals) { if (descriptor) Object.defineProperty(globalThis, key, descriptor); else delete globalThis[key]; } });
+  let callback = 0;
+  const callbacks = new Map(), windowEvents = {}, deviceEvents = {};
+  const element = () => ({handlers: {}, dataset: {}, files: [], value: '', readyState: 2, videoWidth: 960, videoHeight: 540,
+    addEventListener(name, handler) { this.handlers[name] = handler; },
+    removeEventListener(name, handler) { if (this.handlers[name] === handler) delete this.handlers[name]; },
+    querySelector() { return {}; }, replaceChildren(...items) { this.options = items; },
+    removeAttribute() {}, load() {}, pause() {}, async play() {},
+    requestVideoFrameCallback(fn) { callbacks.set(++callback, fn); return callback; },
+    cancelVideoFrameCallback(id) { callbacks.delete(id); }});
+  const elements = new Map(), get = (id) => { if (!elements.has(id)) elements.set(id, element()); return elements.get(id); };
+  get('camera-fov').value = '60'; get('input-source').value = 'camera';
+  const media = stream();
+  const requests = [], statuses = [], starts = [], constraints = [];
+  let permissions = 0;
+  const values = {
+    document: {getElementById: get, createElement: (kind) => kind === 'canvas' ? {
+      getContext: () => ({drawImage() {}}), toBlob: (done) => encode ? encode(done) : done(new Blob(['synthetic']))
+    } : element()},
+    navigator: {mediaDevices: {
+      async enumerateDevices() { return devices; }, addEventListener(name, fn) { deviceEvents[name] = fn; },
+      async getUserMedia(config) { permissions++; constraints.push(config); if (denied) throw new DOMException('denied', 'NotAllowedError'); return getMedia ? getMedia() : media; }
+    }},
+    window: {addEventListener(name, fn) { windowEvents[name] = fn; }},
+    fetch: async (url, options) => {
+      requests.push({url, options});
+      const value = url === '/api/live' ? {enabled, demo_available: false} :
+        url === '/api/live/start' ? {session_id: 'live_test', session_status: 'starting'} :
+        (url.startsWith('/api/live/state') || url.startsWith('/api/live/tracking')) ? {session_id: 'live_test', status: 'receiving', transport_ready: true} :
+        url.startsWith('/api/live/frame') ? {frame_drops: 0, queue_depth: 1} : {status: 'stopping'};
+      return fetcher ? fetcher(url, options, value) : reply(value);
+    },
+  };
+  for (const [key, value] of Object.entries(values)) Object.defineProperty(globalThis, key, {configurable: true, value});
+  return {get, media, requests, statuses, starts, constraints, windowEvents, deviceEvents,
+    permissions: () => permissions,
+    async deliver(data) { const [id, fn] = callbacks.entries().next().value; callbacks.delete(id); return fn(0, data); },
+    connect: (callbacks = {}) => connectCapture({onStart: (id) => starts.push(id), onStatus: (status) => statuses.push(status), ...callbacks})};
+}
+
+test('new session is announced before status callbacks feed the selected state back', async (t) => {
+  const f = fixture(t);
+  let handle, selected = {session_id: 'previous', session_status: 'failed'};
+  handle = await f.connect({
+    onStart: id => { selected = {session_id: id, session_status: 'starting'}; },
+    onStatus: () => handle?.update(selected),
+  });
+  await f.get('camera-start').handlers.click();
+  assert.equal(f.get('camera-stop').disabled, false);
+  assert.equal(f.media.track.stops, 0);
+  assert.equal(f.requests.some(r => r.url === '/api/live/stop'), false);
+});
+
+test('reconstruction stop can finalize an active session after the page reconnects', async (t) => {
+  const f = fixture(t);
+  const handle = await f.connect();
+  handle.update({session_id: 'reconnected-live', session_status: 'receiving'});
+  await handle.stop();
+  const stops = f.requests.filter(request => request.url === '/api/live/stop');
+  assert.equal(stops.length, 1);
+  assert.deepEqual(JSON.parse(stops[0].options.body), {session_id: 'reconnected-live', reason: 'user_stop'});
+  assert.equal(f.permissions(), 0);
+  handle.update({session_id: 'reconnected-live', session_status: 'complete'});
+  await handle.stop();
+  assert.equal(f.requests.filter(request => request.url === '/api/live/stop').length, 1);
+});
+
+test('new capture waits for finalization then starts a separate session with the existing camera', async t => {
+  let sequence = 0;
+  const f = fixture(t, {fetcher: (url, options, value) => reply(url === '/api/live/start'
+    ? {session_id: `live_${++sequence}`, session_status: 'receiving', transport_ready: true}
+    : url.startsWith('/api/live/state') ? {session_id: `live_${sequence}`, status: 'receiving', transport_ready: true} : value)});
+  const handle = await f.connect();
+  handle.update({session_id: 'previous', session_status: 'stopping'});
+  await assert.rejects(handle.startNew('browser_camera'), /지도 저장/);
+  assert.equal(f.permissions(), 0);
+  handle.update({session_id: 'previous', session_status: 'complete'});
+  await handle.startNew('browser_camera');
+  assert.deepEqual(f.starts, ['live_1']);
+  await assert.rejects(handle.startNew('browser_camera'), /지도 저장/);
+  assert.equal(f.requests.filter(r => r.url === '/api/live/start').length, 1);
+  await handle.stop();
+});
+
+test('calibration owns camera input until the tutorial releases the gate', async (t) => {
+  const f = fixture(t), inputGate = {calibrating: true};
+  const handle = await f.connect({inputGate});
+  await f.get('camera-start').handlers.click();
+  assert.equal(f.permissions(), 0);
+  inputGate.calibrating = false;
+  handle.update({});
+  await f.get('camera-start').handlers.click();
+  assert.equal(f.permissions(), 1);
+  await f.get('camera-stop').handlers.click();
+});
+
+test('turning optional calibration off ignores a previously uploaded JSON', async t => {
+  const f = fixture(t);
+  f.get('camera-calibration').files = [{size: 10, text: async () => '{invalid'}];
+  await f.connect({profiles: {syncLiveKind() {}, lockLive() {},
+    liveCalibrationEnabled: () => false, selected: async () => null}});
+  await f.get('camera-start').handlers.click();
+  const start = f.requests.find(r => r.url === '/api/live/start');
+  assert.ok(start);
+  assert.equal(JSON.parse(start.options.body).profile_selection, undefined);
+  await f.get('camera-stop').handlers.click();
+});
+
+test('page/device enumeration is lazy; denial never starts SLAM and can be retried', async (t) => {
+  const f = fixture(t, {denied: true}); await f.connect();
+  assert.equal(f.permissions(), 0);
+  await f.get('camera-start').handlers.click();
+  assert.equal(f.permissions(), 1);
+  assert.equal(f.requests.some((r) => r.url === '/api/live/start'), false);
+  assert.equal(f.statuses.at(-1).state, 'denied');
+  assert.match(f.get('camera-status').textContent, /권한이 거부/);
+  assert.equal(f.get('camera-start').disabled, false);
+});
+
+test('selected profile requests original geometry and pins the server-side profile for the new session', async (t) => {
+  const f = fixture(t);
+  const camera = {width: 960, height: 540, fx: 700, fy: 700, cx: 480, cy: 270, distortion: [0, 0, 0, 0]};
+  const calls = [];
+  const profile_selection = {id: 'profile_test', version: 1, camera_sha256: 'hash', confirmed: true};
+  const profiles = {syncLiveKind() {}, lockLive(value) { calls.push(value); }, async selected(context, width, height) {
+    if (width !== undefined) assert.deepEqual([width, height], [960, 540]);
+    return {camera, profile_selection};
+  }};
+  await f.connect({profiles});
+  await f.get('camera-start').handlers.click();
+  assert.deepEqual(f.constraints[0].video.width, {exact: 960});
+  const body = JSON.parse(f.requests.find(r => r.url === '/api/live/start').options.body);
+  assert.deepEqual(body.profile_selection, profile_selection);
+  assert.deepEqual([body.source_width, body.source_height], [960, 540]);
+  assert.ok(calls.includes(true));
+});
+
+test('cancelling while a profile is being confirmed never starts a late server session', async (t) => {
+  const f = fixture(t), confirming = deferred(), finish = deferred();
+  const camera = {width: 960, height: 540, fx: 700, fy: 700, cx: 480, cy: 270};
+  const value = {camera, profile_selection: {id: 'profile_test'}};
+  const profiles = {syncLiveKind() {}, lockLive() {}, async selected(context, width) {
+    if (width !== undefined) { confirming.resolve(); return finish.promise; }
+    return value;
+  }};
+  await f.connect({profiles});
+  const pending = f.get('camera-start').handlers.click();
+  await confirming.promise;
+  await f.get('camera-stop').handlers.click();
+  finish.resolve(value); await pending;
+  assert.equal(f.requests.some(r => r.url === '/api/live/start'), false);
+  assert.equal(f.media.track.stops, 1);
+});
+
+test('selected video device is requested exactly, microphone stays off, device list refreshes', async (t) => {
+  const devices = [{kind: 'audioinput', deviceId: 'mic'}, {kind: 'videoinput', deviceId: 'camera-a', label: 'Built-in'}];
+  const f = fixture(t, {devices}); await f.connect();
+  assert.equal(f.get('camera-device').options.length, 2);
+  f.get('camera-device').value = 'camera-a';
+  await f.get('camera-start').handlers.click();
+  assert.deepEqual(f.constraints[0].video.deviceId, {exact: 'camera-a'});
+  assert.equal(f.constraints[0].audio, false);
+  assert.equal(f.get('camera-device').disabled, true);
+  assert.match(f.get('camera-input-info').textContent, /960×540.*미보정/);
+  devices.length = 0; await f.deviceEvents.devicechange();
+  assert.equal(f.get('camera-device').value, '');
+  assert.match(f.get('camera-device-note').textContent, /목록이 없습니다/);
+});
+
+test('device loss stops only the owned session and frees camera until backend finalizes', async (t) => {
+  const f = fixture(t); const handle = await f.connect();
+  await f.get('camera-start').handlers.click();
+  assert.deepEqual(f.starts, ['live_test']);
+  await f.media.track.handlers.ended();
+  assert.equal(f.statuses.at(-1).state, 'disconnected');
+  assert.equal(f.media.track.stops, 1);
+  const stop = f.requests.find((r) => r.url === '/api/live/stop');
+  assert.deepEqual(JSON.parse(stop.options.body), {session_id: 'live_test', reason: 'browser_media_ended'});
+  assert.equal(f.get('camera-start').disabled, true);
+  handle.update({session_id: 'live_test', session_status: 'complete'});
+  assert.equal(f.get('camera-start').disabled, false);
+});
+
+test('cancel pending permission; late old stream is released without touching a new session', async (t) => {
+  const first = deferred(), oldMedia = stream('old'), newMedia = stream('new');
+  let calls = 0;
+  const f = fixture(t, {getMedia: () => ++calls === 1 ? first.promise : newMedia}); await f.connect();
+  const pending = f.get('camera-start').handlers.click();
+  assert.equal(f.get('camera-stop').disabled, false);
+  await f.get('camera-stop').handlers.click();
+  assert.match(f.get('camera-status').textContent, /연결을 취소/);
+  await f.get('camera-start').handlers.click();
+  first.resolve(oldMedia); await pending;
+  assert.equal(oldMedia.track.stops, 1);
+  assert.equal(newMedia.track.stops, 0);
+  assert.equal(f.get('input-preview').srcObject, newMedia);
+  assert.equal(f.starts.length, 1);
+});
+
+test('cancel pending server start; late session is stopped once without rendering it', async (t) => {
+  const start = deferred(), requested = deferred();
+  const f = fixture(t, {fetcher: (url, options, value) => {
+    if (url === '/api/live/start') { requested.resolve(); return start.promise; }
+    return reply(value);
+  }});
+  await f.connect();
+  const pending = f.get('camera-start').handlers.click(); await requested.promise;
+  await f.get('camera-stop').handlers.click();
+  assert.equal(f.media.track.stops, 1);
+  assert.equal(f.get('camera-start').disabled, true);
+  start.resolve(reply({session_id: 'late', session_status: 'starting'})); await pending;
+  assert.equal(f.starts.length, 0);
+  assert.equal(f.requests.filter((r) => r.url === '/api/live/stop').length, 1);
+  assert.deepEqual(JSON.parse(f.requests.at(-1).options.body), {session_id: 'late', reason: 'start_cancelled'});
+});
+
+test('server failure releases capture even if no further frame callback arrives', async (t) => {
+  const f = fixture(t); const handle = await f.connect();
+  await f.get('camera-start').handlers.click();
+  handle.update({session_id: 'live_test', session_status: 'failed', last_error: 'tracker stopped'});
+  assert.equal(f.media.track.stops, 1);
+  assert.equal(f.get('input-preview').srcObject, null);
+  assert.equal(f.get('camera-start').disabled, false);
+  assert.equal(f.statuses.at(-1).state, 'failed');
+  assert.match(f.get('camera-status').textContent, /tracker stopped/);
+});
+
+test('frame metadata preserves media timestamps and capture sequence gaps; duplicate time is ignored', async (t) => {
+  const f = fixture(t); await f.connect(); await f.get('camera-start').handlers.click();
+  await f.deliver({mediaTime: 12, presentedFrames: 100});
+  await f.deliver({mediaTime: 12, presentedFrames: 101});
+  await f.deliver({mediaTime: 12.1, presentedFrames: 103});
+  const frames = f.requests.filter((r) => r.url.startsWith('/api/live/frame'));
+  assert.equal(frames.length, 2);
+  assert.equal(frames[0].options.headers['X-Frame-Timestamp'], '0');
+  assert.equal(frames[1].options.headers['X-Frame-Sequence'], '3');
+  assert.ok(Math.abs(Number(frames[1].options.headers['X-Frame-Timestamp']) - .1) < 1e-8);
+});
+
+test('browser capture timing survives status feedback and reaches the matching displayed map', async (t) => {
+  const f = fixture(t), latency = new FrameLatency(), marks = [];
+  let handle, selected = {session_id: 'previous', session_status: 'complete'};
+  handle = await f.connect({
+    onStart(id) {
+      selected = {session_id: id, session_status: 'starting'};
+      latency.start(id);
+    },
+    onStatus: () => handle?.update(selected),
+    onFrameTiming(mark) { marks.push(mark); latency.record(mark); },
+  });
+  await f.get('camera-start').handlers.click();
+  await f.deliver({mediaTime: 12, presentedFrames: 100});
+  assert.equal(marks.length, 3);
+  assert.ok(marks.every(mark => mark.session === 'live_test' && mark.pts === 0));
+  assert.ok(marks[0].capturedAtMs <= marks[1].encodedAtMs);
+  assert.ok(marks[1].encodedAtMs <= marks[2].ackAtMs);
+  const scene = {source: 'live', input_run_id: 'live_test', pose_source: 'orb_slam3',
+    cameras: [{frame_id: 'frame-0', timestamp_s: 0}],
+    point_observations: {schema_version: 'point-observations/1.0', frame_index_by_point: {1: [0]}}};
+  assert.equal(latency.present(scene, performance.now() + 10, {}, [1]), 1);
+  assert.equal(latency.summary().submittedFrames, 1);
+  assert.ok(latency.summary().meanMs >= 10);
+  assert.ok(latency.summary().encodeMeanMs >= 0);
+  assert.ok(latency.summary().uploadMeanMs >= 0);
+});
+
+test('one encoding/upload at a time; canceled encoding never uploads into the next session', async (t) => {
+  const encoded = deferred();
+  const f = fixture(t, {getMedia: () => stream(), encode: (done) => encoded.promise.then(done)}); const handle = await f.connect();
+  await f.get('camera-start').handlers.click();
+  const oldFrame = f.deliver({mediaTime: 1, presentedFrames: 1});
+  await f.deliver({mediaTime: 2, presentedFrames: 2});
+  await f.get('camera-stop').handlers.click();
+  handle.update({session_id: 'live_test', session_status: 'complete'});
+  await f.get('camera-start').handlers.click();
+  encoded.resolve(new Blob(['late'])); await oldFrame;
+  assert.equal(f.requests.filter((r) => r.url.startsWith('/api/live/frame')).length, 0);
+  assert.equal(f.statuses.at(-1).state, 'receiving');
+});
+
+test('frame upload failure releases media and stops session; pagehide is also scoped', async (t) => {
+  const f = fixture(t, {fetcher: (url, options, value) => reply(url.startsWith('/api/live/frame') ? {error: 'session gone'} : value, !url.startsWith('/api/live/frame'))});
+  await f.connect(); await f.get('camera-start').handlers.click();
+  await f.deliver({mediaTime: 1, presentedFrames: 1});
+  assert.equal(f.media.track.stops, 1);
+  assert.equal(f.statuses.at(-1).state, 'disconnected');
+  f.windowEvents.pagehide();
+  assert.equal(f.requests.filter((r) => r.url === '/api/live/stop').length, 1);
+});
+
+test('pagehide frees camera and sends one keepalive stop for its session', async (t) => {
+  const f = fixture(t); await f.connect(); await f.get('camera-start').handlers.click();
+  f.windowEvents.pagehide(); f.windowEvents.pagehide();
+  assert.equal(f.media.track.stops, 1);
+  assert.equal(f.requests.at(-1).options.keepalive, true);
+  assert.deepEqual(JSON.parse(f.requests.at(-1).options.body), {session_id: 'live_test', reason: 'page_hidden'});
+});
+
+test('invalid calibration JSON is rejected before camera permission; ratio mismatch releases camera before SLAM', async (t) => {
+  const f = fixture(t); await f.connect();
+  f.get('camera-calibration').files = [{size: 10, text: async () => '{bad'}];
+  await f.get('camera-start').handlers.click();
+  assert.equal(f.permissions(), 0);
+  f.get('camera-calibration').files = [{size: 10, text: async () => JSON.stringify({width: 480, height: 640, fx: 400, fy: 400, cx: 240, cy: 320})}];
+  await f.get('camera-start').handlers.click();
+  assert.equal(f.media.track.stops, 1);
+  assert.equal(f.requests.some((r) => r.url === '/api/live/start'), false);
+  assert.match(f.get('camera-status').textContent, /가로세로 비율/);
+});
+
+test('record-only server disables new input without asking for a camera', async (t) => {
+  const f = fixture(t, {enabled: false}); await f.connect();
+  assert.equal(f.permissions(), 0);
+  assert.equal(f.get('camera-start').disabled, true);
+  assert.equal(f.get('camera-device').disabled, true);
+});
+
+test('capture configuration caps long side, preserves portrait orientation and validates calibration', () => {
+  assert.deepEqual(captureConfiguration(1920, 1080, 30, 60), {width: 960, height: 540, fps: 30, fov: 60, camera: null});
+  assert.equal(captureConfiguration(720, 1280, 30, 60).height, 960);
+  for (const args of [[0, 540, 30, 60], [200, 100, 30, 60], [960, 540, 120, 60], [960, 540, 30, NaN]]) {
+    assert.throws(() => captureConfiguration(...args));
+  }
+  const camera = {width: 1920, height: 1080, fx: 1000, fy: 1000, cx: 960, cy: 540, distortion: [0, 0, 0, 0]};
+  assert.equal(captureConfiguration(960, 540, 30, NaN, camera).camera, camera);
+  for (const bad of [{...camera, fx: '1000'}, {...camera, cy: 2000}, {...camera, distortion: [NaN, 0, 0, 0]}, []]) {
+    assert.throws(() => captureConfiguration(960, 540, 30, 60, bad));
+  }
+});
+
+test('Tello mapping receives on the server, asks for no media, heartbeats and stops its session', async (t) => {
+  const polling = deferred();
+  const f = fixture(t, {fetcher: (url, options, value) => {
+    if (url === '/api/live') return reply({...value, tello_map_enabled: true, tello_map_mode: 'direct'});
+    if (url === '/api/live/tello/start') return reply({session_id: 'drone_map', session_status: 'starting'});
+    if (url.startsWith('/api/live/state') || url.startsWith('/api/live/tracking')) { polling.resolve(); return reply({session_id: 'drone_map', transport_ready: true, session_status: 'receiving', last_input_sequence: 2}); }
+    return reply(value);
+  }});
+  const handle = await f.connect();
+  const pending = handle.startDroneMapping(); await polling.promise;
+  assert.match(f.get('camera-start').textContent, /드론 연결 · 지도/);
+  await new Promise((resolve) => setImmediate(resolve));
+  assert.equal(f.permissions(), 0);
+  const config = JSON.parse(f.requests.find((r) => r.url === '/api/live/tello/start').options.body);
+  assert.deepEqual([config.width, config.height, config.fps], [960, 720, 24]);
+  assert.match(f.get('tello-map-preview').src, /session=drone_map/);
+  f.get('input-preview').handlers.ended();
+  assert.equal(f.requests.some(r => r.url === '/api/live/stop'), false);
+  assert.ok(f.requests.some((r) => r.url === '/api/live/tello/heartbeat'));
+  assert.equal(f.requests.some((r) => r.url.startsWith('/api/live/frame')), false);
+  await handle.stopDrone(); await pending;
+  assert.deepEqual(JSON.parse(f.requests.find((r) => r.url === '/api/live/stop').options.body), {session_id: 'drone_map', reason: 'user_stop'});
+  assert.equal(f.get('tello-map-preview').hidden, true);
+});
+
+test('new capture restores the previous Tello input without requesting browser camera access', async t => {
+  const ready = deferred();
+  const f = fixture(t, {fetcher: (url, options, value) => {
+    if (url === '/api/live') return reply({...value, tello_map_enabled: true});
+    if (url === '/api/live/tello/start') return reply({session_id: 'new_drone', session_status: 'starting'});
+    if (url.startsWith('/api/live/state') || url.startsWith('/api/live/tracking')) {
+      ready.resolve(); return reply({session_id: 'new_drone', session_status: 'receiving', transport_ready: true});
+    }
+    return reply(value);
+  }});
+  const handle = await f.connect();
+  handle.update({session_id: 'previous_drone', session_status: 'complete'});
+  const pending = handle.startNew('tello_camera'); await ready.promise;
+  assert.equal(f.get('input-source').value, 'tello-map');
+  assert.equal(f.permissions(), 0);
+  assert.deepEqual(f.starts, ['new_drone']);
+  await handle.stop(); await pending;
+  assert.equal(f.requests.some(r => r.url === '/api/live/start'), false);
+});
+
+test('canceling a pending Tello start stops the late ID and never touches browser media', async (t) => {
+  const requested = deferred(), late = deferred();
+  const f = fixture(t, {fetcher: (url, options, value) => {
+    if (url === '/api/live/tello/start') { requested.resolve(); return late.promise; }
+    return reply(value);
+  }});
+  await f.connect(); f.get('input-source').value = 'tello-map';
+  const pending = f.get('camera-start').handlers.click(); await requested.promise;
+  await f.get('camera-stop').handlers.click();
+  late.resolve(reply({session_id: 'late_drone', session_status: 'starting'})); await pending;
+  assert.equal(f.permissions(), 0);
+  assert.deepEqual(f.starts, []);
+  assert.deepEqual(JSON.parse(f.requests.at(-1).options.body), {session_id: 'late_drone', reason: 'start_cancelled'});
+});
+
+test('Tello backend failure and page exit release preview and scope the stop to its ID', async (t) => {
+  const ready = deferred();
+  const f = fixture(t, {fetcher: (url, options, value) => {
+    if (url === '/api/live/tello/start') return reply({session_id: 'drone', session_status: 'starting'});
+    if (url.startsWith('/api/live/state')) { ready.resolve(); return reply({session_id: 'drone', transport_ready: true, session_status: 'receiving'}); }
+    return reply(value);
+  }});
+  const handle = await f.connect(); f.get('input-source').value = 'tello-map';
+  const pending = f.get('camera-start').handlers.click(); await ready.promise;
+  await new Promise((resolve) => setImmediate(resolve));
+  f.windowEvents.pagehide(); await pending;
+  const stop = f.requests.find((r) => r.options?.keepalive);
+  assert.equal(stop.url, '/api/live/stop');
+  assert.deepEqual(JSON.parse(stop.options.body), {session_id: 'drone', reason: 'page_hidden'});
+  assert.equal(f.get('tello-map-preview').hidden, true);
+  handle.update({session_id: 'drone', session_status: 'failed', last_error: 'disconnected'});
+  assert.equal(f.permissions(), 0);
+});
+
+test('status outage beyond 45 seconds retries without stopping server-side mapping', async (t) => {
+  const originalNow = Date.now;
+  t.after(() => { Date.now = originalNow; });
+  let clock = originalNow(), polls = 0;
+  Date.now = () => clock;
+  const retrying = deferred(), recovered = deferred();
+  const f = fixture(t, {fetcher: (url, options, value) => {
+    if (url === '/api/live/tello/start') return reply({session_id: 'drone_map', session_status: 'starting'});
+    if (url.startsWith('/api/live/state')) return reply({session_id: 'drone_map', transport_ready: true});
+    if (url.startsWith('/api/live/tracking')) {
+      polls++;
+      if (polls < 3) { clock += 60000; retrying.resolve(); throw new TypeError('status temporarily offline'); }
+      recovered.resolve();
+      return reply({session_id: 'drone_map', session_status: 'receiving', last_input_sequence: 5});
+    }
+    return reply(value);
+  }});
+  await f.connect(); f.get('input-source').value = 'tello-map';
+  const pending = f.get('camera-start').handlers.click();
+  await retrying.promise;
+  await recovered.promise;
+  await new Promise(resolve => setImmediate(resolve));
+  assert.equal(f.requests.some(r => r.url === '/api/live/stop'), false);
+  assert.equal(f.get('camera-stop').disabled, false);
+  assert.ok(f.requests.some(r => r.url === '/api/live/event' && JSON.parse(r.options.body).event === 'status_recovered'));
+  await f.get('camera-stop').handlers.click(); await pending;
+});
+
+test('status rendering exception is recorded without stopping a healthy stream', async (t) => {
+  const f = fixture(t);
+  await f.connect({onStatus(status) { if (status.state === 'receiving') throw new Error('synthetic rendering error'); }});
+  await f.get('camera-start').handlers.click();
+  await f.deliver({mediaTime: 1, presentedFrames: 1});
+  assert.equal(f.requests.some(r => r.url === '/api/live/stop'), false);
+  const events = f.requests.filter(r => r.url === '/api/live/event').map(r => JSON.parse(r.options.body));
+  assert.equal(events.length, 1);
+  assert.match(events[0].message, /status_render.*synthetic rendering error/);
+  await f.get('camera-stop').handlers.click();
+});
+
+test('browser frame transport failure records the error and its stop cause', async (t) => {
+  const f = fixture(t, {fetcher: (url, options, value) => {
+    if (url.startsWith('/api/live/frame')) throw new TypeError('synthetic upload failure');
+    return reply(value);
+  }});
+  await f.connect(); await f.get('camera-start').handlers.click();
+  await f.deliver({mediaTime: 1, presentedFrames: 1});
+  assert.deepEqual(JSON.parse(f.requests.find(r => r.url === '/api/live/stop').options.body),
+    {session_id: 'live_test', reason: 'client_error', error: 'synthetic upload failure'});
+});
+
+test('dense live capture waits for preparation and admission, and display timeouts do not start another frame', async (t) => {
+  const loading = deferred(); let prepared = false, plays = 0, uploads = 0;
+  const dense = {session_id: 'live_test', backend: 'orb_slam3_depth', session_status: 'receiving', can_accept_frame: true};
+  const f = fixture(t, {fetcher: (url, options, value) => {
+    if (url === '/api/live/start') return reply({...dense, session_status: 'starting', can_accept_frame: false});
+    if (url.startsWith('/api/live/state')) { loading.resolve(); return reply({...dense, transport_ready: prepared}); }
+    if (url.startsWith('/api/live/frame')) {
+      if (++uploads === 1) throw new DOMException('waiting for display', 'TimeoutError');
+      return reply({...dense, frame_drops: 0});
+    }
+    return reply(value);
+  }});
+  f.get('input-preview').play = async () => { plays++; };
+  const handle = await f.connect();
+  const starting = f.get('camera-start').handlers.click(); await loading.promise;
+  assert.equal(plays, 0); assert.equal(uploads, 0);
+  prepared = true; await starting;
+  assert.equal(plays, 1);
+  handle.update({...dense, can_accept_frame: false});
+  await f.deliver({mediaTime: 1, presentedFrames: 1});
+  assert.equal(uploads, 0);
+  handle.update(dense);
+  await f.deliver({mediaTime: 2, presentedFrames: 2});
+  assert.equal(uploads, 1);
+  await f.deliver({mediaTime: 3, presentedFrames: 3});
+  assert.equal(uploads, 1);
+  assert.equal(f.requests.some(r => r.url === '/api/live/stop'), false);
+  handle.update({...dense, can_accept_frame: true});
+  await f.deliver({mediaTime: 4, presentedFrames: 4});
+  assert.equal(uploads, 2);
+  await f.get('camera-stop').handlers.click();
+});
+
+test('drone model preparation survives a partial UI state update and more than 65 seconds', async (t) => {
+  const originalNow = Date.now;
+  t.after(() => { Date.now = originalNow; });
+  let clock = originalNow(), polls = 0, selected = {}, handle;
+  Date.now = () => clock;
+  const ready = deferred();
+  const dense = {session_id: 'drone_map', backend: 'orb_slam3_depth', session_status: 'starting',
+    depth_job: {status: 'running', stage: 'model'}};
+  const f = fixture(t, {fetcher: (url, options, value) => {
+    if (url === '/api/live/tello/start') return reply(dense);
+    if (url.startsWith('/api/live/state')) {
+      if (++polls === 1) {
+        clock += 70000;
+        return reply({...dense, transport_ready: false,
+          depth_job: {status: 'running', stage: 'semantic_model', progress: {elapsed_seconds: 70}}});
+      }
+      return reply({...dense, session_status: 'receiving', transport_ready: true});
+    }
+    if (url.startsWith('/api/live/tracking')) {
+      ready.resolve();
+      return reply({...dense, session_status: 'receiving', last_input_sequence: 4});
+    }
+    return reply(value);
+  }});
+  handle = await f.connect({
+    onStart(id, state) {
+      assert.equal(state.depth_job.stage, 'model');
+      selected = {session_id: id, session_status: 'starting'};
+    },
+    onStatus(status) { f.statuses.push(status); handle?.update(selected); },
+  });
+  f.get('input-source').value = 'tello-map';
+  const starting = f.get('camera-start').handlers.click();
+  await Promise.race([ready.promise, starting]);
+  assert.equal(polls, 2);
+  assert.equal(f.requests.some(r => r.url === '/api/live/stop'), false);
+  assert.ok(f.statuses.some(status => /깊이 모델 준비 중/.test(status.message)));
+  assert.ok(f.statuses.some(status => /사람·공간 인식 모델 준비 중/.test(status.message)));
+  assert.equal(f.get('tello-map-preview').hidden, true);
+  assert.ok(!f.get('tello-map-preview').src);
+  assert.equal(f.get('camera-stop').disabled, false);
+  await f.get('camera-stop').handlers.click();
+  await starting;
+});

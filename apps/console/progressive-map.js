@@ -1,0 +1,444 @@
+import {ProgressiveReplay} from '/progressive-replay.js';
+import {createRescueLayer} from '/rescue-view.js';
+import {mappingPreparation} from '/map-source.js';
+import {mappingSettings, onMappingSettings, rescuePointColor} from '/mapping-settings.js';
+import {depthPointMaterial, depthPointScale, TOF_POINT_SIZE_MULTIPLIER} from '/point-display.js';
+import * as THREE from '/vendor/three.module.js';
+import {OrbitControls} from '/vendor/OrbitControls.js';
+
+export function connectProgressiveMap({prefix = 'progressive', compact = false} = {}) {
+  const $ = id => document.getElementById(id.replace(/^progressive/, prefix));
+  const listeners = new AbortController();
+  const on = (id, event, callback) => $(id)?.addEventListener(event, callback, {signal: listeners.signal});
+  const text = (id, value) => { const element = $(id); if (element) element.textContent = value; };
+  const host = $('progressive-viewport');
+  const trackingNote = $('progressive-tracking-note') || document.createElement('p'); trackingNote.id = `${prefix}-tracking-note`;
+  trackingNote.hidden = true; trackingNote.setAttribute('role', 'status'); host.append(trackingNote);
+  const renderer = new THREE.WebGLRenderer({antialias: false, powerPreference: 'low-power'});
+  renderer.setPixelRatio(Math.min(devicePixelRatio, 1.5));
+  host.append(renderer.domElement);
+  const scene = new THREE.Scene(); scene.background = new THREE.Color('#142326');
+  scene.add(new THREE.HemisphereLight(0xe6f6ff, 0x33484a, 2));
+  const light = new THREE.DirectionalLight(0xffffff, 2); light.position.set(-2, -3, -1); scene.add(light);
+  const rescue = createRescueLayer(THREE); scene.add(rescue.group);
+  const camera = compact ? new THREE.OrthographicCamera(-1, 1, 1, -1, .001, 100) : new THREE.PerspectiveCamera(55, 1, .02, 100);
+  camera.position.set(2, compact ? 2 : -2, compact ? 3 : -3);
+  if (compact) scene.scale.set(1, -1, -1); // Native optical axes to the saved map's right/up/back axes.
+  else camera.up.set(0, -1, 0);
+  const controls = new OrbitControls(camera, renderer.domElement);
+  const mapTarget = controls.target;
+  const basePointSize = 2;
+  const cameraScene = new THREE.Scene();
+  cameraScene.background = scene.background;
+  const cameraView = compact ? new THREE.OrthographicCamera(-1, 1, 1, -1, .001, 100) : new THREE.PerspectiveCamera(60, 1, .02, 100);
+  cameraView.up.copy(camera.up);
+  if (compact) cameraScene.scale.copy(scene.scale);
+  const previewOrigin = new THREE.Vector3(.16, -.1, -.35).multiply(cameraScene.scale);
+  const previewCenter = new THREE.Vector3(0, 0, 1.5).multiply(cameraScene.scale);
+  const previewTarget = previewCenter.clone();
+  cameraView.position.copy(previewOrigin);
+  cameraView.lookAt(previewTarget);
+  const frameGeometry = new THREE.BufferGeometry();
+  const frameCloud = new THREE.Points(frameGeometry, new THREE.PointsMaterial({size: basePointSize, sizeAttenuation: false, vertexColors: true}));
+  frameCloud.frustumCulled = false;
+  let frameSpace = null;
+  function updateFramePreview(preview) {
+    frameSpace = preview?.points?.length ? preview.space : null;
+    const cameraSpace = frameSpace === 'camera';
+    const view = cameraSpace ? cameraView : camera;
+    if (controls.object !== view) {
+      // The temporary view has its own pivot. A new map frame cannot recenter it.
+      controls.object = view;
+      controls.target = cameraSpace ? previewTarget : mapTarget;
+      controls.enableRotate = controls.enableZoom = !cameraSpace;
+      controls.update();
+    }
+    host.dataset.framePreview = frameSpace ?? '';
+    if (!frameSpace) { frameCloud.visible = false; delete host.dataset.framePointSize; return; }
+    const parent = frameSpace === 'camera' ? cameraScene : scene;
+    if (frameCloud.parent !== parent) parent.add(frameCloud);
+    frameCloud.visible = true;
+    frameCloud.material.size = basePointSize * (preview.tof_verified ? TOF_POINT_SIZE_MULTIPLIER : 1);
+    host.dataset.framePointSize = frameCloud.material.size;
+    const count = preview.points.length;
+    if ((frameGeometry.getAttribute('position')?.count ?? 0) < count) {
+      frameGeometry.dispose();
+      const capacity = 2 ** Math.ceil(Math.log2(count));
+      for (const name of ['position', 'color']) {
+        frameGeometry.setAttribute(name, new THREE.BufferAttribute(new Float32Array(capacity * 3), 3).setUsage(THREE.DynamicDrawUsage));
+      }
+    }
+    const position = frameGeometry.getAttribute('position'), color = frameGeometry.getAttribute('color');
+    const linear = new THREE.Color();
+    preview.points.forEach(([x, y, z, r, g, b], i) => {
+      position.setXYZ(i, x, y, z);
+      linear.setRGB(r / 255, g / 255, b / 255, THREE.SRGBColorSpace);
+      color.setXYZ(i, linear.r, linear.g, linear.b);
+    });
+    frameGeometry.setDrawRange(0, count);
+    for (const attribute of [position, color]) {
+      attribute.clearUpdateRanges(); attribute.addUpdateRange(0, count * 3); attribute.needsUpdate = true;
+    }
+  }
+  const geometry = new THREE.BufferGeometry();
+  const cloud = new THREE.Points(geometry, depthPointMaterial(basePointSize));
+  let pointCapacity = 0, pointKey = null, pointValue = null;
+  function updatePoints(value, force = false) {
+    const key = value.rescue?.render_mode === 'points' ? `${value.rescue.map_id}:${value.rescue.point_revision}:${value.points.length}` : null;
+    pointValue = value;
+    if (key && key === pointKey && !force) return;
+    pointKey = key;
+    if (value.points.length > pointCapacity) {
+      pointCapacity = Math.max(1024, 2**Math.ceil(Math.log2(value.points.length)));
+      geometry.dispose();
+      for (const [name, size] of [['position', 3], ['color', 3], ['pointScale', 1]]) {
+        geometry.setAttribute(name, new THREE.BufferAttribute(new Float32Array(pointCapacity * size), size).setUsage(THREE.DynamicDrawUsage));
+      }
+    }
+    const prefs = mappingSettings(), low = [Infinity,Infinity,Infinity], high = [-Infinity,-Infinity,-Infinity], linear = new THREE.Color();
+    const positions = geometry.getAttribute('position'), colors = geometry.getAttribute('color'), sizes = geometry.getAttribute('pointScale');
+    let verifiedPoints = 0, farPoints = 0;
+    value.points.forEach((p,i) => {
+      positions.setXYZ(i,p[0],p[1],p[2]);
+      const color = rescuePointColor(p.slice(3,6),value.rescue?.point_labels?.[i],value.rescue || {},prefs);
+      linear.setRGB(color[0]/255,color[1]/255,color[2]/255,THREE.SRGBColorSpace);
+      colors.setXYZ(i,linear.r,linear.g,linear.b);
+      const verified = value.rescue?.point_tof?.[i] === true;
+      const far = value.rescue?.point_far?.[i] === true;
+      sizes.setX(i, depthPointScale(verified, far));
+      verifiedPoints += Number(verified);
+      farPoints += Number(far && !verified);
+      for(let axis=0;axis<3;axis++){low[axis]=Math.min(low[axis],p[axis]);high[axis]=Math.max(high[axis],p[axis]);}
+    });
+    for(const attribute of [positions, colors, sizes]) {
+      if(!attribute) continue;
+      attribute.clearUpdateRanges(); attribute.addUpdateRange(0,value.points.length*attribute.itemSize); attribute.needsUpdate=true;
+    }
+    geometry.setDrawRange(0,value.points.length);
+    const center = value.points.length ? new THREE.Vector3(...low.map((n,i)=>(n+high[i])/2)) : new THREE.Vector3();
+    geometry.boundingSphere = new THREE.Sphere(center,value.points.length ? Math.hypot(...high.map((n,i)=>n-low[i]))/2 : 0);
+    Object.assign(host.dataset,{pointCount:value.points.length,pointBufferCapacity:pointCapacity,
+      verifiedPoints, farPoints,
+      pointRevision:value.rescue?.point_revision ?? '', pointGeometryId:geometry.id,
+      pointAttributeId:geometry.getAttribute('position')?.id ?? ''});
+  }
+  const unsubscribeSettings = onMappingSettings(()=>{if(pointValue) updatePoints(pointValue,true);});
+  scene.add(cloud);
+  const route = new THREE.Line(new THREE.BufferGeometry(), new THREE.LineBasicMaterial({color: '#f1c36c'})); scene.add(route);
+  const cameraMarker = new THREE.Group();
+  const corners = [[-.05, -.035, .08], [.05, -.035, .08], [.05, .035, .08], [-.05, .035, .08]];
+  const edges = corners.flatMap((point, i) => [[0, 0, 0], point, point, corners[(i + 1) % 4]]).map(p => new THREE.Vector3(...p));
+  const markerLines = new THREE.LineSegments(new THREE.BufferGeometry().setFromPoints(edges), new THREE.LineBasicMaterial({color: '#ffb95e'}));
+  cameraMarker.add(markerLines); cameraMarker.visible = false; scene.add(cameraMarker);
+  let active = null, revision = 0, generation = 0, timer = null, polling = false, first = true, running = false, disposed = false, again = false;
+  let replay = new ProgressiveReplay(), historyAt = 0;
+  let resultReady = false;
+  let preparing = false;
+  let hasPresentedMap = false;
+  let meshRevision = -1;
+  let pendingPaint = null, paintedRevision = 0;
+  let displayedMap = null;
+  const segments = new Map();
+  let segmentEntries = 0;
+  async function acknowledge(id, value) {
+    if (!value.needs_presentation || paintedRevision < value.revision) return;
+    const response = await fetch(`/api/import/presented?id=${encodeURIComponent(id)}`, {
+      method: 'POST', headers: {'X-Mapping-Client': '1', 'Content-Type': 'application/json'},
+      body: JSON.stringify({revision: value.revision}), signal: AbortSignal.timeout(10000)});
+    if (!response.ok) throw new Error('프레임 표시 확인을 다시 시도합니다.');
+    await response.json();
+  }
+  function replayControls() {
+    if (compact) return;
+    const available = replay.entries.length > 0 && (!running || hasPresentedMap);
+    $('progressive-timeline').disabled = $('progressive-play').disabled = $('progressive-seek-go').disabled = !available;
+    $('progressive-timeline').min = replay.first; $('progressive-timeline').max = replay.last;
+    $('progressive-timeline').value = replay.time;
+    if (document.activeElement !== $('progressive-seek')) $('progressive-seek').value = replay.time.toFixed(2);
+    $('progressive-seek').max = replay.last;
+    $('progressive-replay-time').textContent = `${replay.time.toFixed(2)} / ${replay.last.toFixed(2)}초`;
+    $('progressive-play').textContent = replay.playing ? '\uC77C\uC2DC\uC815\uC9C0' : '\uC7AC\uC0DD';
+    $('progressive-follow').setAttribute('aria-pressed', String(replay.following));
+    $('progressive-replay-state').textContent = replay.following ?
+      (resultReady ? '마지막 복원 기록 표시' : '최신 복원 표시') :
+      (running ? '기록 재생 · 최신 복원은 표시 대기' : '저장된 복원 기록 재생');
+    $('progressive-download').hidden = !available || !resultReady;
+    $('progressive-download').href = `/api/import/history.zip?id=${encodeURIComponent(active)}`;
+    if (replay.entries.length < segmentEntries) { segments.clear(); segmentEntries = 0; }
+    for (let i = segmentEntries; i < replay.entries.length; i++) {
+      const entry = replay.entries[i];
+      if (entry.map_id != null && entry.map_points > 0) segments.set(entry.map_id, entry);
+    }
+    segmentEntries = replay.entries.length;
+    const select = $('progressive-segment');
+    const selectedMap = replay.following ? null : replay.selected()?.map_id;
+    const options = [new Option('현재 구간 따라가기', 'latest')];
+    for (const mapId of segments.keys()) options.push(new Option(`구간 ${mapId + 1} · 분리 보존`, String(mapId)));
+    // Avoid replacing a focused select at every frame.
+    const signature = options.map(option => `${option.value}:${option.text}`).join('|');
+    if (select.dataset.options !== signature) { select.replaceChildren(...options); select.dataset.options = signature; }
+    select.value = selectedMap == null ? 'latest' : String(selectedMap);
+    $('progressive-segments').hidden = segments.size < 2;
+  }
+  function changed() { clearTimeout(timer); replayControls(); poll(); }
+  on('progressive-timeline', 'input', event => { replay.seek(Number(event.target.value)); changed(); });
+  on('progressive-seek-go', 'click', () => { replay.seek(Number($('progressive-seek').value)); changed(); });
+  on('progressive-play', 'click', () => { if (replay.playing) replay.pause(); else replay.play(performance.now()); changed(); });
+  on('progressive-follow', 'click', () => { replay.follow(); changed(); });
+  on('progressive-segment', 'change', event => {
+    if (event.target.value === 'latest') replay.follow();
+    else {
+      const entry = segments.get(Number(event.target.value));
+      if (entry) replay.seek(entry.timestamp_s);
+    }
+    changed();
+  });
+  on('progressive-speed', 'change', () => { replay.tick(performance.now()); replay.rate = Number($('progressive-speed').value); });
+  let aspect = 1, mapSpan = 1;
+  function resizeView(view, span) {
+    if (view.isOrthographicCamera) {
+      view.right = span * Math.max(1, aspect); view.left = -view.right;
+      view.top = span * Math.max(1, 1 / aspect); view.bottom = -view.top;
+    } else view.aspect = aspect;
+    view.updateProjectionMatrix();
+  }
+  function fit() {
+    if (!geometry.drawRange.count || !geometry.boundingSphere) return;
+    const {center, radius} = geometry.boundingSphere;
+    mapTarget.copy(center);
+    if (compact) scene.localToWorld(mapTarget);
+    const distance = Math.max(radius, .5);
+    camera.position.copy(mapTarget).add(new THREE.Vector3(1, compact ? .6 : -.6, compact ? 1.3 : -1.3).multiplyScalar(distance * 1.7));
+    if (compact) {
+      mapSpan = distance * 1.1;
+      camera.far = Math.max(100, distance * 8);
+      camera.zoom = 1;
+      resizeView(camera, mapSpan);
+    }
+    camera.lookAt(mapTarget);
+  }
+  function drawMap(value) {
+    updatePoints(value);
+    rescue.update(value.rescue);
+    cloud.visible = !value.rescue || value.rescue.render_mode === 'points';
+    meshRevision = value.rescue?.mesh_revision ?? -1;
+    route.geometry.dispose();
+    route.geometry = new THREE.BufferGeometry().setFromPoints(value.cameras.map(p => new THREE.Vector3(...p)));
+  }
+  const observer = new ResizeObserver(() => {
+    const {width, height} = host.getBoundingClientRect();
+    if (width && height) {
+      renderer.setSize(width, height, false);
+      aspect = width / height;
+      resizeView(camera, mapSpan);
+      resizeView(cameraView, 2.5);
+    }
+  }); observer.observe(host);
+  renderer.setAnimationLoop(() => {
+    if (!disposed && !document.hidden && !host.closest('[hidden]') && host.getBoundingClientRect().width > 0) {
+      controls.update();
+      if (frameSpace === 'camera') renderer.render(cameraScene, cameraView);
+      else renderer.render(scene, camera);
+      if (pendingPaint) {
+        const resolve = pendingPaint; pendingPaint = null;
+        requestAnimationFrame(() => resolve(!disposed));
+      }
+    }
+  });
+  async function poll() {
+    if (disposed || !active) return;
+    if (polling) { again = true; return; }
+    again = false;
+    polling = true; const id = active, token = generation; let cursor = replay.version, retry = false;
+    try {
+      if (!compact && (performance.now() - historyAt > 1000 || !historyAt)) {
+        historyAt = performance.now();
+        const history = await fetch(`/api/import/history?id=${encodeURIComponent(id)}`, {cache: 'no-store', signal: AbortSignal.timeout(10000)});
+        if (token !== generation || disposed) return;
+        if (history.ok) replay.setEntries((await history.json()).entries);
+      }
+      replay.tick(performance.now()); replayControls(); cursor = replay.version;
+      const selected = replay.selected();
+      if (!replay.following && (!selected || selected.revision === revision)) return;
+      const endpoint = replay.following ? `preview?id=${encodeURIComponent(id)}&revision=${revision}&mesh_revision=${meshRevision}${running ? '&wait=1' : ''}` : `history-frame?id=${encodeURIComponent(id)}&revision=${selected.revision}`;
+      const response = await fetch(`/api/import/${endpoint}`, {cache: 'no-store', signal: AbortSignal.timeout(10000)});
+      if (!response.ok) throw new Error('지도 응답을 받지 못해 다시 시도합니다.');
+      const value = await response.json();
+      if (token !== generation || cursor !== replay.version || disposed) return;
+      if (value.done) running = false;
+      if (token === generation && cursor === replay.version && !disposed && replay.following && value.unchanged) await acknowledge(id, value);
+      if (token !== generation || cursor !== replay.version || disposed || !response.ok || value.waiting || value.unchanged) return;
+      const hasGeometry = Boolean(value.points.length || value.rescue?.mesh?.triangles?.length ||
+        value.rescue?.people?.length);
+      // Before the first map, consume tracking status and keep the video hidden.
+      // Sequential jobs still receive their acknowledgement after the status is painted.
+      let image = null;
+      if (compact || hasPresentedMap || hasGeometry || value.frame_preview || value.front_tof?.surface_supported !== undefined) {
+        image = new Image();
+        image.src = `/api/import/preview-frame?id=${encodeURIComponent(id)}&name=${encodeURIComponent(value.frame_id)}`;
+        const imageTimeout = setTimeout(() => { image.src = ''; }, 3000);
+        try {
+          await image.decode();
+        } finally { clearTimeout(imageTimeout); }
+      }
+      if (token !== generation || cursor !== replay.version || disposed) return;
+      revision = value.revision;
+      updateFramePreview(compact && value.frame_preview?.space === 'camera' && value.points.length ? null : value.frame_preview);
+      const sensorPose = value.pose_source === 'tello_sensor_odometry';
+      const recoveredPose = value.pose_source === 'tello_visual_recovery';
+      text('progressive-frame-detail', frameSpace === 'camera' ? '현재 프레임을 카메라 기준 임시 점군으로 표시합니다.' :
+        frameSpace === 'map' ? '확인한 카메라 자세와 최근 배율로 현재 프레임의 점을 임시로 표시합니다.' :
+        value.tracking === 'sensor_wait' ? '지도를 시작할 첫 센서 자세를 기다립니다.' :
+        value.tracking === 'pose_dpvo' ? 'ORB-SLAM3 지도 좌표에 맞춘 DPVO 위치·방향으로 점군을 합쳤습니다.' :
+        value.tracking === 'pose_predicted' ? '이전 위치·회전 속도와 배율로 예측한 점을 복셀 지도에 바로 합쳤습니다.' :
+        value.tracking === 'pose_reused' ? '최근 프레임을 기준으로 현재 자세를 추정하고 이전 배율로 복셀에 합쳤습니다.' :
+        value.front_tof?.used === true ? '전방 ToF로 확인된 표면을 큰 점으로 표시합니다.' :
+        value.front_tof?.used === false ? '현재 프레임의 영상 깊이 추정점을 표시합니다.' :
+        {lost: '위치·방향 추적 실패 · 깊이 추정과 지도 반영을 건너뛰고 마지막 지도를 유지합니다.',
+        initializing: '영상으로 카메라 위치·방향을 초기화 중입니다. 아직 깊이 추정을 실행하지 않습니다.',
+        scale_wait: '위치·방향은 확인했습니다. 깊이 배율의 일관성이 부족해 이번 프레임은 합치지 않고 누적 지도를 유지합니다.',
+        tracking: '먼저 확정한 이 프레임의 카메라 자세를 유지한 채 깊이와 지도를 복원했습니다.'}[value.tracking] || '프레임 처리 중');
+      const confirmed = Boolean(value.pose_confirmed && value.pose_position && value.pose_rotation);
+      const estimated = (sensorPose || recoveredPose || ['pose_dpvo', 'pose_reused', 'pose_predicted', 'pose_held'].includes(value.tracking)) && value.pose_position && value.pose_rotation;
+      const guidance = compact ? ({lost: value.points.length ? '위치를 다시 찾는 동안 마지막 지도를 표시합니다.' : '',
+        pose_predicted: '최근 이동을 바탕으로 예측한 위치를 지도에 반영했습니다.',
+        pose_reused: '이전 장면을 기준으로 위치를 맞췄습니다.',
+        pose_held: '마지막으로 확인한 위치에 합쳤습니다.',
+        scale_reused: '이전 장면의 깊이 기준으로 지도에 반영했습니다.',
+        invalid_depth: '이 장면에서 사용할 깊이를 찾지 못했습니다.',
+        scale_wait: '장면의 깊이를 기존 지도에 맞추지 못했습니다.'}[value.tracking] || '') : value.tracking === 'lost'
+        ? '점을 잡지 못했습니다. 천천히 이동하거나 끊긴 부분을 다시 보여주세요. 마지막 지도를 유지하며 위치를 다시 찾고 있습니다.'
+        : value.tracking === 'initializing'
+          ? '첫 위치를 찾고 있습니다. 벽과 바닥의 무늬가 함께 보이도록 카메라를 천천히 옆으로 이동해 주세요.'
+          : value.tracking === 'scale_wait' ? '깊이 정보를 연결하지 못했습니다. 이전에 촬영한 부분을 천천히 다시 보여주세요.' : '';
+      trackingNote.hidden = !guidance;
+      trackingNote.textContent = guidance;
+      cameraMarker.visible = Boolean((confirmed || estimated) && value.map_id === value.pose_map_id);
+      if (confirmed || estimated) {
+        const r = value.pose_rotation;
+        cameraMarker.position.fromArray(value.pose_position);
+        cameraMarker.quaternion.setFromRotationMatrix(new THREE.Matrix4().set(r[0][0], r[0][1], r[0][2], 0, r[1][0], r[1][1], r[1][2], 0, r[2][0], r[2][1], r[2][2], 0, 0, 0, 0, 1));
+        const label = sensorPose ? 'Tello 센서 자세 추정' : recoveredPose ? '기존 지도에서 영상 자세 복구' :
+          {pose_dpvo: 'DPVO로 위치·방향 보완', pose_predicted: '선형 이동 기반 자세 예측', pose_reused: '이전 프레임 기준 자세 추정',
+            pose_held: '마지막 위치·방향 적용'}[value.tracking] || '위치·방향 확정';
+        const units = value.map_unit === 'm' ? '미터 단위 추정' : '단안 상대 좌표';
+        text('progressive-pose', `${label} · 원본 ${value.frame_number}번째 · 위치 (${value.pose_position.map(n => n.toFixed(3)).join(', ')}) · 전방 (${r.map(row => row[2].toFixed(3)).join(', ')}) · ${units}${value.submaps > 1 ? ' · 다른 지도 구간은 분리 보존' : ''}`);
+      } else text('progressive-pose', frameSpace === 'camera' ? '위치·방향 확정 대기 · 카메라 기준 점군 표시 중' :
+        '위치·방향 확정 대기 · 이 프레임은 깊이 복원에 사용하지 않습니다.');
+      // A transient empty live result is not an instruction to erase the map.
+      // Historical seeks still show the exact recorded (possibly empty) frame.
+      const retaining = replay.following && !value.points.length && Boolean(pointValue?.points.length);
+      if (!retaining) {
+        if (value.points.length && value.map_id !== displayedMap) { displayedMap = value.map_id; first = true; }
+        drawMap(value);
+        Object.assign(host.dataset, {rescuePeople: value.rescue?.people?.length || 0,
+          rescueVoxels: (value.rescue?.people || []).reduce((n, p) => n + p.voxels.length, 0),
+          rescueTriangles: value.rescue?.mesh?.triangles?.length || 0});
+      }
+      Object.assign(host.dataset, {displayedMap: displayedMap ?? '', retainingMap: String(retaining)});
+      if (retaining) cameraMarker.visible = false;
+      $('progressive-map-empty').hidden = retaining || hasGeometry || Boolean(frameSpace);
+      $('progressive-map-empty').textContent = compact ? '지도 생성 대기 중' : value.registered > 0
+        ? '이 시점에 표시할 지도 점이 없습니다. 복원 기록이나 전체 경로 지도를 확인하세요.'
+        : value.tracking === 'lost' ? '카메라 위치·방향 추적을 잃었습니다. 같은 공간을 천천히 비춰 주세요.'
+        : value.tracking === 'scale_wait' ? '깊이 배율을 연결할 근거를 기다리고 있습니다.'
+        : '첫 깊이 지도가 준비되면 영상과 함께 표시합니다.';
+      text('progressive-count', `처리 ${value.processed} · 지도 반영 ${value.registered}프레임 · ${(retaining ? pointValue.points.length : (value.map_points ?? value.points.length)).toLocaleString()}점`);
+      text('progressive-latency', `현재 프레임 복원 ${value.processing_ms}ms · 추적 포함 ${value.latency_ms}ms`);
+      const fusion = value.rescue?.point_fusion;
+      const scope = fusion ? `전체 공간 통합 · 구조물 최대 ${fusion.point_budget.toLocaleString()}점 · 밀도 단계 ${fusion.coarsenings}` : value.render_window_s == null ? '현재 지도 구간의 전체 누적 지도' : `최근 ${value.render_window_s}초 지도`;
+      const move = '우클릭 드래그 이동';
+      const detail = frameSpace === 'camera' ? `카메라 기준 임시 점군 · ${move} · 자세와 배율이 확인되면 누적 지도로 돌아갑니다.` :
+        frameSpace === 'map' ? `현재 프레임 임시 점군 · ${move} · 누적 지도에는 확인된 관측을 저장합니다.` :
+        !image ? $('progressive-map-empty').textContent : retaining ? `새 점군 대기 · 마지막 유효 지도를 유지합니다. · ${move}` :
+        `${scope} · 왼쪽 드래그 회전 · 휠 확대 · ${move}${value.submaps > 1 ? ` · 현재 구간 ${value.map_id + 1} · 이전 지도는 위 지도 구간에서 다시 열 수 있습니다. 구간 사이 좌표는 아직 연결되지 않았습니다.` : ''}`;
+      const depthLegend = value.map_unit === 'm' ? ' · 작은 점 파란 거리대 · 기본 점 영상 깊이 · 큰 점 ToF' :
+        value.front_tof ? ' · 큰 점 ToF · 기본 점 영상 깊이' : '';
+      text('progressive-map-detail', detail + depthLegend);
+      if (first && value.points.length) { first = false; fit(); }
+      if (image) {
+        const frame = $('progressive-frame');
+        frame.src = image.src;
+        frame.hidden = false;
+        $('progressive-video-empty').hidden = true;
+        $('progressive-frame-time').textContent = compact ? `${value.timestamp_s.toFixed(1)}초` : `${value.timestamp_s.toFixed(2)}초 · 원본 ${value.frame_number}번째 프레임`;
+        if (!hasPresentedMap) {
+          hasPresentedMap = true;
+          replayControls();
+        }
+      }
+      if (replay.following && value.needs_presentation) {
+        const painted = await new Promise(resolve => { pendingPaint = resolve; });
+        if (!painted || token !== generation || disposed) return;
+        paintedRevision = value.revision;
+        await acknowledge(id, value);
+      }
+    } catch (error) {
+      retry = true;
+      if (token === generation && !disposed) {
+        if (compact) { trackingNote.hidden = false; trackingNote.textContent = '지도 연결을 다시 시도하고 있습니다.'; }
+        else text('progressive-map-detail', `지도 갱신 재시도 중 · ${error.message}`);
+      }
+    } finally {
+      polling = false;
+      if ((running || replay.playing || again || retry) && !disposed) timer = setTimeout(poll, retry ? 500 : !compact && running && replay.following ? 0 : 200);
+    }
+  }
+  return {update(job) {
+    if (active !== job.id) { active = job.id; revision = 0; paintedRevision = 0; replay = new ProgressiveReplay(); historyAt = 0; generation++; first = true;
+      if (compact) scene.scale.set(1, -1, -1);
+      hasPresentedMap = false;
+      updateFramePreview(null);
+      cameraView.position.copy(previewOrigin);
+      previewTarget.copy(previewCenter);
+      cameraView.lookAt(previewTarget);
+      trackingNote.hidden = true; trackingNote.textContent = '';
+      geometry.setDrawRange(0,0); pointKey = pointValue = null; displayedMap = null; segments.clear(); segmentEntries = 0; rescue.update(null); meshRevision = -1;
+      route.geometry.dispose(); route.geometry = new THREE.BufferGeometry(); cameraMarker.visible = false;
+      Object.assign(host.dataset, {pointCount: 0, verifiedPoints: 0, farPoints: 0, displayedMap: '', retainingMap: 'false'});
+      $('progressive-frame').hidden = true;
+      $('progressive-frame-time').textContent = compact ? '' : '첫 지도 대기';
+      $('progressive-video-empty').hidden = false;
+      $('progressive-video-empty').textContent = compact ? '장면 대기 중' : '첫 깊이 지도가 준비되면 영상과 함께 표시합니다.'; }
+    running = ['running', 'cancelling'].includes(job.status);
+    if (compact) { clearTimeout(timer); if (running) poll(); return; }
+    resultReady = ['ready', 'complete'].includes(job.status);
+    replayControls();
+    const preparation = mappingPreparation(job);
+    $('progressive-state').textContent = job.status === 'ready' && job.history_available ? '저장된 복원 과정 다시보기 · 저장 지도 열기로 결과를 확인하세요' : job.status === 'complete' ? '복원 완료 · 저장 지도 열기로 계속 살펴보세요' : job.status === 'failed' ? '처리 중단 · 마지막 지도 유지' : job.status === 'cancelling' ? '현재 프레임 처리를 중단하고 있습니다' : job.status === 'cancelled' ? '취소됨 · 마지막 지도 유지' :
+      {model: '모델 준비 중 · 영상은 대기합니다', semantic_model: '사람·공간 인식 모델 준비 중', semantics: '사람과 구조물 구분 중', depth: '현재 영상의 깊이 추정 중', tracking: '카메라 위치·방향 추적 중', pose_wait: '자세 확정 대기 · 깊이 복원 보류', frame_preview: '현재 프레임의 관측 점군 표시 중', mapping: '확정한 자세로 지도 복원 중', presentation: '현재 프레임 표시 후 다음 프레임 진행', saving: '전체 통합 지도 저장 중'}[job.stage] || '영상 처리 준비 중';
+    if (job.stage === 'integration') $('progressive-state').textContent = `전체 경로 통합 중 · ${job.progress?.integrated_frames || 0} / ${job.progress?.integration_total || 0}`;
+    if (preparation) {
+      trackingNote.hidden = true;
+      $('progressive-state').textContent = preparation.title;
+      $('progressive-video-empty').textContent = preparation.title;
+      $('progressive-map-empty').textContent = preparation.detail;
+      $('progressive-pose').textContent = '모델 준비가 끝나면 카메라 위치 추적을 시작합니다.';
+      $('progressive-latency').textContent = preparation.title;
+      $('progressive-map-detail').textContent = preparation.detail;
+    } else if (!hasPresentedMap && ['failed', 'cancelled'].includes(job.status)) {
+      $('progressive-video-empty').textContent = '첫 지도가 준비되기 전에 처리를 종료했습니다.';
+    } else if (preparing) {
+      $('progressive-video-empty').textContent = running ? '첫 깊이 지도가 준비되면 영상과 함께 표시합니다.' : '영상 처리 종료';
+      if (!revision) {
+        $('progressive-map-empty').textContent = running ? '카메라 위치가 확인되면 3D 지도를 생성합니다.' : '생성된 지도가 없습니다.';
+        $('progressive-pose').textContent = running ? '카메라 위치·방향 확정 대기' : '위치 추적 종료';
+        $('progressive-latency').textContent = running ? '첫 프레임 처리 대기' : '영상 처리 종료';
+        $('progressive-map-detail').textContent = running ? '모델 준비 완료 · 지도 생성 대기' : '영상 처리가 종료되었습니다.';
+      }
+    }
+    preparing = Boolean(preparation);
+    clearTimeout(timer); poll();
+  }, showResult(value) {
+    generation++; running = again = false; active = null; clearTimeout(timer);
+    pendingPaint?.(false); pendingPaint = null;
+    trackingNote.hidden = true;
+    cameraMarker.visible = false; updateFramePreview(null);
+    if (compact) scene.scale.set(1, 1, 1);
+    else camera.up.fromArray(value.up);
+    // Saved points use display axes even when their revision matches the optical preview.
+    pointKey = null;
+    drawMap(value); fit();
+    $('progressive-map-empty').hidden = true;
+  }, dispose() { unsubscribeSettings(); rescue.dispose(); listeners.abort(); disposed = true; running = false; generation++; clearTimeout(timer); pendingPaint?.(false); pendingPaint = null; observer.disconnect(); renderer.setAnimationLoop(null); controls.dispose(); geometry.dispose(); cloud.material.dispose(); frameGeometry.dispose(); frameCloud.material.dispose(); route.geometry.dispose(); route.material.dispose(); markerLines.geometry.dispose(); markerLines.material.dispose(); renderer.dispose(); renderer.domElement.remove(); trackingNote.remove(); }};
+}

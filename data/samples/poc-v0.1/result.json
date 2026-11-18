@@ -1,0 +1,104 @@
+{
+  "schema_version": "0.1.0",
+  "run_id": "00000000-0000-4000-8000-000000000001",
+  "parent_run_id": null,
+  "input_kind": "synthetic",
+  "source_sha256": null,
+  "captured_at_utc": null,
+  "producer": {
+    "name": "hand-authored-example",
+    "version": "0.1.0",
+    "settings": {
+      "original_point_count": 3,
+      "selection": "all"
+    }
+  },
+  "status": "complete",
+  "pose_source": "synthetic",
+  "coordinate_frame": "colmap_world",
+  "scale": {
+    "status": "arbitrary",
+    "unit": "arbitrary",
+    "factor_from_sfm": null,
+    "reference": null
+  },
+  "frames": [
+    {
+      "frame_id": "frame-000001",
+      "pts_us": 0,
+      "pose_status": "registered",
+      "T_camera_from_world": [
+        [
+          1,
+          0,
+          0,
+          0
+        ],
+        [
+          0,
+          1,
+          0,
+          0
+        ],
+        [
+          0,
+          0,
+          1,
+          0
+        ],
+        [
+          0,
+          0,
+          0,
+          1
+        ]
+      ]
+    },
+    {
+      "frame_id": "frame-000002",
+      "pts_us": 500000,
+      "pose_status": "registered",
+      "T_camera_from_world": [
+        [
+          1,
+          0,
+          0,
+          -1
+        ],
+        [
+          0,
+          1,
+          0,
+          0
+        ],
+        [
+          0,
+          0,
+          1,
+          0
+        ],
+        [
+          0,
+          0,
+          0,
+          1
+        ]
+      ]
+    }
+  ],
+  "quality": {
+    "expected_frames": 2,
+    "registered_frames": 2,
+    "point_count": 3,
+    "reprojection_error_px": null
+  },
+  "artifacts": [
+    {
+      "artifact_id": "pointcloud",
+      "path": "points.ply",
+      "media_type": "application/octet-stream",
+      "sha256": "57bc147b8c25c9133a4d49749c9d8a97091b75a3e82ee1d9f5b05befb94c7d25",
+      "bytes": 245
+    }
+  ]
+}

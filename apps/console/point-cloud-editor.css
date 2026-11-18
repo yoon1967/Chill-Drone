@@ -1,0 +1,51 @@
+.edit-workbench {
+  display: grid; grid-template-columns: minmax(190px, 250px) minmax(0, 1fr);
+  gap: 16px; align-items: start;
+}
+.edit-library, .edit-stage { min-width: 0; background: #fff; border: 1px solid var(--border); border-radius: 12px; }
+.edit-library { padding: 14px; }
+.edit-library h2, .editor-document h2 { margin: 0; font-size: 16px; overflow-wrap: anywhere; }
+.edit-status, #edit-empty { margin: 10px 0 0; color: var(--muted); font-size: 13px; }
+.edit-status { margin: 10px 14px; }
+#edit-list { max-height: clamp(215px, calc(var(--workspace-height) - 155px), 650px); padding: 3px; margin: 8px -3px 0; }
+.edit-record {
+  width: 100%; display: grid; justify-content: stretch; gap: 5px; text-align: left;
+  padding: 7px; overflow-wrap: anywhere;
+}
+.edit-record img { width: 100%; aspect-ratio: 16 / 9; object-fit: cover; border-radius: 5px; background: #e8eeeb; }
+.edit-record span, #editor-unit, #editor-guide { font-size: 12px; color: var(--muted); }
+.edit-record:hover, .editor-modes button:hover { background: #f4f7f5; }
+.edit-record[aria-pressed="true"], .editor-modes button[aria-pressed="true"] {
+  background: #e2efe9; border-color: #6d9386; color: var(--accent);
+}
+#edit-placeholder {
+  display: grid; place-items: center; min-height: 300px; padding: 20px;
+  text-align: center; color: var(--muted);
+}
+.editor-toolbar {
+  display: flex; align-items: center; flex-wrap: wrap; gap: 10px;
+  padding: 12px; border-bottom: 1px solid var(--border);
+}
+.editor-document { flex: 1 1 155px; min-width: 0; }
+.editor-controls, .editor-modes, .editor-layers { display: flex; flex-wrap: wrap; gap: 6px; align-items: center; }
+.editor-controls { gap: 8px 14px; margin-bottom: 8px; }
+.editor-toolbar button, .editor-controls button { min-height: 34px; padding: 5px 9px; font-size: 13px; }
+.editor-layers label { display: flex; align-items: center; gap: 5px; font-size: 13px; }
+.editor-layers input { accent-color: var(--accent); }
+.editor-view { min-width: 0; padding: 10px; }
+#editor-viewport {
+  height: clamp(300px, calc(var(--workspace-height) - 220px), 750px);
+  background: #101921; border-radius: 8px; touch-action: none;
+}
+#editor-viewport canvas { z-index: auto; outline-offset: -3px; cursor: grab; }
+#editor-viewport canvas:active { cursor: grabbing; }
+#editor-guide { margin-top: 8px; }
+#editor-status { color: var(--muted); font-size: 13px; margin: 5px 0 8px; }
+#editor-status:empty { display: none; }
+#editor-progress { width: 100%; margin-bottom: 8px; }
+@media (max-width: 680px) {
+  .edit-workbench { grid-template-columns: minmax(0, 1fr); }
+  #edit-list { max-height: 180px; }
+  .edit-record img { max-height: 92px; object-position: center; }
+  #edit-placeholder { min-height: 175px; }
+}

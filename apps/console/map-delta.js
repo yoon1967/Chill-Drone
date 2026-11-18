@@ -1,0 +1,33 @@
+// Keep local change information out of the saved/exported scene format.
+const changes = new WeakMap();
+const tokens = new WeakMap();
+export function sceneToken(scene) {
+  if (!tokens.has(scene)) tokens.set(scene, Symbol());
+  return tokens.get(scene);
+}
+export const sceneChanges = scene => changes.get(scene);
+
+// Reconstruct the exact snapshot, including native point order and current camera-frame indices.
+export function applySceneDelta(previous,payload) {
+  if (payload.schema_version!=='phone-map-delta/1.0') return payload;
+  if (!previous || previous.pose_source!=='orb_slam3' || previous.revision!==payload.base_revision ||
+      previous.input_run_id!==payload.session_id || previous.segment_id!==payload.segment_id ||
+      payload.scene?.input_run_id!==payload.session_id || payload.scene?.segment_id!==payload.segment_id ||
+      payload.scene?.revision!==payload.revision || payload.revision<=payload.base_revision)
+    throw new Error('Map delta base mismatch');
+  const rows=new Map(previous.points.map(p => [p[0],p]));
+  for (const id of payload.points_removed) rows.delete(id);
+  for (const point of payload.points_upsert) rows.set(point[0],point);
+  if (payload.point_order.length!==rows.size || new Set(payload.point_order).size!==rows.size ||
+      payload.point_order.some(id => !rows.has(id))) throw new Error('Invalid map delta point order');
+  const frames={...previous.point_observations?.frame_index_by_point};
+  for (const id of payload.observation_removed) delete frames[id];
+  Object.assign(frames,payload.observation_upserts);
+  const scene = {...payload.scene,points:payload.point_order.map(id => rows.get(id)),
+    point_observations:{...payload.observation_metadata,frame_index_by_point:frames}};
+  // A strong reference to the previous scene would retain the entire revision
+  // chain throughout a long live session. The token carries identity only.
+  changes.set(scene, {previousToken: sceneToken(previous), upserts: payload.points_upsert, removed: payload.points_removed,
+    observationIds: [...Object.keys(payload.observation_upserts), ...payload.observation_removed]});
+  return scene;
+}

@@ -1,0 +1,94 @@
+{
+  "schema_version": "phone-mapping-external/1.0",
+  "package_id": "2f1_20261021_handoff_v1",
+  "input_run_id": "2f1_20261021",
+  "archive": {
+    "name": "2f1_20261021_handoff_v1.zip",
+    "bytes": 56736349,
+    "sha256": "1bf7e1aef24ea87dea157cdcbf73aef87dcf32f92bd8592c65868a41a3ce9c41"
+  },
+  "distribution": {
+    "provider": "team_google_drive",
+    "folder_id": null,
+    "status": "team_location_not_provided; identify supplied package by SHA256"
+  },
+  "package_manifest": {
+    "bytes": 22973,
+    "sha256": "9628f52713f7c88627621e0aee18b093421e49ef2eff4f98e51b07a9a0ed5b26"
+  },
+  "artifacts": {
+    "source_manifest": {
+      "path": "output/phone_mapping/2f1_20261021/manifest.json",
+      "kind": "file",
+      "bytes": 19052,
+      "sha256": "8edaefb305e8975a95574058afa5d0d8c91477738b8fe00b95ba4b2a6c050a3b"
+    },
+    "source_video": {
+      "path": "output/phone_mapping/2f1_20261021/source_video.mp4",
+      "kind": "file",
+      "bytes": 9458273,
+      "sha256": "b9b55acd6fe36a5b53b732c42b39568f44e6fbc6d086bf048fb7c1d758983121"
+    },
+    "measurement_reference": {
+      "path": "output/phone_mapping/2f1_20261021/measurement_reference.png",
+      "kind": "file",
+      "bytes": 1611148,
+      "sha256": "92cc84c7c7d95b567b4fcb1a46a4e0b473a6def9286ae33c4c73feacf2b6297f"
+    },
+    "database": {
+      "path": "output/phone_mapping/2f1_20261021_features_v1/full/database.db",
+      "kind": "file",
+      "bytes": 28368896,
+      "sha256": "8f65ff32dcebd5b5052771ac683fd2ef83dd53b67ea8e769722c16976a6f6626"
+    },
+    "images": {
+      "path": "output/phone_mapping/2f1_20261021/frames_first_test",
+      "kind": "directory"
+    },
+    "input_directory": {
+      "path": "output/phone_mapping/2f1_20261021",
+      "kind": "directory"
+    },
+    "feature_directory": {
+      "path": "output/phone_mapping/2f1_20261021_features_v1/full",
+      "kind": "directory"
+    },
+    "measurement_directory": {
+      "path": "output/phone_mapping/2f1_20261021_features_v1/measurements",
+      "kind": "directory"
+    }
+  },
+  "frame_bytes": {
+    "frame_0024.jpg": 377728,
+    "frame_0025.jpg": 337633,
+    "frame_0026.jpg": 325036,
+    "frame_0027.jpg": 317615,
+    "frame_0028.jpg": 304049,
+    "frame_0029.jpg": 270109,
+    "frame_0030.jpg": 281917,
+    "frame_0031.jpg": 277190,
+    "frame_0032.jpg": 258834,
+    "frame_0033.jpg": 307247,
+    "frame_0034.jpg": 352942,
+    "frame_0035.jpg": 349363,
+    "frame_0036.jpg": 346845,
+    "frame_0037.jpg": 334850,
+    "frame_0038.jpg": 307998,
+    "frame_0040.jpg": 348844,
+    "frame_0041.jpg": 353928,
+    "frame_0042.jpg": 335456,
+    "frame_0043.jpg": 332651,
+    "frame_0044.jpg": 295488,
+    "frame_0045.jpg": 327216,
+    "frame_0046.jpg": 304324,
+    "frame_0047.jpg": 293682,
+    "frame_0048.jpg": 289865,
+    "frame_0049.jpg": 313978,
+    "frame_0050.jpg": 351211,
+    "frame_0051.jpg": 357729,
+    "frame_0052.jpg": 348500,
+    "frame_0053.jpg": 391286,
+    "frame_0054.jpg": 420565,
+    "frame_0055.jpg": 422407
+  }
+}

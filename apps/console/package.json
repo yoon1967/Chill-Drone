@@ -1,0 +1,8 @@
+{
+  "name": "phone-mapping-console",
+  "version": "0.1.0",
+  "private": true,
+  "type": "module",
+  "description": "Local, private viewer for measured phone SfM results",
+  "dependencies": { "three": "0.180.0" }
+}

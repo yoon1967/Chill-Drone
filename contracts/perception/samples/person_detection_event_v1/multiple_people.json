@@ -1,0 +1,7 @@
+{
+  "schema_version":"person-detection-event/1.0","event_id":"00000000-0000-4000-8000-000000000003","input_id":"synthetic-camera-1","frame_id":"frame-000003","detected_at_utc":"2026-10-28T01:00:02Z","timestamp_source":"server_receive","image":{"width_px":640,"height_px":480},"model":{"name":"synthetic-segmentation-model","version":"1.0","weights_sha256":null},
+  "detections":[
+    {"detection_id":"frame-000003-person-1","class_name":"person","confidence":0.95,"bbox_xyxy_px":[40,80,210,450],"polygons_px":[[[70,80],[180,80],[210,250],[175,450],[65,450],[40,250]]]},
+    {"detection_id":"frame-000003-person-2","class_name":"person","confidence":0.86,"bbox_xyxy_px":[350,100,580,440],"polygons_px":[[[390,100],[520,100],[550,270],[500,440],[370,440],[350,270]],[[555,210],[580,220],[575,270],[550,260]]]}
+  ]
+}

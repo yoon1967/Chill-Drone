@@ -1,0 +1,255 @@
+{
+  "schema_version": "1.1",
+  "annotation_run_id": "2f1_20261021_measurement_anchors_v2_floor",
+  "input_run_id": "2f1_20261021",
+  "feature_run_id": "2f1_20261021_features_v1_full",
+  "reference_frame_id": "frame_0035.jpg",
+  "reference_image": "measurement_reference.png",
+  "input_coordinate_convention": "Integer pixel-center indices, top-left pixel center (0,0). Export adds 0.5 to each axis to match COLMAP. Manual picks do not imply subpixel accuracy.",
+  "annotation_method": "A/B are unchanged visually reviewed manual picks. C in frame_0035 is the user-marked floor contact. Other C positions are PROVISIONAL constructions using the downward seam alignment and visible base-floor edge; physical cross-view point identity is not confirmed. They must not be used as verified metric control points.",
+  "annotation_author": "Codex assistant; physical segment identity and measured lengths supplied by user",
+  "review_status": "A/B reviewed; C reference position recorded; C multi-view identity confirmation pending",
+  "uncertainty_definition": "Image annotation radius only, not a statistical interval. For provisional C it does not bound physical cross-view identity error, plinth recess or real-world length error.",
+  "anchors": [
+    {
+      "anchor_id": "A",
+      "name_ko": "측정한 문 한 칸의 왼쪽 위 경계 교점",
+      "physical_definition": "Top-left of the right-hand glass door in the first two-door cabinet adjoining the small lockers; shared endpoint of user's red and blue lines. Use center of visible left seam at the door top boundary.",
+      "source": "Shared upper endpoint circles on user's measurement_reference.png"
+    },
+    {
+      "anchor_id": "B",
+      "name_ko": "같은 문의 오른쪽 위 경계 교점",
+      "physical_definition": "Top-right boundary of that same door; vertical seam between G and Y labels meeting the upper door boundary. User's red right endpoint.",
+      "source": "Right endpoint circle of user's red 44cm line"
+    },
+    {
+      "anchor_id": "C",
+      "name_ko": "사물함 받침대 전면 하단의 바닥 접점",
+      "physical_definition": "Lowest NEW blue mark on the corrected reference, at the cabinet front-base / carpet boundary beneath the left seam of the measured door. Includes the plinth height. There is no unique textured marker at this point. The old intermediate circle at the door bottom is not C.",
+      "source": "User correction and revised measurement_reference.png (2026-10-22)",
+      "multiview_identity_status": "pending; only the reference-view location is user-defined",
+      "use_for_metric_validation": false
+    }
+  ],
+  "segments": [
+    {
+      "segment_id": "width_44cm",
+      "anchor_ids": [
+        "A",
+        "B"
+      ],
+      "length_m": 0.44,
+      "user_value": 44,
+      "user_unit": "cm",
+      "role": "scale_reference",
+      "measurement_uncertainty_m": null,
+      "correspondence_ready": true
+    },
+    {
+      "segment_id": "height_136cm",
+      "anchor_ids": [
+        "A",
+        "C"
+      ],
+      "length_m": 1.36,
+      "user_value": 136,
+      "user_unit": "cm",
+      "role": "held_out_length_check",
+      "measurement_uncertainty_m": null,
+      "correspondence_ready": false,
+      "pending_reason": "C has only one user-defined reference observation; other floor C observations have unconfirmed cross-view identity."
+    }
+  ],
+  "frames": [
+    {
+      "frame_id": "frame_0030.jpg",
+      "estimated_annotation_radius_px": 4,
+      "points_opencv_px": {
+        "A": [
+          114,
+          234
+        ],
+        "B": [
+          352,
+          225
+        ],
+        "C": [
+          223,
+          1039
+        ]
+      },
+      "note": "A/B unchanged. C is an unconfirmed floor-edge estimate using the door seam alignment; no unique floor marker is visible.",
+      "door_bottom_alignment_guide_opencv_px": [
+        214,
+        975
+      ],
+      "point_status": {
+        "A": "visually_reviewed",
+        "B": "visually_reviewed",
+        "C": "provisional_structure_alignment"
+      },
+      "point_radius_px": {
+        "A": 4,
+        "B": 4,
+        "C": 8
+      }
+    },
+    {
+      "frame_id": "frame_0034.jpg",
+      "estimated_annotation_radius_px": 3,
+      "points_opencv_px": {
+        "A": [
+          653,
+          260
+        ],
+        "B": [
+          854,
+          258
+        ],
+        "C": [
+          694,
+          941
+        ]
+      },
+      "note": "A/B unchanged. C is an unconfirmed floor-edge estimate using the door seam alignment; no unique floor marker is visible.",
+      "door_bottom_alignment_guide_opencv_px": [
+        690,
+        885
+      ],
+      "point_status": {
+        "A": "visually_reviewed",
+        "B": "visually_reviewed",
+        "C": "provisional_structure_alignment"
+      },
+      "point_radius_px": {
+        "A": 3,
+        "B": 3,
+        "C": 8
+      }
+    },
+    {
+      "frame_id": "frame_0035.jpg",
+      "estimated_annotation_radius_px": 3,
+      "points_opencv_px": {
+        "A": [
+          720,
+          266
+        ],
+        "B": [
+          925,
+          263
+        ],
+        "C": [
+          754,
+          953
+        ]
+      },
+      "note": "A/B unchanged. C is the revised user-marked floor contact.",
+      "door_bottom_alignment_guide_opencv_px": [
+        752,
+        895
+      ],
+      "point_status": {
+        "A": "visually_reviewed",
+        "B": "visually_reviewed",
+        "C": "user_marked_reference"
+      },
+      "point_radius_px": {
+        "A": 3,
+        "B": 3,
+        "C": 5
+      }
+    },
+    {
+      "frame_id": "frame_0036.jpg",
+      "estimated_annotation_radius_px": 3,
+      "points_opencv_px": {
+        "A": [
+          696,
+          252
+        ],
+        "B": [
+          908,
+          249
+        ],
+        "C": [
+          732,
+          960
+        ]
+      },
+      "note": "A/B unchanged. C is an unconfirmed floor-edge estimate using the door seam alignment; no unique floor marker is visible.",
+      "door_bottom_alignment_guide_opencv_px": [
+        729,
+        904
+      ],
+      "point_status": {
+        "A": "visually_reviewed",
+        "B": "visually_reviewed",
+        "C": "provisional_structure_alignment"
+      },
+      "point_radius_px": {
+        "A": 3,
+        "B": 3,
+        "C": 8
+      }
+    },
+    {
+      "frame_id": "frame_0038.jpg",
+      "estimated_annotation_radius_px": 4,
+      "points_opencv_px": {
+        "A": [
+          535,
+          155
+        ],
+        "B": [
+          785,
+          151
+        ],
+        "C": [
+          592,
+          980
+        ]
+      },
+      "note": "A/B unchanged. C is an unconfirmed floor-edge estimate using the door seam alignment; no unique floor marker is visible.",
+      "door_bottom_alignment_guide_opencv_px": [
+        587,
+        914
+      ],
+      "point_status": {
+        "A": "visually_reviewed",
+        "B": "visually_reviewed",
+        "C": "provisional_structure_alignment"
+      },
+      "point_radius_px": {
+        "A": 4,
+        "B": 4,
+        "C": 8
+      }
+    }
+  ],
+  "inspection_candidates_not_used": [
+    {
+      "frame_id": "frame_0032.jpg",
+      "reason": "Softer upper boundary in inspected crop; no manual observations exported. Remains in the 31-frame automatic feature set."
+    },
+    {
+      "frame_id": "frame_0040.jpg",
+      "reason": "Upper boundary is near the image edge and softer; no manual observations exported. Remains in the 31-frame automatic feature set."
+    },
+    {
+      "frame_id": "frame_0042.jpg",
+      "reason": "Full upper measured boundary not clearly available in inspected view; no inferred coordinates exported. Remains in the automatic feature set."
+    }
+  ],
+  "limitations": [
+    "Physical measurement instrument and uncertainty remain unknown.",
+    "C is on a smooth floor-contact edge with no unique visible marker. Only frame_0035 identifies the user-defined point directly; four other C coordinates are provisional and NOT valid verified multi-view correspondences.",
+    "Do not assume the door plane and base/plinth front are coplanar, or that image-line extension produces the same 3D floor point.",
+    "44cm A-B remains available as scale reference after reconstruction. Do not report a 136cm accuracy check until C identity and triangulation are confirmed.",
+    "A/B/C IDs are separate from SIFT indices; no automatic DB entries were modified.",
+    "Camera poses, distortion-aware triangulation and metric length errors remain uncomputed."
+  ],
+  "supersedes": "2f1_20261021_measurement_anchors_v1",
+  "correction": "User corrected the 136cm lower endpoint from the door-panel bottom to the floor-contact edge. The old intermediate blue circle in the revised reference is obsolete."
+}

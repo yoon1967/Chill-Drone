@@ -1,0 +1,377 @@
+@charset "UTF-8";
+/* 색·글꼴 토큰. 화면 색은 여기서만 정한다(밝게·어둡게 두 벌, 뜻과 쓰는 규칙은 DESIGN.md).
+   테마는 theme.js가 <html data-theme>에 넣는다. 새 색이 필요하면 토큰을 먼저 만들고 두 테마 값을 함께 정한다. */
+:root{
+  --font:"Pretendard Variable","Pretendard","Apple SD Gothic Neo","Malgun Gothic","Noto Sans KR",system-ui,sans-serif;
+  --bg:#f1f2f4;--panel:#ffffff;--line:#d9dce1;--text:#202124;--muted:#5f6368;--brand:#202124;--brand-soft:#eceef1;
+  --accent:#1f5f99;--accent-soft:#e2eefa;--on-accent:#ffffff;--success:#2f6b1f;--success-soft:#e6f1dc;--warning:#8a5a00;--warning-soft:#fbf0d6;
+  --danger:#a32d2d;--danger-soft:#fbe6e6;--neutral-soft:#f1f2f4;--map:#fbfbfc;--video:#20292a;
+  --header:#202124;--header-line:#202124;--header-active:#34373c;--header-text:#ffffff;--header-selected:#d9dce1;
+  --header-ok:#7fd16b;--header-warn:#f0b44c;--header-bad:#ff8a8a;
+  --map-path:var(--accent);--map-plan:#4a4f55;--person:#d6336c;--person-strong:#a61e4d;--person-soft:#fce4ec;--on-strong:#ffffff;
+  --person-box:#e64995;--person-box-fill:rgba(230,73,149,.18);
+  --map-seen:#eef3ea;--map-blocked:#5b4bb7;--map-suspect:rgba(124,107,214,.35);--map-found:rgba(214,69,69,.35);
+  --map-wall:#39404f;--map-low:rgba(91,75,183,.30);--map-unsure:rgba(91,75,183,.70);
+  --overlay-bg:rgba(0,0,0,.63);--overlay-text:#e8efe9;--video-muted:#8a9a90;--video-alert:rgba(192,57,43,.87);
+  --accent-tint:rgba(31,95,153,.12);--accent-tint-strong:rgba(31,95,153,.28);--danger-tint:rgba(163,45,45,.16);--shadow:0 1px 3px rgba(0,0,0,.13);
+  --board-route:#1e7b3a;
+  --map3d-low:#0f7b6c;--map3d-mid:#7a8a00;--map3d-high:#c25a00;
+  --map-next:#2f6fdd;--map-trail:#e07b24;--map-drone:#d64545;--map-person:#e8890c;--map-pick:#0b8f8f;
+  --map-grid:#eceef2;--map-obst:#c9ced8;--map-goal:#1f9d55;--map-truth:#677085;
+  color-scheme:light;
+}
+:root[data-theme=dark]{
+  --bg:#0f1216;--panel:#171b21;--line:#2c323a;--text:#e6e8eb;--muted:#9ba3ad;--brand:#e6e8eb;--brand-soft:#262c34;
+  --accent:#78aee6;--accent-soft:#1a2c40;--on-accent:#0b1622;--success:#8fd17f;--success-soft:#1c2e1a;--warning:#e8b04a;--warning-soft:#33270f;
+  --danger:#ff8a8a;--danger-soft:#3b1d1f;--neutral-soft:#232830;--map:#161a21;--map-plan:#aab2bb;--video:#0a0d10;
+  --header:#0b0e12;--header-line:#2c323a;--header-active:#222831;--header-text:#e6e8eb;--header-selected:#ffffff;
+  --person:#e64995;--person-strong:#f783ac;--person-soft:#3a1d2b;
+  --map-seen:#1c2420;--map-blocked:#a99cf0;--map-suspect:rgba(169,156,240,.3);--map-found:rgba(240,115,115,.35);
+  --map-wall:#c3c9d4;--map-low:rgba(169,156,240,.28);--map-unsure:rgba(169,156,240,.60);
+  --accent-tint:rgba(120,174,230,.14);--accent-tint-strong:rgba(120,174,230,.30);--danger-tint:rgba(255,138,138,.18);--shadow:0 1px 3px rgba(0,0,0,.5);
+  --board-route:#6fd08c;
+  --map3d-low:#3fb8a5;--map3d-mid:#b9c94a;--map3d-high:#ffa657;
+  --map-next:#5b8ff0;--map-trail:#e89a4f;--map-drone:#f07373;--map-person:#f2a23c;--map-pick:#35c9c9;
+  --map-grid:#222833;--map-obst:#3a414e;--map-goal:#4cc47f;--map-truth:#98a1b3;
+  color-scheme:dark;
+}
+*{box-sizing:border-box}
+body{margin:0;background:var(--bg);color:var(--text);font:14px/1.5 var(--font);font-variant-numeric:tabular-nums}
+button{font:inherit;color:inherit;background:var(--panel);border:1px solid var(--line);border-radius:7px;padding:7px 12px;cursor:pointer}
+button:hover{border-color:var(--muted)}button:focus-visible,a:focus-visible,.det:focus-visible{outline:2px solid var(--accent);outline-offset:2px}
+button.off{color:var(--muted);opacity:.55}button.soon{border-style:dashed}
+button[aria-pressed=true]{background:var(--brand-soft);border-color:var(--brand)}
+h2{font-size:14px;font-weight:600;margin:0}
+.spacer{flex:1}.muted{color:var(--muted);font-size:12px}.center{text-align:center}
+.top{display:flex;align-items:center;gap:14px;padding:10px 20px;background:var(--header);color:var(--header-text);border-bottom:1px solid var(--header-line);flex-wrap:wrap;position:sticky;top:0;z-index:5}
+.brand{font-weight:700;color:var(--header-text);text-decoration:none;font-size:15px}.brand-icon{margin-right:4px}
+.views{display:flex;gap:4px}.views a{padding:6px 12px;border-radius:7px;color:var(--header-text);text-decoration:none;font-weight:600}
+.views a:hover{background:var(--header-active)}
+.views a[aria-current=page]{background:var(--header-active);color:var(--header-selected)}
+.scenario{font-size:12px;color:var(--header-text);display:flex;gap:6px;align-items:center}
+.scenario select{font:inherit;background:var(--panel);color:var(--text);border:1px solid var(--line);border-radius:6px;padding:4px 6px}
+.badge{font-size:12px;padding:3px 10px;border-radius:999px;white-space:nowrap}.badge.sample{background:var(--warning-soft);color:var(--warning)}
+/* 머리줄 연결 표시: 점(연결됨·연결 중·끊김)과 글자를 같이. 가짜·재생은 머리줄 색, 실기체는 위험 색 바탕 */
+.badge.live{background:var(--header-active);color:var(--header-text)}
+.badge .dot{display:inline-block;width:8px;height:8px;border-radius:50%;margin-right:6px;vertical-align:0}
+.badge.live .dot.success{background:var(--header-ok)}.badge.live .dot.warning{background:var(--header-warn)}.badge.live .dot.danger{background:var(--header-bad)}
+.badge.real .dot.success{background:var(--success)}.badge.real .dot.warning{background:var(--warning)}.badge.real .dot.danger{background:var(--danger)}
+main{max-width:1280px;margin:0 auto;padding:16px 20px 90px;display:grid;gap:12px}
+.chip{display:inline-block;font-size:12px;padding:3px 10px;border-radius:7px;white-space:nowrap;background:var(--neutral-soft)}
+.chip.success{background:var(--success-soft);color:var(--success)}.chip.warning{background:var(--warning-soft);color:var(--warning)}
+.chip.danger{background:var(--danger-soft);color:var(--danger)}.chip.accent{background:var(--accent-soft);color:var(--accent)}
+.chip.person{background:var(--person-soft);color:var(--person-strong)}
+.src{font-size:11px;color:var(--muted);border:1px dashed var(--line);border-radius:6px;padding:1px 7px;margin-left:8px;white-space:nowrap}
+.src-inline{font-size:11px;margin-left:6px}
+/* 핵심 상태 카드: 모드·배터리·높이·발견(좁게)과 연결(넓게). 값은 크게, 이름·설명은 작게. 늘 같은 자리 */
+.status{display:grid;grid-template-columns:repeat(4,minmax(0,1fr)) minmax(0,2.5fr);gap:8px}
+.stat{background:var(--panel);border:1px solid var(--line);border-radius:12px;padding:6px 12px;display:grid;gap:1px;align-content:start;min-width:0}
+.stat>span{font-size:12px;color:var(--muted)}
+.stat>b{font-size:20px;line-height:1.3;white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
+.stat>small{font-size:12px;color:var(--muted);white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
+.stat.success>b{color:var(--success)}.stat.accent>b{color:var(--accent)}.stat.person>b{color:var(--person-strong)}
+.stat.warning{background:var(--warning-soft);border-color:var(--warning)}.stat.warning>b{color:var(--warning)}
+.stat.danger{background:var(--danger-soft);border-color:var(--danger)}.stat.danger>b{color:var(--danger)}
+/* 연결 카드의 파트: 채운 점은 정상·주의·끊김, 빈 점은 연결 전·꺼짐. 정상이 아니면 짧은 말을 붙인다 */
+.parts{display:flex;flex-wrap:wrap;gap:0 12px;margin:0;font-size:13px;font-weight:600;line-height:1.95}
+.part{white-space:nowrap}
+.part::before{content:"";display:inline-block;width:6px;height:6px;border-radius:50%;margin-right:6px;vertical-align:1px;border:2px solid var(--muted)}
+.part.success::before{background:var(--success);border-color:var(--success)}
+.part.warning::before{background:var(--warning);border-color:var(--warning)}
+.part.danger::before{background:var(--danger);border-color:var(--danger)}
+.part em{font-style:normal;font-weight:400;font-size:12px;color:var(--muted)}
+.part.warning em{color:var(--warning)}.part.danger em{color:var(--danger)}
+.status.compact{grid-template-columns:repeat(4,minmax(0,1fr))}.status.compact .stat.wide{grid-column:1/-1}
+.status.compact .stat{padding:6px 10px}.status.compact .stat>b{font-size:17px}.status.compact .stat>small{white-space:normal}
+@media (max-width:900px){.status{grid-template-columns:repeat(4,minmax(0,1fr))}.status .stat.wide{grid-column:1/-1}}
+.safety{display:flex;gap:8px;align-items:center}
+.alert{display:flex;gap:12px;align-items:center;padding:10px 14px;border-radius:12px;border:1px solid}
+.alert.danger{background:var(--danger-soft);color:var(--danger);border-color:var(--danger)}
+.alert.warning{background:var(--warning-soft);color:var(--warning);border-color:var(--warning)}
+/* 자율 비행 보기 "지금 하는 일과 이유" 띠: 탐색 중(남은 시간)은 조용한 색, 비행 끝은 초록 */
+.alert.neutral{background:var(--neutral-soft);color:var(--text);border-color:var(--line)}
+.alert.success{background:var(--success-soft);color:var(--success);border-color:var(--success)}
+.alert.person{background:var(--person-soft);color:var(--person-strong);border-color:var(--person);flex-wrap:wrap}
+.alert-photo{flex:none;display:block;width:72px;height:54px;border-radius:8px;overflow:hidden;background:var(--video)}.alert-photo img{width:100%;height:100%;object-fit:cover;display:block}
+.alert-text{flex:1 1 200px;min-width:0;display:flex;flex-direction:column;gap:2px}.alert-actions{display:flex;gap:6px;flex-wrap:wrap}
+.alert span{flex:1}.alert button{color:inherit;border-color:currentColor;background:transparent;font-weight:600}.alert.slim{padding:8px 12px}
+.panel{background:var(--panel);border:1px solid var(--line);border-radius:12px;padding:12px;min-width:0}
+.panel>header{display:flex;align-items:center;flex-wrap:wrap;gap:2px;margin-bottom:10px}
+.video-ctl{margin-left:auto;display:flex;align-items:center;gap:6px}.video-ctl button{padding:3px 10px;font-size:12px}
+.feed-sel{display:inline-flex;margin-left:8px}.feed-sel button{padding:3px 10px;font-size:12px;border-radius:0}
+.feed-sel button:first-child{border-radius:6px 0 0 6px}.feed-sel button:last-child{border-radius:0 6px 6px 0;margin-left:-1px}
+.feed-sel button[aria-pressed="true"]{background:var(--accent);border-color:var(--accent);color:var(--on-accent)}
+.frame-wrap{container-type:inline-size}
+.frame{position:relative;aspect-ratio:4/3;width:100%;background:var(--video);border-radius:9px;overflow:hidden}
+.placeholder{position:absolute;inset:0;display:flex;align-items:center;justify-content:center;color:var(--video-muted);font-size:13px}
+.bbox{position:absolute;border:2px solid var(--person-box);border-radius:3px}
+.bbox span{position:absolute;top:-22px;left:-2px;background:var(--person-box);color:var(--on-strong);font-size:11px;padding:1px 6px;border-radius:4px;white-space:nowrap}
+.overlay{position:absolute;bottom:8px;font-size:12px;background:var(--overlay-bg);color:var(--overlay-text);padding:3px 8px;border-radius:6px}.overlay.bl{left:8px}.overlay.br{right:8px}
+.dets .det-list{display:grid;gap:8px;align-content:start;max-height:400px;overflow:auto}
+.det{display:flex;align-items:flex-start;gap:10px;padding:8px;border:1px solid var(--line);border-radius:9px;cursor:pointer;background:var(--panel);min-width:0}
+.det.sel{border:2px solid var(--accent);padding:7px}.det.false_positive{opacity:.6}
+.thumb{width:64px;height:64px;flex:none;border-radius:7px;background:var(--video);display:flex;align-items:flex-start;justify-content:flex-start;padding:4px}
+.det.big .thumb{width:112px;height:84px}
+.thumb span{background:var(--person-box);color:var(--on-strong);font-size:11px;font-weight:700;border-radius:4px;padding:0 6px}
+.det-body{min-width:0;display:grid;gap:3px;overflow:hidden}.det-title{font-weight:600;display:flex;gap:6px;align-items:center;flex-wrap:wrap}
+.det-body>.muted{overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
+.det-actions{display:flex;gap:6px;margin-top:2px}.det-actions button{padding:3px 10px;font-size:12px}
+.empty{color:var(--muted);font-size:13px;margin:8px 0}
+.map svg{width:100%;height:auto;display:block;background:var(--map);border-radius:9px}
+.room{fill:var(--panel);stroke:var(--line)}.room-label{font-size:13px;fill:var(--muted)}
+/* 2D 지도는 자율 비행 웹 drawMap과 같은 모양(11/17 "똑같이 맞추기"): 지나온 길 2 px 실선, 계획 경로 2 px 점선(6·4)과 모든 점에 점 */
+.flown{fill:none;stroke:var(--map-trail);stroke-width:2}.flown.cam{stroke:var(--map-path);stroke-width:3;stroke-linejoin:round}
+.planned{fill:none;stroke:var(--map-next);stroke-width:2;stroke-dasharray:6 4}.plan-pt{fill:var(--map-next)}
+.start{fill:none;stroke:var(--muted);stroke-width:2}.start-label{font-size:13px;fill:var(--muted);paint-order:stroke;stroke:var(--map);stroke-width:4px;stroke-linejoin:round}
+/* 찾은 사람(칠한 원·지나간 사람은 점선 원)·드론(빨간 화살촉 + 위치 오차 점선 원)·출발(회색 네모): 웹과 같음 */
+.mark circle{fill:var(--map-person)}
+.drone path{fill:var(--map-drone)}.drone .sigma{fill:none;stroke:var(--map-drone);stroke-width:1;stroke-dasharray:3 3}
+.spawn{fill:none;stroke:var(--muted);stroke-width:2}
+/* 지도 파일(시뮬레이터 세계 지도): 벽·가구 면, 목적지 초록 원과 글, 정답 위치 회색 원 — 웹과 같음 */
+.wwall{fill:var(--map-wall)}.wobst{fill:var(--map-obst)}.wgoal circle{fill:var(--map-goal)}.wgoal text{fill:var(--map-goal);font-size:12px}
+.truth{fill:none;stroke:var(--map-truth);stroke-width:2}
+/* 지도 칸 아래 줄: 상태 칩·설명(왼쪽), 범례 겸 표시 고르기(오른쪽). 끈 표시는 점선 테두리·흐린 글자(화면 편집의 칸 고르기와 같은 모양) */
+.map-foot{display:flex;gap:6px 8px;align-items:center;flex-wrap:wrap;margin-top:6px;font-size:12px}
+.map-foot .layers{margin-left:auto;display:inline-flex;gap:4px 6px;align-items:center;flex-wrap:wrap}
+/* 한 화면 배치에서 지도 칸이 낮으면(알림 띠가 뜬 재난 정찰 등) 3D 조작 안내 줄을 빼 그림 자리를 지킨다. 안내는 지도에 마우스를 올리면 보인다 */
+@media (min-width:1100px) and (min-height:700px){
+  .live-main .panel.map{container-type:size}
+  @container (max-height:299px){.map-foot .keys-hint{display:none}}
+}
+.layer{padding:2px 9px;font-size:12px;display:inline-flex;align-items:center;gap:6px}
+.layer[aria-pressed=true]{background:var(--panel);border-color:var(--line)}.layer[aria-pressed=true]:hover{border-color:var(--muted)}
+.layer[aria-pressed=false]{border-style:dashed;color:var(--muted)}.layer[aria-pressed=false] .lg{opacity:.3}
+.key{display:inline-flex;align-items:center;gap:5px;color:var(--muted)}
+.lg{display:inline-block;width:18px;height:0;border-top:3px solid var(--map-path)}.lg.flown{border-top-color:var(--map-trail)}.lg.planned{border-top-style:dashed;border-top-color:var(--map-next)}
+.lg.h3d{width:26px;height:8px;border:0;border-radius:2px;background:linear-gradient(90deg,var(--map3d-low),var(--map3d-mid),var(--map3d-high))}   /* 3D 높이 색 */
+.link{font-size:12px;color:var(--accent)}
+.detail-line{display:flex;flex-wrap:wrap;gap:4px 14px;margin:8px 2px 0;font-size:12px;color:var(--muted)}.detail-line b{color:var(--text);font-weight:600}
+.controls{position:fixed;left:0;right:0;bottom:0;z-index:6;display:flex;gap:8px;align-items:center;flex-wrap:wrap;padding:10px max(20px,calc((100vw - 1240px)/2));background:var(--panel);border-top:1px solid var(--line)}
+.seg{display:flex;border:1px solid var(--line);border-radius:8px;overflow:hidden}.seg button{border:0;border-radius:0;min-width:64px}
+.seg button+button{border-left:1px solid var(--line)}.seg button.on{background:var(--accent-soft);color:var(--accent);font-weight:700}
+.estop{position:relative;overflow:hidden;border:2px solid var(--danger);color:var(--danger);font-weight:700;background:var(--panel)}
+.estop small{font-weight:400}.estop .fill{position:absolute;inset:0;background:var(--danger-soft);transform:scaleX(0);transform-origin:left;z-index:-1}
+.estop{isolation:isolate}.estop.holding .fill{transform:scaleX(1);transition:transform .6s linear}
+.summary{display:grid;grid-template-columns:repeat(auto-fit,minmax(170px,1fr));gap:12px}
+.metric{background:var(--panel);border:1px solid var(--line);border-radius:12px;padding:12px 14px;display:grid;gap:2px}
+.metric span{font-size:12px;color:var(--muted)}.metric b{font-size:22px}.metric small{font-size:12px;color:var(--muted)}
+.note{margin:0;color:var(--muted);font-size:13px}
+.review-grid{display:grid;grid-template-columns:minmax(320px,2fr) minmax(0,3fr);gap:12px}.review-grid.two{grid-template-columns:1fr 1fr}
+.dets.big .det-list{max-height:560px}
+.timeline{list-style:none;margin:0;padding:0;display:grid;gap:6px}
+.timeline li{display:flex;gap:10px;font-size:13px;padding:6px 8px;border-left:3px solid var(--line);background:var(--bg);border-radius:0}
+.timeline li.detection{border-left-color:var(--person)}.timeline li.intervention{border-left-color:var(--warning)}.timeline li.mode{border-left-color:var(--accent)}
+.timeline li.link{border-left-color:var(--danger)}.timeline li.review{border-left-color:var(--person)}
+.timeline time{flex:none;color:var(--muted);font-variant-numeric:tabular-nums;white-space:nowrap}
+.timeline li>span{min-width:0}
+/* 탐색 결과: 비행 기록이 길어도 옆 3D 지도 칸 높이쯤에서 기록 안만 스크롤한다(페이지가 끝없이 길어지지 않게) */
+.review-grid .timeline{max-height:360px;overflow-y:auto;align-content:start;overscroll-behavior:contain}
+.phone{max-width:430px;margin:0 auto;width:100%;display:grid;gap:12px}
+.big-grid{display:grid;grid-template-columns:1fr 1fr;gap:10px}.big-grid.solo{grid-template-columns:1fr}   /* 자율 비행 보기: 이륙·착륙 하나 */
+button.big{height:64px;font-size:17px;font-weight:700;border-radius:12px}
+.sticks{display:flex;justify-content:space-between;gap:16px}
+.stick{position:relative;width:46%;aspect-ratio:1;border-radius:50%;border:1px solid var(--line);background:var(--panel);touch-action:none;display:flex;align-items:center;justify-content:center}
+.stick small{position:absolute;bottom:10px;color:var(--muted);font-size:11px}
+.knob{width:44px;height:44px;border-radius:50%;background:var(--brand-soft);border:2px solid var(--brand)}
+.estop.wide{width:100%;height:64px;font-size:17px;border-radius:12px}
+#toast{position:fixed;left:50%;bottom:84px;transform:translateX(-50%) translateY(20px);opacity:0;background:var(--text);color:var(--bg);padding:8px 14px;border-radius:8px;font-size:13px;transition:.2s;pointer-events:none;z-index:9}
+#toast.show{opacity:1;transform:translateX(-50%)}
+#flash{position:fixed;inset:0;pointer-events:none;border:6px solid var(--person);border-radius:4px;opacity:0;z-index:8}#flash.on{animation:flash 1.4s ease-out}
+@keyframes flash{0%{opacity:0}15%{opacity:1}100%{opacity:0}}
+.top .toggle{font:inherit;font-size:12px;background:var(--panel);color:var(--text);border:1px solid var(--line);border-radius:6px;padding:4px 8px}.top .toggle[aria-pressed=true]{background:var(--brand-soft);border-color:var(--brand)}
+body[data-view=control] main{padding-bottom:24px}body[data-view=review] main{padding-bottom:24px}
+/* 실시간 감독: 모니터 한 화면(1366×768 이상)에 스크롤 없이 */
+@media (min-width:1100px) and (min-height:700px){
+  body[data-view=live]{height:100vh;overflow:hidden;display:flex;flex-direction:column}
+  body[data-view=live] main{flex:1;min-height:0;max-width:none;width:100%;padding:10px 16px;gap:10px;
+    grid-template-rows:auto auto minmax(0,1fr) auto}
+  body[data-view=live] .alert-slot:empty{margin-top:-10px}
+  body[data-view=live] .controls{position:relative;padding:8px 12px;border:1px solid var(--line);border-radius:12px}
+  .live-main{display:grid;grid-template-columns:minmax(0,1.45fr) minmax(360px,1fr);gap:10px;min-height:0}
+  .live-main .panel{display:flex;flex-direction:column;min-height:0;overflow:hidden}
+  .live-main .panel>header{margin-bottom:8px}
+  .side{display:grid;grid-template-rows:minmax(0,1fr) minmax(0,1.15fr);gap:10px;min-width:0;min-height:0;overflow:hidden}
+  .live-main .frame-wrap{flex:1;min-height:0;container-type:size;display:flex;align-items:center;justify-content:center}
+  .live-main .frame{width:min(100cqw,calc(100cqh * 4 / 3));height:auto}
+  .live-main .dets{display:grid;grid-template-rows:auto minmax(0,1fr);min-height:0;overflow:hidden}
+  .live-main .dets .det-list{width:100%;height:auto;max-height:100%;min-height:0;overflow-x:hidden;overflow-y:auto;overscroll-behavior:contain;padding-right:4px}
+  .live-main .map svg{flex:1;min-height:0;height:100%}
+  .live-main .map-body{flex:1;min-height:0;display:flex;flex-direction:column}
+  .live-main .map-canvas{flex:1;min-height:0;display:flex;flex-direction:column}
+}
+@media (max-width:1099px),(max-height:699px){.live-main{display:grid;gap:12px}.side{display:grid;gap:12px}}
+/* 실시간 감독 칸 배치(presets.js 격자). 좁은 화면에서는 프리셋에 적힌 순서(중요한 칸부터)대로 쌓는다 */
+.board>.cell{order:var(--o);display:flex;flex-direction:column;min-width:0;min-height:0}
+.board>.cell>.panel{flex:1}
+.board .timeline{max-height:320px;overflow-y:auto;align-content:start;overscroll-behavior:contain}
+@media (min-width:1100px) and (min-height:700px){
+  .live-main.board{grid-template-columns:repeat(var(--cols),minmax(0,1fr));grid-template-rows:repeat(var(--rows),minmax(0,1fr))}
+  .board>.cell{grid-column:var(--x)/span var(--w);grid-row:var(--y)/span var(--h)}
+  .board .timeline{flex:1;min-height:0;max-height:none}
+  .board>.slot{grid-column:var(--x)/span 1;grid-row:var(--y)/span 1;border:1px dashed var(--line);border-radius:8px}
+}
+/* 화면 편집: 위 편집 막대, 칸마다 덮개(끌기·크기 조절), 빈 격자 칸은 점선 */
+#preset-wrap button{padding:3px 10px;font-size:12px;color:var(--text)}#preset-wrap button:disabled{opacity:.5;cursor:default}
+.editbar{display:flex;align-items:center;gap:8px;flex-wrap:wrap;padding:8px 20px;background:var(--accent-soft);border-bottom:1px solid var(--line);font-size:13px}
+.editbar button{padding:4px 10px;font-size:12px}.editbar input{font:inherit;padding:4px 8px;border:1px solid var(--line);border-radius:6px;width:180px}
+.edit-panels{display:flex;gap:4px;flex-wrap:wrap}.edit-panels button[aria-pressed=false]{border-style:dashed;color:var(--muted)}
+.board.editing>.cell{position:relative}
+/* 편집 중에는 칸 머리줄(제목·칩·버튼) 자리에 덮개의 이름표·단추가 온다. 겹쳐 보이지 않게 머리줄은 감추고, 자리는 남겨 칸 내용이 움직이지 않게 한다 */
+.board.editing>.cell>.panel>header{visibility:hidden}
+.cell-edit{position:absolute;inset:0;z-index:3;display:flex;flex-direction:column;justify-content:space-between;padding:8px;border:2px dashed var(--accent);border-radius:12px;background:var(--accent-tint);cursor:move;touch-action:none;user-select:none}
+.cell-head{display:flex;justify-content:space-between;align-items:flex-start;gap:6px;flex-wrap:wrap}
+.cell-name{background:var(--panel);border-radius:7px;padding:3px 10px;font-size:13px;box-shadow:var(--shadow)}.cell-name b{color:var(--accent)}
+.cell-tools{display:flex;gap:4px}.cell-tools button{padding:2px 9px;font-size:12px}.cell-tools button:disabled{opacity:.45;cursor:default}
+.cell-hint{align-self:center;font-size:12px;color:var(--accent);background:var(--panel);border-radius:6px;padding:2px 8px;opacity:.9}
+.cell-resize{position:absolute;right:3px;bottom:3px;width:22px;height:22px;cursor:nwse-resize;border-right:4px solid var(--accent);border-bottom:4px solid var(--accent);border-radius:0 0 9px 0}
+.board .cell.bad .cell-edit{border-color:var(--danger);background:var(--danger-tint)}
+.board .cell.swap .cell-edit{border-style:solid;background:var(--accent-tint-strong)}
+.board-empty{grid-column:1/-1;grid-row:1/-1;align-self:center;text-align:center;color:var(--muted)}
+@media (max-width:900px){.review-grid,.review-grid.two{grid-template-columns:1fr}.top{gap:8px;padding:8px 16px}main{padding:12px 16px 120px}}
+@media (max-width:520px){.views a{padding:5px 8px;font-size:13px}.scenario{order:5}.controls{padding:8px 16px}}
+/* 게이트웨이 연결(실시간) */
+.feed{position:absolute;inset:0;width:100%;height:100%;object-fit:contain;background:var(--video)}
+.map-empty{flex:1;min-height:120px;display:flex;flex-direction:column;gap:10px;align-items:center;justify-content:center;text-align:center;padding:16px;color:var(--muted);font-size:13px;background:var(--map);border-radius:9px}
+.map-empty button{padding:3px 10px;font-size:12px;color:var(--text)}
+.keys-hint{font-size:11px}
+.map3d-slot{flex:1;min-height:220px;display:flex;background:var(--map);border-radius:9px;overflow:hidden}
+.map3d-slot>.map-empty{flex:1}
+.map3d-host{flex:1;display:flex;min-height:0}
+.map3d-host canvas{flex:1;width:100%;height:100%;min-height:220px;display:block;touch-action:none;cursor:grab}
+.map3d-host canvas:active{cursor:grabbing}
+.live-map-save{display:flex;align-items:center;gap:10px;margin-top:8px;padding-top:8px;border-top:1px solid var(--line);flex-wrap:wrap;flex-shrink:0}
+.live-map-save button{flex:none;min-height:28px;padding:4px 9px;font-size:12px}
+.live-map-save>span{font-size:12px;color:var(--muted);min-width:0;flex:1 1 180px}
+.live-map-save small{display:block;overflow-wrap:anywhere;font-size:11px;margin-top:3px}
+@media (min-width:1100px) and (min-height:700px){.live-main .map3d-slot,.live-main .map3d-host canvas{min-height:0}}
+.map3d-panel .map3d-slot{min-height:320px}
+.seg.map-mode button{min-width:0;padding:3px 10px;font-size:12px}
+.checks{display:flex;gap:4px;flex-wrap:wrap}.checks .chip{font-size:11px;padding:2px 7px}
+.keys-hint{font-size:11px}
+.badge.real{background:var(--danger-soft);color:var(--danger)}
+[hidden]{display:none!important}
+.outline{position:absolute;inset:0;width:100%;height:100%;pointer-events:none}
+.outline polygon{fill:var(--person-box-fill);stroke:var(--person-box);stroke-width:3;vector-effect:non-scaling-stroke}
+.outline text{fill:var(--on-strong);stroke:var(--person-box);stroke-width:6px;paint-order:stroke;font-size:26px;font-weight:700}
+.thumb.photo{position:relative;padding:0;overflow:hidden}
+.thumb.photo img{width:100%;height:100%;object-fit:cover;display:block}
+.thumb.photo span{position:absolute;top:4px;left:4px}
+.overlay.tl{top:8px;bottom:auto;left:8px;background:var(--video-alert);color:var(--on-strong)}
+/* 지도 콘솔 보기(apps/console 화면을 지도 칸에) · 크게 보기 */
+.map-big{padding:3px 10px;font-size:12px;margin-left:6px}
+.console-slot{display:grid;background:var(--map)}
+.console-frame{position:absolute;z-index:4;border:0;background:var(--map)}
+.console-frame.away{display:none}
+html:has(body[data-view=map]){scrollbar-gutter:stable}
+body[data-view=map]{min-height:100dvh;display:flex;flex-direction:column}
+body[data-view=map]>.top{position:relative;flex-shrink:0}
+body[data-view=map] #app{flex:1;min-height:0;max-width:none;width:100%;padding:0;display:block}
+/* 자율 지도(2D): 1 m 눈금·찾은 사람(확정/다시 봤는데 없음/미확정)·오래된 위치 */
+.map .grid line{stroke:var(--map-grid);stroke-width:1}
+.mark.gone circle{fill:none;stroke:var(--map-person);stroke-width:2;stroke-dasharray:3 3}
+.drone.stale path{opacity:.35}
+.scale line{stroke:var(--text);stroke-width:2}.scale text{font-size:11px;fill:var(--text)}
+.floor{fill:var(--map-plan)}.lg.floor{width:12px;height:10px;border:0;border-radius:2px;background:var(--map-plan)}
+/* 자율 비행이 만드는 지도(비행 높이 단면): 칸 그림은 확대해도 번지지 않게, 찾은 장애물은 빨간 점선 네모(자율 비행 웹과 같은 색 뜻)에 이름표 */
+.panel.map svg image.occ{image-rendering:pixelated}.panel.map svg rect.found{fill:var(--map-found);stroke:var(--map-drone);stroke-width:1}
+/* 높이 층이 있을 때 막힌 칸: 벽·높은 것, 낮은 물체(옅은 면에 테두리), 막힘(높이 모름) */
+.cam-now circle{fill:var(--map-path);stroke:var(--panel);stroke-width:2}.cam-now.stale{opacity:.35}
+/* 지도 그림(board.js, 화이트보드 1단계): 진입로·사람 동선은 초록(비상구 표지처럼 "안전한 길"), 남은 거리는 흐린 점선, 막힌 까닭은 주황 글.
+   그리기를 켜면 도구 막대가 생기고(넓은 칸은 지도 옆 기둥, 좁으면 지도 위), 그리기 도구일 때 지도는 십자 커서다(드론 보낼 자리 찍기는 "보기" 도구에서만) */
+.wb-btn{padding:3px 10px;font-size:12px;margin-left:6px}.wb-btn.off{opacity:.55}
+.wb-bar{display:flex;align-items:center;gap:6px 10px;flex-wrap:wrap;margin:-2px 0 8px;font-size:12px;flex-shrink:0}
+.wb-bar .seg button{min-width:0;padding:3px 10px;font-size:12px}.wb-bar small{opacity:.6;margin-left:4px}
+.wb-note{flex:1 1 200px;min-width:0;color:var(--muted)}.wb-esc{color:var(--warning);font-weight:600}
+.map svg.wb-drawing{cursor:crosshair}
+.wb-route{fill:none;stroke:var(--board-route);stroke-width:4;stroke-linejoin:round;stroke-linecap:round}
+.wb-route.pending{stroke-dasharray:6 6}.wb-item.pending{opacity:.6}
+.wb-head{fill:var(--board-route)}
+.wb-gap{stroke:var(--muted);stroke-width:2;stroke-dasharray:2 5}
+.wb-hit{fill:none;stroke:transparent;stroke-width:16;pointer-events:stroke}.wb-hit-dot{fill:transparent}
+.wb-label{font-size:12px;font-weight:700;fill:var(--board-route);paint-order:stroke;stroke:var(--map);stroke-width:4px;stroke-linejoin:round}
+.wb-label.warn{fill:var(--warning)}
+.wb-entry rect{fill:var(--map);stroke:var(--board-route);stroke-width:2.5}
+.wb-entry path{fill:none;stroke:var(--board-route);stroke-width:2;stroke-linecap:round;stroke-linejoin:round}
+.wb-pick circle{fill:none;stroke:var(--board-route);stroke-width:2.5;stroke-dasharray:4 3}
+.wb-erase .wb-item{cursor:pointer}.wb-erase .wb-item:hover{opacity:.45}
+.lg.wb{border-top-color:var(--board-route)}
+.wb-list{list-style:none;margin:6px 0 0;padding:0;display:grid;gap:4px;font-size:12px;max-height:7.5em;overflow-y:auto;flex-shrink:0}
+.wb-list li{display:flex;align-items:center;gap:4px 8px;flex-wrap:wrap;padding:2px 8px;border-left:3px solid var(--board-route);background:var(--bg)}
+.wb-list li.warn{border-left-color:var(--warning)}.wb-list li>span{flex:1 1 180px;min-width:0}
+.wb-list button{padding:2px 9px;font-size:12px}
+/* 넓은 지도 칸(가로 480 px 이상, 가로가 세로의 1.5배 이상)에서는 도구 막대·목록을 지도 옆 기둥에 둬 지도 높이를 지킨다
+   (11/17: 1280×720 자율 탐색 프리셋에서 도구 막대·목록이 지도 위아래로 쌓여 지도가 16 px까지 줄었다). 기둥에서는 단축키 숫자를 빼 도구 넷이 한 줄에 든다.
+   좁거나 높은 칸은 지금처럼 지도 위·아래에 쌓고, 낮은 칸이면 목록을 두 줄 높이로 줄인다 */
+@media (min-width:1100px) and (min-height:700px){
+  @container (min-width:480px) and (min-aspect-ratio:3/2){
+    .live-main .map-body.wb-side{display:grid;grid-template-columns:minmax(0,1fr) minmax(200px,min(36%,340px));grid-template-rows:auto minmax(0,1fr);column-gap:10px}
+    .live-main .map-body.wb-side>.map-canvas{grid-column:1;grid-row:1/3}
+    .live-main .map-body.wb-side>.wb-bar{grid-column:2;grid-row:1;margin:0 0 6px}
+    .live-main .map-body.wb-side>.wb-list{grid-column:2;grid-row:2;max-height:none;min-height:0;margin:0;align-content:start}
+    .live-main .map-body.wb-side .wb-tools button{padding:3px 8px}.live-main .map-body.wb-side .wb-tools small{display:none}
+    .live-main .map-body.wb-side .wb-note{flex-basis:100%}
+  }
+  @container (max-height:420px){.live-main .map-body .wb-list{max-height:3.6em}}   /* 기둥 목록(위 규칙)이 더 구체적이라 기둥에는 안 걸린다 */
+  /* 낮은 지도 칸(1280×720 재난 정찰 216 px 등): 범례·보내기 안내·지도 저장 줄을 한 줄씩으로 줄여 지도 자리를 지킨다
+     (11/17: 범례 3줄·보내기 안내 3줄로 감겨 지도가 0 px). 잘린 안내는 마우스를 올리면 전부 보인다(title) */
+  @container (max-height:340px){
+    .live-main .panel.map .map-foot,.live-main .panel.map .map-foot .layers{flex-wrap:nowrap}
+    .live-main .panel.map .map-foot{overflow-x:auto;scrollbar-width:thin}
+    .live-main .panel.map .map-foot>*{flex-shrink:0}
+    .live-main .panel.map .goto-bar{flex-wrap:nowrap}
+    .live-main .panel.map .goto-bar>span:first-child{flex:0 1 auto;min-width:0;white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
+    .live-main .panel.map .goto-bar>button{flex-shrink:0}
+    .live-main .panel.map .live-map-save{flex-wrap:nowrap;margin-top:4px;padding-top:4px}
+    .live-main .panel.map .live-map-save>span{white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
+    .live-main .panel.map .live-map-save small{display:none}
+  }
+}
+.timeline li.board{border-left-color:var(--board-route)}
+/* 움직임 줄이기 설정이면 꾸밈 움직임을 끈다. 비상 정지 길게 누르기 채움은 얼마나 눌렀는지 알려 주므로 남긴다 */
+@media (prefers-reduced-motion:reduce){#toast{transition:none}#flash.on{animation:none}}
+/* 이륙 전 확인: 이륙을 누르면 조종 줄 위 오른쪽에 뜨는 칸(폰은 큰 버튼 위에 그대로). 기체 점검 → 사람이 주변 확인 체크 → 이륙 */
+.takeoff-pop{position:absolute;right:8px;bottom:calc(100% + 8px);z-index:8;width:min(560px,calc(100vw - 32px));display:grid;gap:10px;
+  background:var(--panel);border:2px solid var(--accent);border-radius:12px;padding:12px 14px;box-shadow:var(--shadow)}
+.takeoff-pop.inline{position:static;width:auto}
+.takeoff-pop>header{display:flex;align-items:center;gap:8px}.takeoff-pop>header button{padding:3px 10px;font-size:12px}
+.to-row{display:flex;align-items:center;gap:8px;flex-wrap:wrap}.to-name{font-size:12px;color:var(--muted);min-width:56px}
+.to-row .mini{padding:3px 10px;font-size:12px}
+/* 자율 비행 보기: 땅에서 기수 값이 흐를 때(드론이 이륙을 거절해 왔다) 시작 칸 안내 */
+.to-warn{margin:0;padding:6px 10px;border-radius:8px;font-size:12px;line-height:1.45;background:var(--warning-soft);color:var(--warning)}
+.area-check{display:flex;gap:10px;align-items:flex-start;width:100%;text-align:left;padding:10px 12px;font-weight:600;line-height:1.45}
+.area-check::before{content:"";flex:none;width:16px;height:16px;margin-top:1px;border:2px solid var(--muted);border-radius:4px;
+  display:flex;align-items:center;justify-content:center;font-size:13px;line-height:1;color:var(--panel)}
+.area-check[aria-checked=true]{background:var(--success-soft);border-color:var(--success);color:var(--success)}
+.area-check[aria-checked=true]::before{content:"✓";background:var(--success);border-color:var(--success)}
+/* 자율 비행 보기: 시작을 한 번 누르면 4초 동안 "한 번 더" 상태(자율 비행 웹과 같은 두 번 누르기) */
+.takeoff-pop .primary.armed{outline:3px solid var(--warning);outline-offset:2px}
+/* 자율 비행 보기: 2D 지도에서 찍은 자리(점선 = 아직 안 보냄, 채움 = 비행 노드가 받음·가는 중) */
+.map svg[data-goto-map]{cursor:crosshair}
+/* 2D 지도 보기(mapview.js): 휠·두 손가락 확대, 끌기 이동, Shift+끌기·두 손가락 회전. 브라우저가 손동작을 가로채지 않게 touch-action 끔 */
+.map-canvas{position:relative;min-width:0}
+.map svg[data-map2d]{touch-action:none}.map svg[data-map2d].map-dragging{cursor:grabbing}
+.map-view text{transform-box:fill-box;transform-origin:center;transform:rotate(calc(var(--map-rot,0) * -1deg))}
+.map-tools{position:absolute;top:6px;right:6px;display:flex;gap:4px}
+.map-tools button{padding:1px 8px;font-size:13px;line-height:1.5;background:var(--panel);opacity:.9}.map-tools button:hover{opacity:1}
+/* 찍은 자리(웹): 받은 자리는 원(가는 중·둘러보는 중이면 칠함)과 글, 찍은 곳과 다르면 점선으로 이음. 안 보낸 자리는 점선 원·십자와 "보낼 자리" */
+.goto-pick circle,.goto-pick line{fill:none;stroke:var(--map-pick);stroke-width:2}.goto-pick circle{stroke-dasharray:4 3}
+.goto-pick text,.pin-label{fill:var(--map-pick);font-size:12px}
+.goto-dot{width:10px;height:10px;border-radius:50%;border:2px solid var(--map-pick);flex:none}.goto-dot.on{background:var(--map-pick)}
+.pin{fill:none;stroke:var(--map-pick);stroke-width:2}.pin.on{fill:var(--map-pick)}.pin-link{stroke:var(--map-pick);stroke-width:1;stroke-dasharray:3 3}
+/* 범례: 자율 비행 웹 .legend 그대로(14×4 막대) */
+.wlegend{display:inline-flex;flex-wrap:wrap;gap:4px 14px;font-size:12px;color:var(--muted)}
+.wl{display:inline-block;width:14px;height:4px;border-radius:2px;vertical-align:middle;margin-right:4px}
+.wl.wall{background:var(--map-wall)}.wl.obst{background:var(--map-obst)}.wl.found{background:var(--map-found)}
+.wl.cam{background:var(--map-blocked)}.wl.cam-sus{background:var(--map-suspect)}.wl.seen{background:var(--map-seen);border:1px solid var(--line)}
+.wl.person{background:var(--map-person)}.wl.person-gone{border:2px dashed var(--map-person)}
+.wl.path{background:var(--map-next)}.wl.trail{background:var(--map-trail)}.wl.drone{background:var(--map-drone)}
+.wl.goal{background:var(--map-goal)}.wl.pick{background:var(--map-pick)}.wl.truth{background:var(--map-truth)}
+.goto-bar{display:flex;gap:6px 8px;align-items:center;flex-wrap:wrap;margin-top:6px;font-size:12px}
+.goto-bar .spacer{flex:1}.goto-bar button{padding:3px 10px;font-size:12px}.goto-bar small{opacity:.7;margin-left:4px}
+.goto-bar .goto-warn{color:var(--warning);font-weight:600}   /* 비행 노드가 찍은 자리를 받지 않거나 그만둔 답(20초) */
+.to-go{display:flex;align-items:center;gap:10px}.to-go>.muted{flex:1}
+button.primary{background:var(--accent);border-color:var(--accent);color:var(--on-accent);font-weight:700;padding:8px 20px}
+button.primary.off{background:var(--neutral-soft);border-color:var(--line);color:var(--muted)}
+/* 영상 칸 보기 고르기: 원본/AI 합성 + 사람 윤곽 켜고 끄기 */
+.view-sel{display:inline-flex;align-items:center;gap:6px;margin-left:8px}.view-sel .feed-sel{margin-left:0}
+.outline-btn{padding:3px 10px;font-size:12px}
